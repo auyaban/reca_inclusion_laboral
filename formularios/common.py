@@ -15,24 +15,24 @@ def _resolve_env_candidates(env_path=".env"):
     if os.path.isabs(env_path):
         return [env_path]
     candidates = []
-    # 1) current working directory
-    candidates.append(os.path.abspath(env_path))
-    # 2) executable/script directory
+    # 1) executable/script directory (installed app priority)
     try:
         exe_dir = os.path.dirname(os.path.abspath(sys.executable))
         candidates.append(os.path.join(exe_dir, env_path))
     except Exception:
         pass
+    # 2) roaming appdata fallback
+    appdata = os.getenv("APPDATA")
+    if appdata:
+        candidates.append(os.path.join(appdata, "RECA Inclusion Laboral", env_path))
     # 3) project root (when running from source)
     try:
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         candidates.append(os.path.join(project_root, env_path))
     except Exception:
         pass
-    # 4) roaming appdata fallback
-    appdata = os.getenv("APPDATA")
-    if appdata:
-        candidates.append(os.path.join(appdata, "RECA Inclusion Laboral", env_path))
+    # 4) current working directory (last resort)
+    candidates.append(os.path.abspath(env_path))
     # preserve order and uniqueness
     uniq = []
     seen = set()
@@ -60,8 +60,28 @@ def _load_env_file(env_path=".env"):
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, value = line.split("=", 1)
-            env[key.strip()] = value.strip().strip('"').strip("'")
+            clean_key = key.strip().lstrip("\ufeff")
+            env[clean_key] = value.strip().strip('"').strip("'")
     return env
+
+
+def _load_supabase_credentials(env_path=".env"):
+    checked = []
+    for candidate in _resolve_env_candidates(env_path):
+        if not os.path.exists(candidate):
+            continue
+        checked.append(candidate)
+        env = _load_env_file(candidate)
+        supabase_url = (env.get("SUPABASE_URL") or "").strip()
+        supabase_key = (env.get("SUPABASE_KEY") or "").strip()
+        if supabase_url and supabase_key:
+            return supabase_url, supabase_key
+    if checked:
+        joined = " | ".join(checked)
+        raise RuntimeError(
+            f"Missing SUPABASE_URL or SUPABASE_KEY. Revisa .env en: {joined}"
+        )
+    raise RuntimeError("Missing SUPABASE_URL or SUPABASE_KEY")
 
 
 def _supabase_headers(api_key):
@@ -72,11 +92,7 @@ def _supabase_headers(api_key):
 
 
 def _supabase_get(table, params, env_path=".env"):
-    env = _load_env_file(env_path)
-    supabase_url = env.get("SUPABASE_URL")
-    supabase_key = env.get("SUPABASE_KEY")
-    if not supabase_url or not supabase_key:
-        raise RuntimeError("Missing SUPABASE_URL or SUPABASE_KEY")
+    supabase_url, supabase_key = _load_supabase_credentials(env_path)
     query = urllib.parse.urlencode(params)
     url = f"{supabase_url.rstrip('/')}/rest/v1/{table}?{query}"
     request = urllib.request.Request(url, headers=_supabase_headers(supabase_key))
@@ -258,11 +274,7 @@ def _supabase_enqueue_patch(table, filters, values, env_path=".env"):
 
 
 def _supabase_upsert(table, rows, env_path=".env", on_conflict=None):
-    env = _load_env_file(env_path)
-    supabase_url = env.get("SUPABASE_URL")
-    supabase_key = env.get("SUPABASE_KEY")
-    if not supabase_url or not supabase_key:
-        raise RuntimeError("Missing SUPABASE_URL or SUPABASE_KEY")
+    supabase_url, supabase_key = _load_supabase_credentials(env_path)
     if not rows:
         return []
     conflict_query = f"?on_conflict={on_conflict}" if on_conflict else ""
@@ -289,11 +301,7 @@ def _supabase_upsert(table, rows, env_path=".env", on_conflict=None):
 
 
 def _supabase_patch(table, filters, values, env_path=".env"):
-    env = _load_env_file(env_path)
-    supabase_url = env.get("SUPABASE_URL")
-    supabase_key = env.get("SUPABASE_KEY")
-    if not supabase_url or not supabase_key:
-        raise RuntimeError("Missing SUPABASE_URL or SUPABASE_KEY")
+    supabase_url, supabase_key = _load_supabase_credentials(env_path)
     if not values:
         return []
     params = {}

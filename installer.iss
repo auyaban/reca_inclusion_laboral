@@ -39,16 +39,22 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Abrir {#MyAppName}"; Flags: now
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   EnvPath: string;
+  RoamingPath: string;
   EnvContent: string;
 begin
-  if CurStep = ssInstall then
+  if CurStep = ssPostInstall then
   begin
-    EnvPath := ExpandConstant('{app}\.env');
     EnvContent := 'SUPABASE_URL={#SupabaseUrl}' + #13#10 +
                   'SUPABASE_KEY={#SupabaseKey}' + #13#10 +
                   'GITHUB_REPO_OWNER={#GithubRepoOwner}' + #13#10 +
                   'GITHUB_REPO_NAME={#GithubRepoName}' + #13#10 +
                   'INSTALLER_ASSET_NAME={#InstallerAssetName}' + #13#10;
+
+    EnvPath := ExpandConstant('{app}\.env');
     SaveStringToFile(EnvPath, EnvContent, False);
+
+    RoamingPath := ExpandConstant('{userappdata}\RECA Inclusion Laboral\.env');
+    ForceDirectories(ExtractFileDir(RoamingPath));
+    SaveStringToFile(RoamingPath, EnvContent, False);
   end;
 end;

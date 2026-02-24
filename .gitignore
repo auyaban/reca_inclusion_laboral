@@ -16,7 +16,9 @@ build/
 dist/
 installer/*.exe
 installer/*.sha256
+installer/*.7z
 *.spec
+*.7z
 
 # Local/runtime
 logs/

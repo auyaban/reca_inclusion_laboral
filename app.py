@@ -534,6 +534,22 @@ def _verify_password_hash(password, stored_hash):
         return False
 
 
+def _normalize_login_value(value):
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"\s+", "", text).lower().strip()
+    return text
+
+
+def _password_candidates(password):
+    raw = str(password or "")
+    options = [raw]
+    trimmed = raw.strip()
+    if trimmed != raw:
+        options.append(trimmed)
+    return options
+
+
 def _is_seguimiento_form(form_name):
     return "seguimiento" in str(form_name or "").strip().lower()
 
@@ -1830,6 +1846,7 @@ class HubWindow(tk.Tk):
         self._version_var = tk.StringVar(value="Versión local: - | GitHub: -")
         self._version_check_thread = None
         self._drafts_btn = None
+        self._refresh_db_btn = None
 
         self._configure_input_styles()
         self.protocol("WM_DELETE_WINDOW", self._on_app_close)
@@ -1912,7 +1929,8 @@ class HubWindow(tk.Tk):
         )
 
     def _handle_login(self):
-        username = self.login_user_entry.get().strip()
+        username_input = self.login_user_entry.get().strip()
+        username = _normalize_login_value(username_input)
         password = self.login_pass_entry.get()
         if not username or not password:
             messagebox.showerror("Error", "Ingresa usuario y contraseña.")
@@ -1944,7 +1962,7 @@ class HubWindow(tk.Tk):
                     "profesionales",
                     {
                         "select": "id,usuario_login,usuario_pass,usuario_pass_hash,nombre_profesional,programa",
-                        "usuario_login": f"eq.{username}",
+                        "usuario_login": f"eq.{user_row.get('usuario_login') or username}",
                         "limit": 1,
                     },
                 )
@@ -1952,7 +1970,7 @@ class HubWindow(tk.Tk):
                     user_row = refreshed[0]
             except Exception:
                 pass
-        self.current_user = username
+        self.current_user = (user_row.get("usuario_login") or username).strip()
         self.current_user_profile = user_row
         try:
             self._normalize_profesional_asignado()
@@ -1966,30 +1984,50 @@ class HubWindow(tk.Tk):
         self._build_body()
 
     def _authenticate_user(self, username, password):
-        params = {
-            "select": "id,usuario_login,usuario_pass,usuario_pass_hash,nombre_profesional,programa",
-            "usuario_login": f"eq.{username}",
-            "limit": 1,
-        }
-        data = presentacion_programa._supabase_get("profesionales", params)
-        if not data:
+        username_norm = _normalize_login_value(username)
+        if not username_norm:
             return None
-        row = data[0]
+        select_fields = "id,usuario_login,usuario_pass,usuario_pass_hash,nombre_profesional,programa"
+        row = None
+        data = presentacion_programa._supabase_get(
+            "profesionales",
+            {
+                "select": select_fields,
+                "usuario_login": f"eq.{username_norm}",
+                "limit": 1,
+            },
+        )
+        if data:
+            row = data[0]
+        else:
+            # Fallback robusto: tolera espacios/mayúsculas/acentos inconsistentes en usuario_login.
+            candidates = presentacion_programa._supabase_get(
+                "profesionales",
+                {"select": select_fields, "limit": 5000},
+            )
+            for item in candidates:
+                if _normalize_login_value(item.get("usuario_login")) == username_norm:
+                    row = item
+                    break
+        if not row:
+            return None
         stored_hash = row.get("usuario_pass_hash")
-        if stored_hash and _verify_password_hash(password, stored_hash):
-            row["_auth_source"] = "hash"
-            return row
+        if stored_hash:
+            for candidate in _password_candidates(password):
+                if _verify_password_hash(candidate, stored_hash):
+                    row["_auth_source"] = "hash"
+                    return row
 
         # Backward-compatible fallback while plaintext credentials still exist.
         plain = str(row.get("usuario_pass") or "")
-        if plain and plain == str(password):
+        if plain and any(plain == candidate for candidate in _password_candidates(password)):
             try:
                 _supabase_upsert(
                     "profesionales",
                     [
                         {
                             "id": row.get("id"),
-                            "usuario_pass_hash": _hash_password(password),
+                            "usuario_pass_hash": _hash_password(password.strip()),
                         }
                     ],
                     on_conflict="id",
@@ -2003,7 +2041,7 @@ class HubWindow(tk.Tk):
     def _must_force_password_change(self, user_row, current_password):
         # Force update for legacy users still relying on plaintext credentials.
         plain = str(user_row.get("usuario_pass") or "")
-        if plain and plain == str(current_password):
+        if plain and any(plain == candidate for candidate in _password_candidates(current_password)):
             return True
         if not user_row.get("usuario_pass_hash"):
             return True
@@ -2806,6 +2844,45 @@ class HubWindow(tk.Tk):
         count = len(self._get_user_drafts())
         self._drafts_btn.config(text=f"Borradores ({count})")
 
+    def _clear_form_memory_caches(self):
+        for module in FORM_MODULE_MAP.values():
+            try:
+                section_cache = getattr(module, "SECTION_1_CACHE", None)
+                if isinstance(section_cache, dict):
+                    section_cache.clear()
+            except Exception:
+                pass
+
+    def _refresh_database_cache(self):
+        if self._refresh_db_btn:
+            self._refresh_db_btn.config(state="disabled", text="Actualizando...")
+
+        def _worker():
+            err = None
+            rows = []
+            try:
+                self._clear_form_memory_caches()
+                rows = self._get_assigned_companies()
+            except Exception as exc:
+                err = exc
+
+            def _done():
+                if self._refresh_db_btn:
+                    self._refresh_db_btn.config(state="normal", text="Actualizar Base de Datos")
+                if err:
+                    messagebox.showwarning("Base de Datos", f"No se pudo actualizar: {err}")
+                    return
+                self._companies_all = rows
+                self._render_companies()
+                self.show_toast("Base de datos actualizada")
+
+            try:
+                self.after(0, _done)
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _save_current_form_draft(self, window):
         form_id = getattr(window, "_form_id", "") or ""
         form_name = getattr(window, "_form_name", "") or form_id
@@ -3061,6 +3138,12 @@ class HubWindow(tk.Tk):
             command=self._open_drafts_window,
         )
         self._drafts_btn.pack(side="right")
+        self._refresh_db_btn = ttk.Button(
+            left_header,
+            text="Actualizar Base de Datos",
+            command=self._refresh_database_cache,
+        )
+        self._refresh_db_btn.pack(side="right", padx=(0, 8))
         self._refresh_drafts_badge()
 
         forms = get_forms()

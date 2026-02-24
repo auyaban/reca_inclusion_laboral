@@ -1243,35 +1243,11 @@ def get_usuario_reca_by_cedula(cedula, env_path=".env"):
 
 
 def get_empresa_by_nit(nit, env_path=".env"):
-    if not nit:
-        return None
-    nit = "".join(str(nit).split())
-    select_cols = ",".join(sorted(set(SECTION_1_SUPABASE_MAP.values()) | {"nit_empresa"}))
-    params = {
-        "select": select_cols,
-        "nit_empresa": f"eq.{nit}",
-        "limit": 1,
-    }
-    data = _supabase_get("empresas", params, env_path=env_path)
-    return data[0] if data else None
+    return evaluacion_accesibilidad.get_empresa_by_nit(nit, env_path=env_path)
 
 
 def get_empresa_by_nombre(nombre, env_path=".env"):
-    if not nombre:
-        return None
-    nombre = " ".join(str(nombre).split())
-    select_cols = ",".join(sorted(set(SECTION_1_SUPABASE_MAP.values()) | {"nit_empresa"}))
-    params = {
-        "select": select_cols,
-        "nombre_empresa": f"ilike.{nombre}",
-        "limit": 2,
-    }
-    data = _supabase_get("empresas", params, env_path=env_path)
-    if not data:
-        return None
-    if len(data) > 1:
-        raise ValueError("Hay más de una empresa con ese nombre. Usa el NIT.")
-    return data[0]
+    return evaluacion_accesibilidad.get_empresa_by_nombre(nombre, env_path=env_path)
 
 
 def get_empresas_by_nombre_prefix(prefix, env_path=".env", limit=10):

@@ -1408,13 +1408,52 @@ def get_empresa_by_nit(nit, env_path=".env"):
         return None
     nit = "".join(str(nit).split())
     select_cols = ",".join(sorted(set(SECTION_1_SUPABASE_MAP.values()) | {"nit_empresa"}))
+
+    def _normalize_nit(value):
+        return re.sub(r"[^0-9A-Za-z]+", "", str(value or "")).lower()
+
+    def _nit_candidates(value):
+        raw = "".join(str(value or "").split())
+        compact = re.sub(r"[^0-9A-Za-z]+", "", raw)
+        candidates = []
+        for cand in (raw, compact):
+            if cand and cand not in candidates:
+                candidates.append(cand)
+        if compact.isdigit() and len(compact) > 1:
+            with_dash = f"{compact[:-1]}-{compact[-1]}"
+            if with_dash not in candidates:
+                candidates.append(with_dash)
+        return candidates
+
+    # 1) Intentos exactos con variantes comunes.
+    for candidate in _nit_candidates(nit):
+        params = {
+            "select": select_cols,
+            "nit_empresa": f"eq.{candidate}",
+            "limit": 1,
+        }
+        data = _supabase_get("empresas", params, env_path=env_path)
+        if data:
+            return data[0]
+
+    # 2) Fallback por coincidencia normalizada (con/sin guion/simbolos).
+    normalized_target = _normalize_nit(nit)
+    if not normalized_target:
+        return None
     params = {
         "select": select_cols,
-        "nit_empresa": f"eq.{nit}",
-        "limit": 1,
+        "nit_empresa": f"ilike.%{normalized_target}%",
+        "limit": 20,
     }
-    data = _supabase_get("empresas", params, env_path=env_path)
-    return data[0] if data else None
+    rows = _supabase_get("empresas", params, env_path=env_path)
+    if not rows:
+        return None
+    exact = [row for row in rows if _normalize_nit(row.get("nit_empresa")) == normalized_target]
+    if len(exact) == 1:
+        return exact[0]
+    if len(rows) == 1:
+        return rows[0]
+    return None
 
 
 def get_empresa_by_nombre(nombre, env_path=".env"):
@@ -1425,14 +1464,33 @@ def get_empresa_by_nombre(nombre, env_path=".env"):
     params = {
         "select": select_cols,
         "nombre_empresa": f"ilike.{nombre}",
-        "limit": 2,
+        "limit": 5,
     }
     data = _supabase_get("empresas", params, env_path=env_path)
-    if not data:
+    if len(data) == 1:
+        return data[0]
+
+    def _normalize_name(value):
+        return re.sub(r"\s+", " ", str(value or "")).strip().lower()
+
+    target = _normalize_name(nombre)
+    # Fallback por coincidencia parcial para bases grandes y variaciones menores.
+    params = {
+        "select": select_cols,
+        "nombre_empresa": f"ilike.%{nombre}%",
+        "limit": 50,
+    }
+    candidates = _supabase_get("empresas", params, env_path=env_path)
+    if not candidates:
         return None
-    if len(data) > 1:
+    exact = [row for row in candidates if _normalize_name(row.get("nombre_empresa")) == target]
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
         raise ValueError("Hay más de una empresa con ese nombre. Usa el NIT.")
-    return data[0]
+    if len(candidates) == 1:
+        return candidates[0]
+    raise ValueError("Hay más de una empresa con ese nombre. Usa el NIT.")
 
 
 def get_empresas_by_nombre_prefix(prefix, env_path=".env", limit=10):

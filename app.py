@@ -2132,7 +2132,32 @@ class HubWindow(tk.Tk):
             aliases.add(self._norm_match(f"{parts[0]} {parts[-1]}"))
         if len(parts) >= 3:
             aliases.add(self._norm_match(f"{parts[0]} {parts[-2]}"))
+        # Alias de pares contiguos: "alejandra perez", "laura alejandra", etc.
+        for idx in range(len(parts) - 1):
+            aliases.add(self._norm_match(f"{parts[idx]} {parts[idx + 1]}"))
+        # Nombres compuestos + apellidos (patron comun en Colombia).
+        if len(parts) >= 4:
+            given_names = parts[:-2]
+            surnames = parts[-2:]
+            for given in given_names:
+                for surname in surnames:
+                    aliases.add(self._norm_match(f"{given} {surname}"))
+            aliases.add(self._norm_match(" ".join(surnames)))
         return aliases
+
+    def _is_profesional_match(self, asignado_text, aliases):
+        asignado_norm = self._norm_match(asignado_text)
+        if not asignado_norm:
+            return False
+        if asignado_norm in aliases:
+            return True
+        # Permite match parcial solo para alias suficientemente descriptivos.
+        for alias in aliases:
+            if len(alias) < 7:
+                continue
+            if alias in asignado_norm or asignado_norm in alias:
+                return True
+        return False
 
     def _normalize_profesional_asignado(self):
         profesionales = presentacion_programa._supabase_get(
@@ -2218,7 +2243,7 @@ class HubWindow(tk.Tk):
         assigned = []
         for row in empresas:
             asignado = (row.get("profesional_asignado") or "").strip()
-            if self._norm_match(asignado) in aliases:
+            if self._is_profesional_match(asignado, aliases):
                 assigned.append(row)
         assigned.sort(key=lambda r: self._norm_match(r.get("nombre_empresa") or ""))
         return assigned
@@ -5924,6 +5949,15 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             'profesional_asignado': 'Profesional asignado RECA',
         }
         _section1_build_groups(self, parent, groups, labels)
+
+    def _set_readonly_value(self, field_id, value):
+        entry = self.fields.get(field_id)
+        if not entry:
+            return
+        entry.configure(state="normal")
+        entry.delete(0, tk.END)
+        entry.insert(0, value if value is not None else "")
+        entry.configure(state="readonly")
 
     def _search_company(self, mode="nit"):
         nit = self.fields["nit_empresa"].get().strip()

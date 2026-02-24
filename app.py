@@ -478,9 +478,109 @@ def _finalize_export_flow(window, loading, output_path, form_name, company_name,
         hub.start_drive_upload(output_path, cleanup_local=False, company_name=company_name)
 
 
+def _clear_sticky_actions(window):
+    after_id = getattr(window, "_sticky_actions_after_id", None)
+    if after_id:
+        try:
+            window.after_cancel(after_id)
+        except Exception:
+            pass
+        try:
+            window._sticky_actions_after_id = None
+        except Exception:
+            pass
+    bar = getattr(window, "_sticky_actions_bar", None)
+    if bar and bar.winfo_exists():
+        try:
+            bar.destroy()
+        except Exception:
+            pass
+    try:
+        window._sticky_actions_bar = None
+    except Exception:
+        pass
+    try:
+        window._sticky_actions_source = None
+    except Exception:
+        pass
+    try:
+        window._sticky_actions_buttons = []
+    except Exception:
+        pass
+
+
+def _install_sticky_actions(frame):
+    try:
+        window = frame.winfo_toplevel()
+    except Exception:
+        return
+    if not isinstance(window, (tk.Tk, tk.Toplevel)):
+        return
+
+    source_buttons = [w for w in frame.winfo_children() if isinstance(w, ttk.Button)]
+    if not source_buttons:
+        _clear_sticky_actions(window)
+        return
+
+    _clear_sticky_actions(window)
+
+    bar = tk.Frame(window, bg=COLOR_LIGHT_BG, bd=1, relief="solid")
+    inner = tk.Frame(bar, bg=COLOR_LIGHT_BG)
+    inner.pack(padx=10, pady=8)
+
+    sticky_buttons = []
+    for src in source_buttons:
+        clone = ttk.Button(inner, text=src.cget("text"), command=src.invoke)
+        side = "left"
+        padx = (8, 0)
+        try:
+            info = src.pack_info()
+            side = info.get("side", "left")
+        except Exception:
+            pass
+        clone.pack(side=side, padx=padx)
+        sticky_buttons.append((src, clone))
+
+    bar.place(relx=0.5, rely=1.0, anchor="s", y=-10)
+
+    window._sticky_actions_bar = bar
+    window._sticky_actions_source = frame
+    window._sticky_actions_buttons = sticky_buttons
+    window._sticky_actions_after_id = None
+
+    def _sync():
+        source = getattr(window, "_sticky_actions_source", None)
+        bar_widget = getattr(window, "_sticky_actions_bar", None)
+        pairs = getattr(window, "_sticky_actions_buttons", [])
+        if not source or not source.winfo_exists() or not bar_widget or not bar_widget.winfo_exists():
+            _clear_sticky_actions(window)
+            return
+        for src_btn, clone_btn in pairs:
+            if not src_btn.winfo_exists() or not clone_btn.winfo_exists():
+                continue
+            try:
+                clone_btn.configure(text=src_btn.cget("text"))
+                src_state = str(src_btn.cget("state") or "normal")
+                clone_btn.state(["disabled"] if src_state == "disabled" else ["!disabled"])
+            except Exception:
+                continue
+        try:
+            window._sticky_actions_after_id = window.after(250, _sync)
+        except Exception:
+            _clear_sticky_actions(window)
+
+    _sync()
+
+
 def _pack_actions(frame, pad_y=(8, FORM_PADY), pad_x=True):
     padx = FORM_PADX if pad_x else 0
-    frame.pack(fill="x", pady=pad_y, padx=padx)
+    # Keep action buttons grouped and centered to avoid corner placement on small screens.
+    frame.pack(anchor="center", pady=pad_y, padx=padx)
+    # Duplicate actions in a sticky dock so they remain visible even on long scroll sections.
+    try:
+        frame.after_idle(lambda: _install_sticky_actions(frame))
+    except Exception:
+        pass
 
 
 def _section1_build_search(self, parent, include_tipo_visita=False):

@@ -1,0 +1,399 @@
+DISCAPACIDAD VISUAL BAJA VISIÓN	
+"1. Uso de magnificador de pantalla / Lupa
+2. Asegurar un nivel de iluminación adecuado para la escritura de documentos. Incrementar la iluminación con lámparas de apoyo puntual si fuera necesario
+3. Adaptar el teclado convencional (teclas grandes, caracteres grandes y contrastados, marcas táctiles de referencia, etc.)
+4. Evitar cambiar los implementos de trabajo de lugar, en caso de hacerlo indicar a la persona y mostrar en donde quedaron ubicados.
+5. Tener el área de trabajo organizada, con el fin de evitar accidentes y/o incidentes, no obstaculizar el paso en el área de trabajo ni en áreas comunes. 
+6. Permitir que la persona pueda grabar información en caso de capacitaciones, esto como una alternativa a escribir en braille, ya que tiende a ser mucho más extensa.
+7. En caso de ser necesario contar con un monitor amplio. 
+8. Acceso a la información mediante ampliación, contrastes y síntesis de voz.
+9. Asegúrese de asignar un par de apoyo."
+
+DISCAPACIDAD VISUAL PÉRDIDA TOTAL DE LA VISIÓN	
+"1. Uso de Jaws, Magic, el lector de pantalla de Windows/IOS para personas ciegas.
+2. Contar con herramientas para escribir en braille.
+3. Uso de Relieve 
+4. Contar con señales auditivas
+5. Adaptar el teclado convencional (teclas grandes, caracteres grandes y contrastados, marcas táctiles de referencia, etc.)
+6. Evitar cambiar los implementos de trabajo de lugar, en caso de hacerlo indicar a la persona y mostrar en donde quedaron ubicados.
+7. Permitir que la persona pueda grabar información en caso de capacitaciones, esto como una alternativa a escribir en braille, ya que tiende a ser mucho más extensa.
+8. Conversores de texto a audio
+9. Acceso a la información mediante ampliación, contrastes y síntesis de voz.
+10. Asegúrese de asignar un par de apoyo "
+
+DISCAPACIDAD AUDITIVA	
+"1. Contar con el apoyo de un mediador comunicativo (intérprete)
+2. Usar las diferentes ayudas que ofrece el centro de relevo: Relevo de llamadas y Servicio de interpretación en línea SIEL.
+3. Contar con una señal visual que permita orientar a la persona cuando suena el teléfono, suena el timbre o suena una alarma.
+4. Adaptación de material audiovisual (subtítulos en vídeos)
+5. Contar en el área de trabajo con tablero para la comunicación.
+6. Utilizar un lenguaje sencillo y concreto
+7. Contar con una señal visual que permita retomar la atención de la persona; Ejemplo : prender y apagar la luz
+8. Evitar los puestos de trabajo y áreas aisladas. 
+9. Formar al trabajador y a los compañeros en técnicas de comunicación alternativa.
+10. Hacer uso de pictogramas si la persona no cuenta con lenguaje escrito.
+11. Al hablar con la persona, hacer preguntas que requieran respuestas breves o tipo sí/no.
+12. Cuando se hacen reuniones, es importante que la ubicación de las personas sea en mesa redonda, para facilitar la comunicación cara a cara.
+13. Hacer contacto visual cuando se de una instrucción o tenga comunicación con las personas sordas
+14. Asegúrese de asignar un par de apoyo"
+
+DISCAPACIDAD AUDITIVA HIPOACUSIA	
+"1. Reducir, controlar o aislar los ruidos para facilitar la comunicación. 
+2. Contar en el área de trabajo con tablero para la comunicación.
+3. Evitar los puestos de trabajo y áreas aisladas. 
+4. Formar al trabajador y a los compañeros en técnicas de comunicación aumentativa; Ejemplo: correo electrónico, notas escritas, mensajes de texto, uso de WhatsApp
+5. Hacer uso de pictogramas si la persona no cuenta con lenguaje escrito.
+6. En caso de que la persona sea Hipoacúsica, reducir el nivel de ruido para facilitar la comunicación oral, siempre comunicar cara a cara, para facilitar la lectura de labios, siempre y cuando la persona tenga dicha habilidad. 
+7. Cuando se hacen reuniones, es importante que la ubicación de las personas sea en mesa redonda, para facilitar la comunicación cara a cara.
+8. Hacer contacto visual cuando se de una instrucción o tenga comunicación con las hipoacúsicas.
+9. Asegúrese de asignar un par de apoyo "
+
+DISCAPACIDAD INTELECTUAL	
+"1. Asegúrese antes de dar la instrucción tener la atención de la persona.
+2. Al dar la instrucción a la persona, pídale que repita lo que comprendió
+3. Procure dar una instrucción a la vez, paso a paso y verificar su finalización antes de asignar una nueva actividad.
+4. Si la tarea demanda tiempos puntuales de entrega, asegúrese que la persona comprenda y tome nota de la fecha y hora estipulada.
+5. Planifique las actividades diarias, especificando las tareas que se deben realizar en la mañana, al mediodía y en la tarde; Ejemplo: check list - cronograma
+6. Haga uso de agendas, post it (papeles de colores), alarmas en su celular para recordar sus funciones. 
+7. Es importante que la persona tenga a la mano siempre una agenda para tomar nota de las instrucciones o tareas asignadas dentro de la jornada laboral
+8. Si las tareas de la persona demandan hacer conteo o manipulación de dinero, verifique que lo sepa hacer, de no poder, capacite a la persona para manipular de manera correcta la calculadora, esto facilitará hacer sus actividades. 
+9. Recuerde a la persona mantener una buena presentación personal (dotación limpia), dependiendo el cargo (uñas cortas, sin barba, cabello corto o recogido, entre otros). 
+10. Retroalimentar de manera oportuna e inmediata a la persona al cometer errores. 
+11. Dentro de las pausas activas incluir actividades de gimnasia cerebral que le permita a la persona reactivar los dispositivos básicos de aprendizaje (atención, concentración, memoria, percepción)
+12. Si la persona convulsiona valide los medicamentos que utiliza, que tome sus pastas en las horas indicadas, aparte de esto, evite consumir bebidas energizantes o negras, que contengan cafeína, de la misma forma trasnochar.  
+13. Presentar las instrucciones en un vocabulario o nivel de lectura que se aproxime al nivel de comprensión del vinculado
+14. Es importante dar mayor tiempo para que la persona pueda procesar y responder a lo que se está preguntando
+15. Explicar con modelamiento (acción - repetición) las tareas asignadas.
+16. Ser flexible pero no condescendiente con la curva de aprendizaje del vinculado en caso que no tenga experiencia laboral previa. 
+17. Asegúrese de asignar un par de apoyo "
+
+TEA / AUTISMO
+"1. Anticipar las labores que debe realizar dentro de su puesto de trabajo
+2. Anticipar los cambios dentro del contexto laboral (actividades laborales cotidianas, personal nuevo, horarios, lugares de trabajo, entre otros)
+3. Procure dar una instrucci?n a la vez, paso a paso y verificar su finalizaci?n antes de asignar una nueva actividad.
+4. Planifique las actividades diarias, especificando las tareas que se deben realizar en la ma?ana, al mediod?a y en la tarde; Ejemplo: check list - cronograma
+5. Haga uso de agendas, post it (papeles de colores), alarmas en su celular para recordar sus funciones.
+6. Cumplir con los acuerdos pactados para no generar inestabilidad emocional
+7. Aseg?rese de contar con un espacio ?ptimo y libre de contaminaci?n visual y/o auditiva con el fin de facilitar la adaptaci?n del vinculado.
+8. Antes de tomar alg?n objeto que pertenezca a la persona, pregunte si lo puede utilizar.
+9. Si le prestan alg?n elemento que pertenezca a la persona vinculada, aseg?rese de entregarlo de manera personal.
+10. No realizar comentarios, chistes, bromas de doble sentido o hacer sarcasmos. 
+11. Al dar la instrucci?n a la persona, p?dale que repita lo que comprendi?
+12. Si la persona debe hacer uso de objetos cortopunzantes aseg?rese que lo haga bajo supervisi?n
+13. Aseg?rese de asignar un par de apoyo "
+
+DISCAPACIDAD FÍSICA USR	
+"1. La altura de la mesa o superficie de trabajo debe estar comprendida entre 75-80 cm para acomodar al usuario de silla de ruedas.
+2. Dejar un espacio libre debajo de los muebles o escritorios para que al ingresar la silla de ruedas no exista ningún obstáculo en los pies y en el posapies.
+3. Incrementar la altura de la mesa donde se ubicará (extensores de patas, mesa regulable en altura). Es importante garantizar estabilidad, seguridad y robustez de la estructura del mueble.
+4. Dentro del espacio de trabajo, ubique al alcance de la personas los elementos necesarios para el desarrollo de su labor (controles, teléfonos, muebles,entre otros)
+5. Debe procurarse un entorno de trabajo libre de obstáculos y barreras arquitectónicas.
+6. El suelo debe ser adecuado o adaptado (uniforme, no resbaladizo, etc.) y proporcionar los apoyos adecuados que faciliten el desplazamiento y la movilidad
+7. Si las condiciones de la empresa lo permiten ajustar la labor a realizar por medio de teletrabajo
+8. Flexibilizar el horario de ingreso y salida para evitar las horas pico en movilidad
+9. Asegúrese de asignar un par de apoyo "
+
+DISCAPACIDAD FÍSICA	
+"1. En caso que la persona haga uso de muletas, bastón, caminador, prótesis inferior eliminar toda clase de barreras arquitectónicas que puedan impedir el libre desplazamiento dentro de las instalaciones de la compañía
+2. Evitar los desplazamientos innecesarios.
+3. Evitar levantar y correr objetos pesados.
+4. Evite dejar objetos que no se encuentren al alcance de la persona. No se recomienda el uso de taburetes, escaleras, andamios, entre otros.
+5. Brinde los espacios y garantice que el vinculado realice pausas activas durante la jornada laboral.
+6. Asegúrese de asignar un par de apoyo."
+
+DISCAPACIDAD PSICOSOCIAL	
+"1. Planificación de tareas (Riesgos: Carga laboral, estres, cultura organizacional)
+2. Anticipar las labores que debe realizar dentro de su puesto de trabajo
+3. Anticipar los cambios dentro del contexto laboral (actividades laborales cotidianas, personal nuevo, horarios, lugares de trabajo, entre otros)
+4. Cumplir con los acuerdos pactados para no generar inestabilidad emocional
+5. No realizar comentarios, chistes, bromas de doble sentido o hacer sarcasmos. 
+6. Al dar la instrucción a la persona, pídale que repita lo que comprendió
+7. Si la persona debe hacer uso de objetos cortopunzantes asegúrese que lo haga bajo supervisión
+8. Asegúrese antes de dar la instrucción tener la atención de la persona.
+9. Al dar la instrucción a la persona, pídale que repita lo que comprendió
+10. Procure dar una instrucción a la vez, paso a paso y verificar su finalización antes de asignar una nueva actividad.
+11. Supervise a la persona sin invadir su espacio personal
+12. Promover actividades de bienestar en las que pueda participar la persona vinculada
+13. Asegúrese de asignar un par de apoyo."
+
+DISCAPACIDAD MÚLTIPLE FÍSICA - VISUAL	
+"1. En caso que la persona haga uso de muletas, bastón, caminador, prótesis inferior eliminar toda clase de barreras arquitectónicas que puedan impedir el libre desplazamiento dentro de las instalaciones de la compañía
+2. Evitar los desplazamientos innecesarios.
+3. Evitar levantar y correr objetos pesados.
+4. Evite dejar objetos que no se encuentren al alcance de la persona. No se recomienda el uso de taburetes, escaleras, andamios, entre otros.
+5. Brinde los espacios y garantice que el vinculado realice pausas activas durante la jornada laboral.
+6. Asegúrese de asignar un par de apoyo. 
+7.Uso de Jaws, Magic, el lector de pantalla de Windows/IOS para personas ciegas.
+8. Contar con señales auditivas
+9. Evitar cambiar los implementos de trabajo de lugar, en caso de hacerlo indicar a la persona y mostrar en donde quedaron ubicados.
+10. Permitir que la persona pueda grabar información en caso de capacitaciones, esto como una alternativa a escribir en braille, ya que tiende a ser mucho más extensa.
+11. Conversores de texto a audio
+12. Velar por facilitar las condiciones de accesibilidad en los espacios donde se realizan las diferentes actividades de la jornada laboral; no solamente en el espacio del puesto de trabajo. 
+13. Se recomienda que el facilitador promueva el uso de videos con audiodescripción (servicio de apoyo a la comunicación para las personas ciegas o con discapacidad visual consistente en la descripción clara, sucinta y gráfica de lo que ocurre en las producciones audiovisuales)."
+
+DISCAPACIDAD MÚLTIPLE FÍSICA - AUDITIVA	
+"1. En caso que la persona haga uso de muletas, bastón, caminador, prótesis inferior eliminar toda clase de barreras arquitectónicas que puedan impedir el libre desplazamiento dentro de las instalaciones de la compañía.
+2. Evitar los desplazamientos innecesarios.
+3. Evitar levantar y correr objetos pesados.
+4. Evite dejar objetos que no se encuentren al alcance de la persona. No se recomienda el uso de taburetes, escaleras, andamios, entre otros.
+5. Brinde los espacios y garantice que el vinculado realice pausas activas durante la jornada laboral.
+6. Asegúrese de asignar un par de apoyo.
+7. Contar con el apoyo de un mediador comunicativo (intérprete)
+8. Usar las diferentes ayudas que ofrece el centro de relevo: Relevo de llamadas y Servicio de interpretación en línea SIEL.
+9. Contar con una señal visual que permita orientar a la persona cuando suena el teléfono, suena el timbre o suena una alarma.
+10. Adaptación de material audiovisual (subtítulos en vídeos)
+11. Utilizar un lenguaje sencillo y concreto
+12. Formar al trabajador y a los compañeros en técnicas de comunicación alternativa.
+13. Hacer uso de pictogramas si la persona no cuenta con lenguaje escrito.
+14. Cuando se hacen reuniones, es importante que la ubicación de las personas sea en mesa redonda, para facilitar la comunicación cara a cara.
+15. Hacer contacto visual cuando se de una instrucción o tenga comunicación con las personas sordas
+16. Adecuar el escritorio y computadora de manera ergonómica que permita el descanso de las articulaciones. 
+17. Manejo de intérprete para la lectura del contrato. 
+18. Se recomienda minimizar el uso de pruebas psicotécnicas y reemplazarlas por otras estrategias de selección que permitan alcanzar los mismos objetivos. Solo en caso de que lo anterior no sea posible, se sugiere priorizar la aplicación de pruebas gráficas-proyectivas que buscan identificar rasgos de personalidad. "
+
+DISCAPACIDAD MÚLTIPLE FÍSICA - PSICOSOCIAL	
+"1. En caso que la persona haga uso de muletas, bastón, caminador, prótesis inferior eliminar toda clase de barreras arquitectónicas que puedan impedir el libre desplazamiento dentro de las instalaciones de la compañía.
+2. Evitar los desplazamientos innecesarios.
+3. Evitar levantar y correr objetos pesados.
+4. Evite dejar objetos que no se encuentren al alcance de la persona. No se recomienda el uso de taburetes, escaleras, andamios, entre otros.
+5. Brinde los espacios y garantice que el vinculado realice pausas activas durante la jornada laboral.
+6. Asegúrese de asignar un par de apoyo. 
+7. Planificación de tareas (Riesgos: Carga laboral, estrés, cultura organizacional).
+8. Anticipar las labores que debe realizar dentro de su puesto de trabajo.
+9. Anticipar los cambios dentro del contexto laboral (actividades laborales cotidianas, personal nuevo, horarios, lugares de trabajo, entre otros). 
+10. Reduzca los comentarios, chistes, bromas de doble sentido o hacer sarcasmos, sin el consentimiento de la persona.
+11. Al dar la instrucción a la persona, pídale que repita lo que comprendió, para garantizar la información.
+12. Si la persona debe hacer uso de objetos cortopunzantes asegúrese que lo haga bajo supervisión
+13. Asegúrese antes de dar la instrucción tener la atención de la persona.
+14. Procure dar una instrucción a la vez, paso a paso y verificar su finalización antes de asignar una nueva actividad.
+15. Supervise a la persona sin invadir su espacio personal.
+16. Promover actividades de bienestar en las que pueda participar la persona vinculada.
+17. Facilidades para realizar pausas activas para minimizar el riesgo de rigidez articular. 
+18. Asegurar que el lugar elegido sea adecuado para que la persona pueda participar con claridad y tranquilidad.
+19. Si se requiere ayudar a cambiar de posición a una persona con movilidad reducida se le debe advertir o acordar con ella la maniobra que se va a realizar, especialmente si es usuario de alguna ayuda mecánica de apoyo como silla de ruedas o caminador.
+20. Considerar que la discapacidad psicosocial es una afectación que en la mayoría de los casos se puede generar en los mismos contextos laborales y es ahí donde la pregunta por la salud mental cobra gran relevancia.
+"
+DISCAPACIDAD MÚLTIPLE FÍSICA - INTELECTUAL	"1. En caso que la persona haga uso de muletas, bastón, caminador, prótesis inferior eliminar toda clase de barreras arquitectónicas que puedan impedir el libre desplazamiento dentro de las instalaciones de la compañía.
+2. Evitar los desplazamientos innecesarios.
+3. Evitar levantar y correr objetos pesados.
+4. Evite dejar objetos que no se encuentren al alcance de la persona. No se recomienda el uso de taburetes, escaleras, andamios, entre otros.
+5. Brinde los espacios y garantice que el vinculado realice pausas activas durante la jornada laboral.
+6. Asegúrese de asignar un par de apoyo. 
+7. Asegúrese antes de dar la instrucción tener la atención de la persona.
+8. Al dar la instrucción a la persona, pídale que repita lo que comprendió
+9. Procure dar una instrucción a la vez, paso a paso y verificar su finalización antes de asignar una nueva actividad.
+10. Si la tarea demanda tiempos puntuales de entrega, asegúrese que la persona comprenda y tome nota de la fecha y hora estipulada.
+11. Planifique las actividades diarias, especificando las tareas que se deben realizar en la mañana, al mediodía y en la tarde; Ejemplo: check list - cronograma
+12. Haga uso de agendas, post it (papeles de colores), alarmas en su celular para recordar sus funciones.
+13. Recuerde a la persona mantener una buena presentación personal (dotación limpia), dependiendo el cargo (uñas cortas, sin barba, cabello corto o recogido, entre otros).
+14. Retroalimentar de manera oportuna e inmediata a la persona al cometer errores.
+15. Si la persona convulsiona valide los medicamentos que utiliza, que tome sus pastas en las horas indicadas, aparte de esto, evite consumir bebidas energizantes o negras, que contengan cafeína, de la misma forma trasnochar.
+16. Presentar las instrucciones en un vocabulario o nivel de lectura que se aproxime al nivel de comprensión del vinculado
+17. Explicar con modelamiento (acción - repetición) las tareas asignadas.
+18. Ser flexible pero no condescendiente con la curva de aprendizaje del vinculado en caso que no tenga experiencia laboral previa.
+19. Asegurarse de que el entorno sea cómodo y seguro para todos los participantes.
+20. Manejo de lenguaje claro, con la disminución de palabras técnicas.
+21. Se recomienda dejar un espacio considerable en las hileras donde están ubicadas las sillas para que la persona se pueda ubicar fácilmente en él y ojalá en los extremos para que la persona pueda salir y/o ingresar al salón cuando lo requiera sin mayores contratiempos.
+22. A algunas Personas con discapacidad intelectual se les facilita este proceso con actividades prácticas que les permite “aprender haciendo”.
+"
+DISCAPACIDAD MÚLTIPLE FÍSICA - BAJA VISIÓN	"1. En caso que la persona haga uso de muletas, bastón, caminador, prótesis inferior eliminar toda clase de barreras arquitectónicas que puedan impedir el libre desplazamiento dentro de las instalaciones de la compañía.
+2. Evitar los desplazamientos innecesarios.
+3. Evitar levantar y correr objetos pesados.
+4. Evite dejar objetos que no se encuentren al alcance de la persona. No se recomienda el uso de taburetes, escaleras, andamios, entre otros.
+5. Brinde los espacios y garantice que el vinculado realice pausas activas durante la jornada laboral.
+6. Asegúrese de asignar un par de apoyo. 
+7. Uso de magnificador de pantalla / Lupa
+8. Asegurar un nivel de iluminación adecuado para la escritura de documentos. Incrementar la iluminación con lámparas de apoyo puntual si fuera necesario
+9. Adaptar el teclado convencional (teclas grandes, caracteres grandes y contrastados, marcas táctiles de referencia, etc.)
+10. Evitar cambiar los implementos de trabajo de lugar, en caso de hacerlo indicar a la persona y mostrar en donde quedaron ubicados.
+11. Tener el área de trabajo organizada, con el fin de evitar accidentes y/o incidentes, no obstaculizar el paso en el área de trabajo ni en áreas comunes.
+12. Permitir que la persona pueda grabar información en caso de capacitaciones, esto como una alternativa a escribir en braille, ya que tiende a ser mucho más extensa.
+13. En caso de ser necesario contar con un monitor amplio.
+14. Acceso a la información mediante ampliación, contrastes y síntesis de voz.
+15. Adecuar el escritorio y computadora de manera ergonómica que permita el descanso de las articulaciones. 
+16. Tener en cuenta el manejo del tono de voz, para los oferentes que tienen implante coclear o audífono.
+17. Adecuar el escritorio y computadora de manera ergonómica que permita el descanso de las articulaciones."
+DISCAPACIDAD MÚLTIPLE FÍSICA - HIPOACUSIA	"1. En caso que la persona haga uso de muletas, bastón, caminador, prótesis inferior eliminar toda clase de barreras arquitectónicas que puedan impedir el libre desplazamiento dentro de las instalaciones de la compañía.
+2. Evitar los desplazamientos innecesarios.
+3. Evitar levantar y correr objetos pesados.
+4. Evite dejar objetos que no se encuentren al alcance de la persona. No se recomienda el uso de taburetes, escaleras, andamios, entre otros.
+5. Brinde los espacios y garantice que el vinculado realice pausas activas durante la jornada laboral.
+6. Asegúrese de asignar un par de apoyo. 
+7. Reducir, controlar o aislar los ruidos para facilitar la comunicación.
+8. Contar en el área de trabajo con tablero para la comunicación.
+9. Evitar los puestos de trabajo y áreas aisladas.
+10. Formar al trabajador y a los compañeros en técnicas de comunicación aumentativa; Ejemplo: correo electrónico, notas escritas, mensajes de texto, uso de WhatsApp
+11. Hacer uso de pictogramas si la persona no cuenta con lenguaje escrito.
+12. En caso de que la persona sea Hipoacúsica, reducir el nivel de ruido para facilitar la comunicación oral, siempre comunicar cara a cara, para facilitar la lectura de labios, siempre y cuando la persona tenga dicha habilidad.
+13. Cuando se hacen reuniones, es importante que la ubicación de las personas sea en mesa redonda, para facilitar la comunicación cara a cara.
+14. Adecuar el escritorio y computadora de manera ergonómica que permita el descanso de las articulaciones. 
+15. Tener en cuenta el manejo del tono de voz, para los oferentes que tienen implante coclear o audífono.
+16. Adecuar el escritorio y computadora de manera ergonómica que permita el descanso de las articulaciones.
+17. Para personas con hipoacusia que no manejan la lengua de señas, pero se apoyan en la lectura labio-facial;  se les debe hablar de frente, de forma clara y concreta, vocalizando y haciendo uso del lenguaje corporal a la hora de quererse comunicar.
+"
+DISCAPACIDAD MÚLTIPLE PSICOSOCIAL - HIPOACUSIA	"1. Planificación de tareas (Riesgos: Carga laboral, estrés, cultura organizacional).
+2. Anticipar las labores que debe realizar dentro de su puesto de trabajo.
+3. Anticipar los cambios dentro del contexto laboral (actividades laborales cotidianas, personal nuevo, horarios, lugares de trabajo, entre otros). 
+4. Reduzca los comentarios, chistes, bromas de doble sentido o hacer sarcasmos, sin el consentimiento de la persona.
+5. Al dar la instrucción a la persona, pídale que repita lo que comprendió, para garantizar la información.
+6. Si la persona debe hacer uso de objetos cortopunzantes asegúrese que lo haga bajo supervisión
+7. Asegúrese antes de dar la instrucción tener la atención de la persona.
+8. Procure dar una instrucción a la vez, paso a paso y verificar su finalización antes de asignar una nueva actividad.
+9. Supervise a la persona sin invadir su espacio personal.
+10. Promover actividades de bienestar en las que pueda participar la persona vinculada.
+11. Asegurar que el lugar elegido sea adecuado para que la persona pueda participar con claridad y tranquilidad.
+12. Considerar que la discapacidad psicosocial es una afectación que en la mayoría de los casos se puede generar en los mismos contextos laborales y es ahí donde la pregunta por la salud mental cobra gran relevancia.
+13. Reducir, controlar o aislar los ruidos para facilitar la comunicación.
+14. Formar al trabajador y a los compañeros en técnicas de comunicación aumentativa; Ejemplo: correo electrónico, notas escritas, mensajes de texto, uso de WhatsApp
+15. Hacer uso de pictogramas si la persona no cuenta con lenguaje escrito.
+16. En caso de que la persona sea Hipoacúsica, reducir el nivel de ruido para facilitar la comunicación oral, siempre comunicar cara a cara, para facilitar la lectura de labios, siempre y cuando la persona tenga dicha habilidad.
+17. Cuando se hacen reuniones, es importante que la ubicación de las personas sea en mesa redonda, para facilitar la comunicación cara a cara.
+18. Tener en cuenta el manejo del tono de voz, para los oferentes que tienen implante coclear o audífono.
+19. Para personas con hipoacusia que no manejan la lengua de señas, pero se apoyan en la lectura labio-facial; se les debe hablar de frente, de forma clara y concreta, vocalizando y haciendo uso del lenguaje corporal a la hora de quererse comunicar.
+20. Realizar la firma del contrato en un entorno sereno, evitando presiones o interrupciones que puedan generar estrés o incomodidad."
+DISCAPACIDAD MÚLTIPLE PSICOSOCIAL - AUDITIVA	"1. Planificación de tareas (Riesgos: Carga laboral, estrés, cultura organizacional).
+2. Anticipar las labores que debe realizar dentro de su puesto de trabajo.
+3. Anticipar los cambios dentro del contexto laboral (actividades laborales cotidianas, personal nuevo, horarios, lugares de trabajo, entre otros). 
+4. Reduzca los comentarios, chistes, bromas de doble sentido o hacer sarcasmos, sin el consentimiento de la persona.
+5. Al dar la instrucción a la persona, pídale que repita lo que comprendió, para garantizar la información.
+6. Si la persona debe hacer uso de objetos cortopunzantes asegúrese que lo haga bajo supervisión
+7. Asegúrese antes de dar la instrucción tener la atención de la persona.
+8. Procure dar una instrucción a la vez, paso a paso y verificar su finalización antes de asignar una nueva actividad.
+9. Supervise a la persona sin invadir su espacio personal.
+10. Promover actividades de bienestar en las que pueda participar la persona vinculada.
+11. Asegurar que el lugar elegido sea adecuado para que la persona pueda participar con claridad y tranquilidad.
+12. Considerar que la discapacidad psicosocial es una afectación que en la mayoría de los casos se puede generar en los mismos contextos laborales y es ahí donde la pregunta por la salud mental cobra gran relevancia.
+13. Reducir, controlar o aislar los ruidos para facilitar la comunicación.
+14. Asegúrese de asignar un par de apoyo.
+15. Contar con el apoyo de un mediador comunicativo (intérprete)
+16. Usar las diferentes ayudas que ofrece el centro de relevo: Relevo de llamadas y Servicio de interpretación en línea SIEL.
+17. Contar con una señal visual que permita orientar a la persona cuando suena el teléfono, suena el timbre o suena una alarma.
+18. Adaptación de material audiovisual (subtítulos en vídeos)
+19. Utilizar un lenguaje sencillo y concreto
+20. Formar al trabajador y a los compañeros en técnicas de comunicación alternativa.
+21. Hacer uso de pictogramas si la persona no cuenta con lenguaje escrito.
+22. Cuando se hacen reuniones, es importante que la ubicación de las personas sea en mesa redonda, para facilitar la comunicación cara a cara.
+23. Hacer contacto visual cuando se de una instrucción o tenga comunicación con las personas sordas
+26. Se recomienda minimizar el uso de pruebas psicotécnicas y reemplazarlas por otras estrategias de selección que permitan alcanzar los mismos objetivos. Solo en caso de que lo anterior no sea posible, se sugiere priorizar la aplicación de pruebas gráficas-proyectivas que buscan identificar rasgos de personalidad."
+DISCAPACIDAD MÚLTIPLE PSICOSOCIAL - BAJA VISIÓN	"1. Planificación de tareas (Riesgos: Carga laboral, estrés, cultura organizacional).
+2. Anticipar las labores que debe realizar dentro de su puesto de trabajo.
+3. Anticipar los cambios dentro del contexto laboral (actividades laborales cotidianas, personal nuevo, horarios, lugares de trabajo, entre otros). 
+4. Reduzca los comentarios, chistes, bromas de doble sentido o hacer sarcasmos, sin el consentimiento de la persona.
+5. Al dar la instrucción a la persona, pídale que repita lo que comprendió, para garantizar la información.
+6. Si la persona debe hacer uso de objetos cortopunzantes asegúrese que lo haga bajo supervisión
+7. Asegúrese antes de dar la instrucción tener la atención de la persona.
+8. Procure dar una instrucción a la vez, paso a paso y verificar su finalización antes de asignar una nueva actividad.
+9. Supervise a la persona sin invadir su espacio personal.
+10. Promover actividades de bienestar en las que pueda participar la persona vinculada.
+11. Asegurar que el lugar elegido sea adecuado para que la persona pueda participar con claridad y tranquilidad.
+12. Considerar que la discapacidad psicosocial es una afectación que en la mayoría de los casos se puede generar en los mismos contextos laborales y es ahí donde la pregunta por la salud mental cobra gran relevancia.
+13. Reducir, controlar o aislar los ruidos para facilitar la comunicación.
+14. Uso de magnificador de pantalla / Lupa
+15. Asegurar un nivel de iluminación adecuado para la escritura de documentos. Incrementar la iluminación con lámparas de apoyo puntual si fuera necesario
+16. Adaptar el teclado convencional (teclas grandes, caracteres grandes y contrastados, marcas táctiles de referencia, etc.)
+17. Evitar cambiar los implementos de trabajo de lugar, en caso de hacerlo indicar a la persona y mostrar en donde quedaron ubicados.
+18. Tener el área de trabajo organizada, con el fin de evitar accidentes y/o incidentes, no obstaculizar el paso en el área de trabajo ni en áreas comunes.
+19. Permitir que la persona pueda grabar información en caso de capacitaciones, esto como una alternativa a escribir en braille, ya que tiende a ser mucho más extensa.
+20. En caso de ser necesario contar con un monitor amplio.
+21. Acceso a la información mediante ampliación, contrastes y síntesis de voz.
+22. Adecuar el escritorio y computadora de manera ergonómica que permita el descanso de las articulaciones. 
+23. Tener en cuenta el manejo del tono de voz, para los oferentes que tienen implante coclear o audífono.
+24. Adecuar el escritorio y computadora de manera ergonómica que permita el descanso de las articulaciones."
+
+DISCAPACIDAD MÚLTIPLE PSICOSOCIAL - VISUAL	
+"1. Planificación de tareas (Riesgos: Carga laboral, estrés, cultura organizacional).
+2. Anticipar las labores que debe realizar dentro de su puesto de trabajo.
+3. Anticipar los cambios dentro del contexto laboral (actividades laborales cotidianas, personal nuevo, horarios, lugares de trabajo, entre otros). 
+4. Reduzca los comentarios, chistes, bromas de doble sentido o hacer sarcasmos, sin el consentimiento de la persona.
+5. Al dar la instrucción a la persona, pídale que repita lo que comprendió, para garantizar la información.
+6. Si la persona debe hacer uso de objetos cortopunzantes asegúrese que lo haga bajo supervisión
+7. Asegúrese antes de dar la instrucción tener la atención de la persona.
+8. Procure dar una instrucción a la vez, paso a paso y verificar su finalización antes de asignar una nueva actividad.
+9. Supervise a la persona sin invadir su espacio personal.
+10. Promover actividades de bienestar en las que pueda participar la persona vinculada.
+11. Asegurar que el lugar elegido sea adecuado para que la persona pueda participar con claridad y tranquilidad.
+12. Considerar que la discapacidad psicosocial es una afectación que en la mayoría de los casos se puede generar en los mismos contextos laborales y es ahí donde la pregunta por la salud mental cobra gran relevancia.
+13. Reducir, controlar o aislar los ruidos para facilitar la comunicación.
+14. Asegúrese de asignar un par de apoyo. 
+15.Uso de Jaws, Magic, el lector de pantalla de Windows/IOS para personas ciegas.
+16. Contar con señales auditivas
+17. Evitar cambiar los implementos de trabajo de lugar, en caso de hacerlo indicar a la persona y mostrar en donde quedaron ubicados.
+18. Permitir que la persona pueda grabar información en caso de capacitaciones, esto como una alternativa a escribir en braille, ya que tiende a ser mucho más extensa.
+19. Conversores de texto a audio
+20. Velar por facilitar las condiciones de accesibilidad en los espacios donde se realizan las diferentes actividades de la jornada laboral; no solamente en el espacio del puesto de trabajo. 
+21. Se recomienda que el facilitador promueva el uso de videos con audiodescripción (servicio de apoyo a la comunicación para las personas ciegas o con discapacidad visual consistente en la descripción clara, sucinta y gráfica de lo que ocurre en las producciones audiovisuales)."
+
+DISCAPACIDAD MÚLTIPLE PSICOSOCIAL– INTELECTUAL	
+"1. Planificación de tareas (Riesgos: Carga laboral, estrés, cultura organizacional).
+2. Anticipar las labores que debe realizar dentro de su puesto de trabajo.
+3. Anticipar los cambios dentro del contexto laboral (actividades laborales cotidianas, personal nuevo, horarios, lugares de trabajo, entre otros). 
+4. Reduzca los comentarios, chistes, bromas de doble sentido o hacer sarcasmos, sin el consentimiento de la persona.
+5. Al dar la instrucción a la persona, pídale que repita lo que comprendió, para garantizar la información.
+6. Si la persona debe hacer uso de objetos cortopunzantes asegúrese que lo haga bajo supervisión
+7. Asegúrese antes de dar la instrucción tener la atención de la persona.
+8. Procure dar una instrucción a la vez, paso a paso y verificar su finalización antes de asignar una nueva actividad.
+9. Supervise a la persona sin invadir su espacio personal.
+10. Promover actividades de bienestar en las que pueda participar la persona vinculada.
+11. Asegurar que el lugar elegido sea adecuado para que la persona pueda participar con claridad y tranquilidad.
+12. Considerar que la discapacidad psicosocial es una afectación que en la mayoría de los casos se puede generar en los mismos contextos laborales y es ahí donde la pregunta por la salud mental cobra gran relevancia.
+13. Reducir, controlar o aislar los ruidos para facilitar la comunicación.
+14. Asegúrese de asignar un par de apoyo. 
+15. Al dar la instrucción a la persona, pídale que repita lo que comprendió
+16. Si la tarea demanda tiempos puntuales de entrega, asegúrese que la persona comprenda y tome nota de la fecha y hora estipulada.
+17. Planifique las actividades diarias, especificando las tareas que se deben realizar en la mañana, al mediodía y en la tarde; Ejemplo: check list - cronograma
+18. Haga uso de agendas, post it (papeles de colores), alarmas en su celular para recordar sus funciones.
+19. Recuerde a la persona mantener una buena presentación personal (dotación limpia), dependiendo el cargo (uñas cortas, sin barba, cabello corto o recogido, entre otros).
+20. Retroalimentar de manera oportuna e inmediata a la persona al cometer errores.
+21. Si la persona convulsiona valide los medicamentos que utiliza, que tome sus pastas en las horas indicadas, aparte de esto, evite consumir bebidas energizantes o negras, que contengan cafeína, de la misma forma trasnochar.
+22. Explicar con modelamiento (acción - repetición) las tareas asignadas.
+23. Ser flexible pero no condescendiente con la curva de aprendizaje del vinculado en caso que no tenga experiencia laboral previa.
+24. Manejo de lenguaje claro, con la disminución de palabras técnicas.
+25. Se recomienda dejar un espacio considerable en las hileras donde están ubicadas las sillas para que la persona se pueda ubicar fácilmente en él y ojalá en los extremos para que la persona pueda salir y/o ingresar al salón cuando lo requiera sin mayores contratiempos.
+26. A algunas Personas con discapacidad intelectual se les facilita este proceso con actividades prácticas que les permite “aprender haciendo”.
+"
+DISCAPACIDAD MÚLTIPLE AUDITIVA - INTELECTUAL	
+"1. Asegúrese de asignar un par de apoyo. 
+2. Al dar la instrucción a la persona, pídale que repita lo que comprendió
+3. Si la tarea demanda tiempos puntuales de entrega, asegúrese que la persona comprenda y tome nota de la fecha y hora estipulada.
+4. Planifique las actividades diarias, especificando las tareas que se deben realizar en la mañana, al mediodía y en la tarde; Ejemplo: check list - cronograma
+5. Haga uso de agendas, post it (papeles de colores), alarmas en su celular para recordar sus funciones.
+6. Recuerde a la persona mantener una buena presentación personal (dotación limpia), dependiendo el cargo (uñas cortas, sin barba, cabello corto o recogido, entre otros).
+7. Retroalimentar de manera oportuna e inmediata a la persona al cometer errores.
+8. Si la persona convulsiona valide los medicamentos que utiliza, que tome sus pastas en las horas indicadas, aparte de esto, evite consumir bebidas energizantes o negras, que contengan cafeína, de la misma forma trasnochar.
+9. Explicar con modelamiento (acción - repetición) las tareas asignadas.
+10. Ser flexible pero no condescendiente con la curva de aprendizaje del vinculado en caso que no tenga experiencia laboral previa.
+11. Manejo de lenguaje claro, con la disminución de palabras técnicas.
+12. Se recomienda dejar un espacio considerable en las hileras donde están ubicadas las sillas para que la persona se pueda ubicar fácilmente en él y ojalá en los extremos para que la persona pueda salir y/o ingresar al salón cuando lo requiera sin mayores contratiempos.
+13. A algunas Personas con discapacidad intelectual se les facilita este proceso con actividades prácticas que les permite “aprender haciendo”.
+14. Contar con el apoyo de un mediador comunicativo (intérprete)
+15. Usar las diferentes ayudas que ofrece el centro de relevo: Relevo de llamadas y Servicio de interpretación en línea SIEL.
+16. Contar con una señal visual que permita orientar a la persona cuando suena el teléfono, suena el timbre o suena una alarma.
+17. Adaptación de material audiovisual (subtítulos en vídeos)
+18. Utilizar un lenguaje sencillo y concreto
+19. Formar al trabajador y a los compañeros en técnicas de comunicación alternativa.
+20. Hacer uso de pictogramas si la persona no cuenta con lenguaje escrito.
+21. Cuando se hacen reuniones, es importante que la ubicación de las personas sea en mesa redonda, para facilitar la comunicación cara a cara.
+22. Hacer contacto visual cuando se de una instrucción o tenga comunicación con las personas sordas
+23. Se recomienda minimizar el uso de pruebas psicotécnicas y reemplazarlas por otras estrategias de selección que permitan alcanzar los mismos objetivos. Solo en caso de que lo anterior no sea posible, se sugiere priorizar la aplicación de pruebas gráficas-proyectivas que buscan identificar rasgos de personalidad.
+"
+DISCAPACIDAD MÚLTIPLE VISUAL- INTELECTUAL	
+"1. Asegúrese de asignar un par de apoyo. 
+2. Al dar la instrucción a la persona, pídale que repita lo que comprendió
+3. Si la tarea demanda tiempos puntuales de entrega, asegúrese que la persona comprenda y tome nota de la fecha y hora estipulada.
+4. Planifique las actividades diarias, especificando las tareas que se deben realizar en la mañana, al mediodía y en la tarde; Ejemplo: check list - cronograma
+5. Haga uso de agendas, post it (papeles de colores), alarmas en su celular para recordar sus funciones.
+6. Recuerde a la persona mantener una buena presentación personal (dotación limpia), dependiendo el cargo (uñas cortas, sin barba, cabello corto o recogido, entre otros).
+7. Retroalimentar de manera oportuna e inmediata a la persona al cometer errores.
+8. Si la persona convulsiona valide los medicamentos que utiliza, que tome sus pastas en las horas indicadas, aparte de esto, evite consumir bebidas energizantes o negras, que contengan cafeína, de la misma forma trasnochar.
+9. Explicar con modelamiento (acción - repetición) las tareas asignadas.
+10. Ser flexible pero no condescendiente con la curva de aprendizaje del vinculado en caso que no tenga experiencia laboral previa.
+11. Manejo de lenguaje claro, con la disminución de palabras técnicas.
+12. Se recomienda dejar un espacio considerable en las hileras donde están ubicadas las sillas para que la persona se pueda ubicar fácilmente en él y ojalá en los extremos para que la persona pueda salir y/o ingresar al salón cuando lo requiera sin mayores contratiempos.
+13. A algunas Personas con discapacidad intelectual se les facilita este proceso con actividades prácticas que les permite “aprender haciendo”.
+14.Uso de Jaws, Magic, el lector de pantalla de Windows/IOS para personas ciegas.
+15. Contar con señales auditivas
+16. Evitar cambiar los implementos de trabajo de lugar, en caso de hacerlo indicar a la persona y mostrar en donde quedaron ubicados.
+17. Permitir que la persona pueda grabar información en caso de capacitaciones, esto como una alternativa a escribir en braille, ya que tiende a ser mucho más extensa.
+18. Conversores de texto a audio
+19. Velar por facilitar las condiciones de accesibilidad en los espacios donde se realizan las diferentes actividades de la jornada laboral; no solamente en el espacio del puesto de trabajo. 
+20. Se recomienda que el facilitador promueva el uso de videos con audiodescripción (servicio de apoyo a la comunicación para las personas ciegas o con discapacidad visual consistente en la descripción clara, sucinta y gráfica de lo que ocurre en las producciones audiovisuales)."

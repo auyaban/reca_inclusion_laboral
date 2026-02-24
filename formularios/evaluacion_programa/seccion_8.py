@@ -1,0 +1,28 @@
+SECTION_8 = {
+    "title": "8. ASISTENTES",
+    "max_items": 10,
+    "reca_names": [
+        "Sandra Milena Pachón Rojas",
+        "Sara Zambrano",
+        "Alejandra Pérez",
+        "Lenny Lugo",
+        "Angie Díaz",
+        "Adriana Viveros",
+        "Janeth Camargo",
+        "Gabriela Rubiano Isaza",
+        "Andrés Montes",
+        "Sara Sánchez",
+        "Catalina Salazar",
+    ],
+    "reca_roles": [
+        "Coordinadora de inclusión laboral",
+        "Coordinación de inclusión laboral",
+        "Gestora de inclusión laboral",
+        "Gestor de inclusión laboral",
+        "Profesional de apoyo de inclusión laboral",
+        "Lider empleo inclusivo",
+        "Gestora de proyectos y desarrollo",
+        "Profesional de inclusión laboral",
+        "Directora Fundación Reca",
+    ],
+}

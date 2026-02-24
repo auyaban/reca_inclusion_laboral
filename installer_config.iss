@@ -1,0 +1,5 @@
+#define SupabaseUrl ""
+#define SupabaseKey ""
+#define GithubRepoOwner ""
+#define GithubRepoName ""
+#define InstallerAssetName ""

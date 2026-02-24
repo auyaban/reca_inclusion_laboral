@@ -1,0 +1,28 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual env
+.venv/
+venv/
+
+# Env files
+.env
+
+# Build artifacts
+build/
+dist/
+installer/*.exe
+installer/*.sha256
+*.spec
+
+# Local/runtime
+logs/
+*.log
+
+# OS/IDE
+.vscode/
+.DS_Store
+Thumbs.db

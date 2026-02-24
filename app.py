@@ -11,6 +11,8 @@ import base64
 import hashlib
 import hmac
 import secrets
+import json
+import copy
 from zoneinfo import ZoneInfo
 from datetime import date, datetime
 import tkinter as tk
@@ -74,6 +76,232 @@ DEFAULT_EMPRESA_ESTADOS = [
 ]
 _MOJIBAKE_PATTERNS = ("Ã", "Â", "â€", "ï¿½", "\ufffd", "Ð", "Ñ")
 _ENCODING_CHECK_DONE = False
+DRAFTS_FILE_NAME = "form_drafts_il.json"
+FORM_MODULE_MAP = {
+    "presentacion_programa": presentacion_programa,
+    "evaluacion_accesibilidad": evaluacion_accesibilidad,
+    "condiciones_vacante": condiciones_vacante,
+    "seleccion_incluyente": seleccion_incluyente,
+    "contratacion_incluyente": contratacion_incluyente,
+    "induccion_organizacional": induccion_organizacional,
+    "induccion_operativa": induccion_operativa,
+    "sensibilizacion": sensibilizacion,
+}
+WINDOW_CLASS_FORM_ID_MAP = {
+    "Section1Window": "presentacion_programa",
+    "EvaluacionAccesibilidadWindow": "evaluacion_accesibilidad",
+    "CondicionesVacanteWindow": "condiciones_vacante",
+    "SeleccionIncluyenteWindow": "seleccion_incluyente",
+    "ContratacionIncluyenteWindow": "contratacion_incluyente",
+    "InduccionOrganizacionalWindow": "induccion_organizacional",
+    "InduccionOperativaWindow": "induccion_operativa",
+    "SensibilizacionWindow": "sensibilizacion",
+    "SeguimientosWindow": "seguimientos",
+}
+
+
+def _get_local_cache_dir():
+    local_app_data = os.getenv("LOCALAPPDATA")
+    if local_app_data:
+        base = os.path.join(local_app_data, "RECA", "cache")
+    else:
+        base = os.path.join(os.getcwd(), ".cache")
+    os.makedirs(base, exist_ok=True)
+    return base
+
+
+def _get_drafts_path():
+    return os.path.join(_get_local_cache_dir(), DRAFTS_FILE_NAME)
+
+
+def _load_drafts_store():
+    path = _get_drafts_path()
+    if not os.path.exists(path):
+        return {"version": 1, "users": {}}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle) or {}
+    except Exception:
+        return {"version": 1, "users": {}}
+    if not isinstance(data, dict):
+        return {"version": 1, "users": {}}
+    users = data.get("users")
+    if not isinstance(users, dict):
+        data["users"] = {}
+    data.setdefault("version", 1)
+    return data
+
+
+def _save_drafts_store(data):
+    with open(_get_drafts_path(), "w", encoding="utf-8") as handle:
+        json.dump(data, handle, ensure_ascii=False, indent=2)
+
+
+def _extract_draft_company_name(cache_snapshot):
+    if not isinstance(cache_snapshot, dict):
+        return ""
+    section_1 = cache_snapshot.get("section_1") or {}
+    if isinstance(section_1, dict):
+        company_name = (
+            section_1.get("nombre_empresa")
+            or section_1.get("empresa")
+            or section_1.get("razon_social")
+            or ""
+        )
+        return str(company_name).strip()
+    return ""
+
+
+def _extract_draft_company_key(cache_snapshot):
+    if not isinstance(cache_snapshot, dict):
+        return "sin_clave"
+    section_1 = cache_snapshot.get("section_1") or {}
+    if not isinstance(section_1, dict):
+        return "sin_clave"
+    nit = str(section_1.get("nit_empresa") or section_1.get("nit") or "").strip()
+    if nit:
+        return f"nit:{nit}"
+    company_name = _extract_draft_company_name(cache_snapshot)
+    if company_name:
+        return f"empresa:{_normalize_ascii_text(company_name).lower()}"
+    return "sin_clave"
+
+
+def _resolve_form_meta(form_id):
+    for item in get_forms():
+        if str(item.get("id") or "") == str(form_id or ""):
+            return item
+    return {"id": str(form_id or ""), "name": str(form_id or "")}
+
+
+def _iter_widget_paths(root):
+    def _walk(node, prefix=""):
+        children = list(node.winfo_children())
+        for idx, child in enumerate(children):
+            path = f"{prefix}.{idx}" if prefix else str(idx)
+            yield path, child
+            yield from _walk(child, path)
+
+    yield from _walk(root)
+
+
+def _widget_from_path(root, path):
+    node = root
+    if not path:
+        return None
+    try:
+        for token in str(path).split("."):
+            children = list(node.winfo_children())
+            node = children[int(token)]
+        return node
+    except Exception:
+        return None
+
+
+def _is_descendant_of(widget, ancestor):
+    if not widget or not ancestor:
+        return False
+    node = widget
+    while node is not None:
+        if node == ancestor:
+            return True
+        node = getattr(node, "master", None)
+    return False
+
+
+def _get_widget_value_for_snapshot(widget):
+    try:
+        if isinstance(widget, tk.Text):
+            return widget.get("1.0", tk.END).rstrip("\n")
+        if isinstance(widget, ttk.Combobox):
+            return widget.get()
+        if isinstance(widget, (tk.Entry, DateEntry)):
+            state = str(widget.cget("state") or "")
+            if state == "readonly":
+                return None
+            return widget.get()
+    except Exception:
+        return None
+    return None
+
+
+def _set_widget_value_from_snapshot(widget, value):
+    try:
+        if isinstance(widget, tk.Text):
+            widget.delete("1.0", tk.END)
+            widget.insert("1.0", str(value or ""))
+            return True
+        if isinstance(widget, ttk.Combobox):
+            widget.set(str(value or ""))
+            return True
+        if isinstance(widget, (tk.Entry, DateEntry)):
+            state = str(widget.cget("state") or "")
+            if state == "readonly":
+                return False
+            widget.delete(0, tk.END)
+            widget.insert(0, str(value or ""))
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _collect_visible_input_snapshot(window):
+    sticky_bar = getattr(window, "_sticky_actions_bar", None)
+    rows = []
+    for path, widget in _iter_widget_paths(window):
+        if sticky_bar and _is_descendant_of(widget, sticky_bar):
+            continue
+        value = _get_widget_value_for_snapshot(widget)
+        if value is None:
+            continue
+        rows.append(
+            {
+                "path": path,
+                "class": widget.__class__.__name__,
+                "value": value,
+            }
+        )
+    return rows
+
+
+def _apply_input_snapshot(window, snapshot_rows):
+    if not isinstance(snapshot_rows, list):
+        return 0
+    applied = 0
+    for row in snapshot_rows:
+        if not isinstance(row, dict):
+            continue
+        widget = _widget_from_path(window, row.get("path"))
+        if not widget:
+            continue
+        if _set_widget_value_from_snapshot(widget, row.get("value")):
+            applied += 1
+    return applied
+
+
+def _get_draft_save_command(window):
+    save_cmd = getattr(window, "_save_draft_command", None)
+    if callable(save_cmd):
+        return save_cmd
+    form_id = getattr(window, "_form_id", "") or WINDOW_CLASS_FORM_ID_MAP.get(window.__class__.__name__, "")
+    if not form_id:
+        return None
+    module = FORM_MODULE_MAP.get(form_id)
+    hub = getattr(window, "master", None)
+    if (
+        not hub
+        or not hasattr(hub, "_save_current_form_draft")
+        or not module
+        or not hasattr(module, "get_form_cache")
+        or not hasattr(module, "save_cache_to_file")
+    ):
+        return None
+    form_meta = _resolve_form_meta(form_id)
+    window._form_id = form_id
+    window._form_name = str(form_meta.get("name") or form_id)
+    window._save_draft_command = lambda w=window, h=hub: h._save_current_form_draft(w)
+    return window._save_draft_command
 
 
 def _normalize_ascii_text(value):
@@ -573,6 +801,24 @@ def _install_sticky_actions(frame):
 
 
 def _pack_actions(frame, pad_y=(8, FORM_PADY), pad_x=True):
+    try:
+        window = frame.winfo_toplevel()
+        save_cmd = _get_draft_save_command(window)
+        if callable(save_cmd):
+            has_save = False
+            for child in frame.winfo_children():
+                if isinstance(child, ttk.Button) and str(child.cget("text")).strip().lower() == "guardar borrador":
+                    has_save = True
+                    break
+            if not has_save:
+                ttk.Button(
+                    frame,
+                    text="Guardar borrador",
+                    command=save_cmd,
+                ).pack(side="left", padx=(8, 0))
+    except Exception:
+        pass
+
     padx = FORM_PADX if pad_x else 0
     # Keep action buttons grouped and centered to avoid corner placement on small screens.
     frame.pack(anchor="center", pady=pad_y, padx=padx)
@@ -733,6 +979,21 @@ def _section1_build_actions(self, parent):
         state="disabled",
     )
     self.continue_btn.pack(side="right")
+
+
+def _get_required_modalidad(window):
+    fields = getattr(window, "fields", {}) or {}
+    widget = fields.get("modalidad")
+    modalidad = widget.get().strip() if widget else ""
+    if modalidad:
+        return modalidad
+    messagebox.showerror("Campo obligatorio", "Debes seleccionar una modalidad para continuar.")
+    try:
+        if widget:
+            widget.focus_set()
+    except Exception:
+        pass
+    return None
 
 
 class FormMousewheelMixin:
@@ -1395,9 +1656,12 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
             return
 
+        modalidad = _get_required_modalidad(self)
+        if not modalidad:
+            return
         user_inputs = {
             "fecha_visita": self.fields["fecha_visita"].get().strip(),
-            "modalidad": self.fields["modalidad"].get().strip(),
+            "modalidad": modalidad,
             "nit_empresa": self.fields["nit_empresa"].get().strip(),
             "tipo_visita": self.fields["tipo_visita"].get().strip(),
         }
@@ -1520,9 +1784,12 @@ def _section1_update_nombre_suggestions(self):
             messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
             return
 
+        modalidad = _get_required_modalidad(self)
+        if not modalidad:
+            return
         user_inputs = {
             "fecha_visita": self.fields["fecha_visita"].get().strip(),
-            "modalidad": self.fields["modalidad"].get().strip(),
+            "modalidad": modalidad,
             "nit_empresa": self.fields["nit_empresa"].get().strip(),
             "tipo_visita": self.fields["tipo_visita"].get().strip(),
         }
@@ -1562,6 +1829,7 @@ class HubWindow(tk.Tk):
         self._companies_sort_var = None
         self._version_var = tk.StringVar(value="Versión local: - | GitHub: -")
         self._version_check_thread = None
+        self._drafts_btn = None
 
         self._configure_input_styles()
         self.protocol("WM_DELETE_WINDOW", self._on_app_close)
@@ -2517,6 +2785,255 @@ class HubWindow(tk.Tk):
             return
         self._open_company_editor(row)
 
+    def _get_current_user_login(self):
+        login = (self.current_user_profile.get("usuario_login") or self.current_user or "").strip()
+        return login.lower()
+
+    def _get_user_drafts(self):
+        user_login = self._get_current_user_login()
+        if not user_login:
+            return []
+        data = _load_drafts_store()
+        users = data.get("users", {})
+        drafts = users.get(user_login, [])
+        if not isinstance(drafts, list):
+            return []
+        return [item for item in drafts if isinstance(item, dict)]
+
+    def _refresh_drafts_badge(self):
+        if not self._drafts_btn:
+            return
+        count = len(self._get_user_drafts())
+        self._drafts_btn.config(text=f"Borradores ({count})")
+
+    def _save_current_form_draft(self, window):
+        form_id = getattr(window, "_form_id", "") or ""
+        form_name = getattr(window, "_form_name", "") or form_id
+        module = FORM_MODULE_MAP.get(form_id)
+        if not module:
+            messagebox.showinfo("Guardar", "Este formulario no tiene guardado manual disponible.")
+            return
+        if not hasattr(module, "get_form_cache") or not hasattr(module, "save_cache_to_file"):
+            messagebox.showinfo("Guardar", "No se pudo guardar este formulario.")
+            return
+
+        try:
+            module.save_cache_to_file()
+            cache_snapshot = copy.deepcopy(module.get_form_cache() or {})
+        except Exception as exc:
+            messagebox.showerror("Guardar", f"No se pudo leer el formulario actual: {exc}")
+            return
+
+        if not cache_snapshot:
+            messagebox.showinfo("Guardar", "Aún no hay datos confirmados para guardar.")
+            return
+
+        company_name = _extract_draft_company_name(cache_snapshot) or "Sin empresa"
+        company_key = _extract_draft_company_key(cache_snapshot)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ui_section = str(
+            getattr(window, "_current_section", "")
+            or cache_snapshot.get("_last_section")
+            or "section_1"
+        ).strip()
+        ui_snapshot = _collect_visible_input_snapshot(window)
+        if ui_section:
+            cache_snapshot["_last_section"] = ui_section
+
+        user_login = self._get_current_user_login()
+        if not user_login:
+            messagebox.showerror("Guardar", "No hay una sesión activa.")
+            return
+
+        data = _load_drafts_store()
+        users = data.setdefault("users", {})
+        drafts = users.setdefault(user_login, [])
+        if not isinstance(drafts, list):
+            drafts = []
+            users[user_login] = drafts
+
+        existing = None
+        for item in drafts:
+            if (
+                str(item.get("form_id") or "") == form_id
+                and str(item.get("company_key") or "") == company_key
+            ):
+                existing = item
+                break
+
+        if existing is None:
+            existing = {
+                "draft_id": str(uuid.uuid4()),
+                "form_id": form_id,
+                "form_name": form_name,
+                "company_key": company_key,
+                "company_name": company_name,
+                "created_at": now,
+            }
+            drafts.append(existing)
+
+        existing["updated_at"] = now
+        existing["last_section"] = ui_section or cache_snapshot.get("_last_section", "")
+        existing["cache"] = cache_snapshot
+        existing["company_name"] = company_name
+        existing["ui_section"] = ui_section
+        existing["ui_snapshot"] = ui_snapshot
+
+        try:
+            _save_drafts_store(data)
+        except Exception as exc:
+            messagebox.showerror("Guardar", f"No se pudo guardar el borrador: {exc}")
+            return
+
+        self._refresh_drafts_badge()
+        self.show_toast("Borrador guardado")
+
+    def _open_draft_entry(self, draft):
+        form_id = str(draft.get("form_id") or "")
+        module = FORM_MODULE_MAP.get(form_id)
+        if not module:
+            messagebox.showerror("Borradores", "El formulario de este borrador ya no está disponible.")
+            return
+        cache_snapshot = draft.get("cache")
+        if not isinstance(cache_snapshot, dict) or not cache_snapshot:
+            messagebox.showerror("Borradores", "El borrador no tiene datos válidos.")
+            return
+
+        try:
+            if hasattr(module, "clear_form_cache"):
+                module.clear_form_cache()
+            form_cache = getattr(module, "FORM_CACHE", None)
+            if isinstance(form_cache, dict):
+                form_cache.clear()
+                form_cache.update(copy.deepcopy(cache_snapshot))
+            if hasattr(module, "save_cache_to_file"):
+                module.save_cache_to_file()
+        except Exception as exc:
+            messagebox.showerror("Borradores", f"No se pudo preparar el borrador: {exc}")
+            return
+
+        form_meta = next((item for item in get_forms() if item.get("id") == form_id), None)
+        if not form_meta:
+            messagebox.showerror("Borradores", "No se encontró el formulario en el HUB.")
+            return
+        window = self._open_form(form_meta)
+        ui_snapshot = draft.get("ui_snapshot")
+        if not window or not isinstance(ui_snapshot, list) or not ui_snapshot:
+            return
+
+        def _try_apply(attempt=0):
+            if not window.winfo_exists():
+                return
+            applied = _apply_input_snapshot(window, ui_snapshot)
+            if applied > 0 or attempt >= 12:
+                return
+            window.after(150, lambda: _try_apply(attempt + 1))
+
+        window.after(150, _try_apply)
+
+    def _open_drafts_window(self):
+        drafts = self._get_user_drafts()
+        modal = tk.Toplevel(self)
+        modal.title("Borradores guardados")
+        modal.configure(bg=COLOR_LIGHT_BG)
+        modal.geometry("860x420")
+        modal.transient(self)
+        modal.grab_set()
+
+        frame = tk.Frame(modal, bg=COLOR_LIGHT_BG, padx=14, pady=12)
+        frame.pack(fill="both", expand=True)
+
+        tk.Label(
+            frame,
+            text="Formularios guardados",
+            font=("Arial", 12, "bold"),
+            fg=COLOR_PURPLE,
+            bg=COLOR_LIGHT_BG,
+        ).pack(anchor="w", pady=(0, 8))
+
+        box = tk.Frame(frame, bg="white", bd=1, relief="solid")
+        box.pack(fill="both", expand=True)
+        yscroll = tk.Scrollbar(box, orient="vertical")
+        yscroll.pack(side="right", fill="y")
+
+        tree = ttk.Treeview(
+            box,
+            columns=("form", "empresa", "seccion", "actualizado"),
+            show="headings",
+            yscrollcommand=yscroll.set,
+        )
+        tree.heading("form", text="Formulario")
+        tree.heading("empresa", text="Empresa")
+        tree.heading("seccion", text="Última sección")
+        tree.heading("actualizado", text="Actualizado")
+        tree.column("form", width=220, anchor="w")
+        tree.column("empresa", width=280, anchor="w")
+        tree.column("seccion", width=140, anchor="w")
+        tree.column("actualizado", width=170, anchor="w")
+        tree.pack(side="left", fill="both", expand=True)
+        yscroll.config(command=tree.yview)
+
+        draft_by_iid = {}
+        for idx, item in enumerate(
+            sorted(drafts, key=lambda d: str(d.get("updated_at") or ""), reverse=True),
+            start=1,
+        ):
+            iid = f"draft_{idx}"
+            draft_by_iid[iid] = item
+            tree.insert(
+                "",
+                "end",
+                iid=iid,
+                values=(
+                    str(item.get("form_name") or item.get("form_id") or ""),
+                    str(item.get("company_name") or "Sin empresa"),
+                    str(item.get("last_section") or ""),
+                    str(item.get("updated_at") or item.get("created_at") or ""),
+                ),
+            )
+        if not draft_by_iid:
+            tree.insert("", "end", iid="__empty__", values=("-", "No hay borradores guardados.", "-", "-"))
+
+        actions = tk.Frame(frame, bg=COLOR_LIGHT_BG)
+        actions.pack(fill="x", pady=(8, 0))
+
+        def _open_selected():
+            sel = tree.focus()
+            if not sel or sel == "__empty__":
+                return
+            draft = draft_by_iid.get(sel)
+            if not draft:
+                return
+            modal.destroy()
+            self._open_draft_entry(draft)
+
+        def _delete_selected():
+            sel = tree.focus()
+            if not sel or sel == "__empty__":
+                return
+            draft = draft_by_iid.get(sel)
+            if not draft:
+                return
+            draft_id = str(draft.get("draft_id") or "")
+            if not draft_id:
+                return
+            if not messagebox.askyesno("Borradores", "¿Eliminar este borrador?"):
+                return
+            user_login = self._get_current_user_login()
+            data = _load_drafts_store()
+            users = data.get("users", {})
+            current = users.get(user_login, [])
+            users[user_login] = [row for row in current if str(row.get("draft_id") or "") != draft_id]
+            _save_drafts_store(data)
+            tree.delete(sel)
+            draft_by_iid.pop(sel, None)
+            self._refresh_drafts_badge()
+
+        ttk.Button(actions, text="Cerrar", command=modal.destroy).pack(side="right")
+        ttk.Button(actions, text="Eliminar", command=_delete_selected).pack(side="right", padx=(0, 8))
+        ttk.Button(actions, text="Abrir", command=_open_selected).pack(side="right", padx=(0, 8))
+        tree.bind("<Double-1>", lambda _e: _open_selected())
+
     def _build_body(self):
         self.body = tk.Frame(self, bg=COLOR_LIGHT_BG)
         self.body.pack(fill="both", expand=True, padx=24, pady=16)
@@ -2529,13 +3046,22 @@ class HubWindow(tk.Tk):
         right = tk.Frame(self.body, bg=COLOR_LIGHT_BG)
         right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
 
+        left_header = tk.Frame(left, bg=COLOR_LIGHT_BG)
+        left_header.pack(fill="x", pady=(0, 8))
         tk.Label(
-            left,
+            left_header,
             text="Formularios",
             font=("Arial", 13, "bold"),
             fg=COLOR_PURPLE,
             bg=COLOR_LIGHT_BG,
-        ).pack(anchor="w", pady=(0, 8))
+        ).pack(side="left", anchor="w")
+        self._drafts_btn = ttk.Button(
+            left_header,
+            text="Borradores (0)",
+            command=self._open_drafts_window,
+        )
+        self._drafts_btn.pack(side="right")
+        self._refresh_drafts_badge()
 
         forms = get_forms()
         if not forms:
@@ -2636,53 +3162,100 @@ class HubWindow(tk.Tk):
         tree.bind("<Double-1>", self._on_company_double_click)
         self._render_companies()
 
+    def _bind_form_runtime(self, window, form_meta):
+        if not window or not form_meta:
+            return
+        form_id = str(form_meta.get("id") or "")
+        form_name = str(form_meta.get("name") or form_id)
+        window._form_id = form_id
+        window._form_name = form_name
+        module = FORM_MODULE_MAP.get(form_id)
+        if module and hasattr(module, "get_form_cache") and hasattr(module, "save_cache_to_file"):
+            window._save_draft_command = lambda w=window: self._save_current_form_draft(w)
+        else:
+            window._save_draft_command = None
+        window._current_section = "section_1"
+        for name in [n for n in dir(window) if n.startswith("_show_section")]:
+            original = getattr(window, name, None)
+            if not callable(original):
+                continue
+            if getattr(original, "_section_wrapped", False):
+                continue
+
+            def _make_wrapper(fn, method_name):
+                def _wrapped(*args, **kwargs):
+                    section = method_name.replace("_show_", "")
+                    window._current_section = section
+                    return fn(*args, **kwargs)
+
+                _wrapped._section_wrapped = True
+                return _wrapped
+
+            setattr(window, name, _make_wrapper(original, name))
+        try:
+            cache = module.get_form_cache() if module and hasattr(module, "get_form_cache") else {}
+            if isinstance(cache, dict) and cache.get("_last_section"):
+                window._current_section = str(cache.get("_last_section"))
+        except Exception:
+            pass
+
     def _open_form(self, form_meta):
         if form_meta["id"] == "presentacion_programa":
             window = Section1Window(self)
+            self._bind_form_runtime(window, form_meta)
             _focus_window(window)
             self.track_form_open(form_meta["id"], form_meta["name"])
-            return
+            return window
         if form_meta["id"] == "evaluacion_accesibilidad":
             window = EvaluacionAccesibilidadWindow(self)
+            self._bind_form_runtime(window, form_meta)
             _focus_window(window)
             self.track_form_open(form_meta["id"], form_meta["name"])
-            return
+            return window
         if form_meta["id"] == "condiciones_vacante":
             window = CondicionesVacanteWindow(self)
+            self._bind_form_runtime(window, form_meta)
             _focus_window(window)
             self.track_form_open(form_meta["id"], form_meta["name"])
-            return
+            return window
         if form_meta["id"] == "seleccion_incluyente":
             window = SeleccionIncluyenteWindow(self)
+            self._bind_form_runtime(window, form_meta)
             _focus_window(window)
             self.track_form_open(form_meta["id"], form_meta["name"])
-            return
+            return window
         if form_meta["id"] == "contratacion_incluyente":
             window = ContratacionIncluyenteWindow(self)
+            self._bind_form_runtime(window, form_meta)
             _focus_window(window)
             self.track_form_open(form_meta["id"], form_meta["name"])
-            return
+            return window
         if form_meta["id"] == "induccion_organizacional":
             window = InduccionOrganizacionalWindow(self)
+            self._bind_form_runtime(window, form_meta)
             _focus_window(window)
             self.track_form_open(form_meta["id"], form_meta["name"])
-            return
+            return window
         if form_meta["id"] == "induccion_operativa":
             window = InduccionOperativaWindow(self)
+            self._bind_form_runtime(window, form_meta)
             _focus_window(window)
             self.track_form_open(form_meta["id"], form_meta["name"])
-            return
+            return window
         if form_meta["id"] == "sensibilizacion":
             window = SensibilizacionWindow(self)
+            self._bind_form_runtime(window, form_meta)
             _focus_window(window)
             self.track_form_open(form_meta["id"], form_meta["name"])
-            return
+            return window
         if form_meta["id"] == "seguimientos":
             window = SeguimientosWindow(self)
+            self._bind_form_runtime(window, form_meta)
             _focus_window(window)
             self.track_form_open(form_meta["id"], form_meta["name"])
-            return
+            return window
         messagebox.showinfo("Formulario", f"Abrir formulario: {form_meta['name']}")
+        return None
 
     def _ensure_toast(self):
         if self._toast_label is not None:
@@ -4723,9 +5296,12 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
             messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
             return
 
+        modalidad = _get_required_modalidad(self)
+        if not modalidad:
+            return
         user_inputs = {
             "fecha_visita": self.fields["fecha_visita"].get().strip(),
-            "modalidad": self.fields["modalidad"].get().strip(),
+            "modalidad": modalidad,
             "nit_empresa": self.fields["nit_empresa"].get().strip(),
         }
         try:
@@ -4935,9 +5511,12 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
             return
 
+        modalidad = _get_required_modalidad(self)
+        if not modalidad:
+            return
         user_inputs = {
             "fecha_visita": self.fields["fecha_visita"].get().strip(),
-            "modalidad": self.fields["modalidad"].get().strip(),
+            "modalidad": modalidad,
             "nit_empresa": self.fields["nit_empresa"].get().strip(),
         }
         try:
@@ -6113,9 +6692,12 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         if not self.company_data:
             messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
             return
+        modalidad = _get_required_modalidad(self)
+        if not modalidad:
+            return
         user_inputs = {
             "fecha_visita": self.fields["fecha_visita"].get().strip(),
-            "modalidad": self.fields["modalidad"].get().strip(),
+            "modalidad": modalidad,
             "nit_empresa": self.fields["nit_empresa"].get().strip(),
         }
         try:
@@ -7888,9 +8470,12 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
             return
 
+        modalidad = _get_required_modalidad(self)
+        if not modalidad:
+            return
         user_inputs = {
             "fecha_visita": self.fields["fecha_visita"].get().strip(),
-            "modalidad": self.fields["modalidad"].get().strip(),
+            "modalidad": modalidad,
             "nit_empresa": self.fields["nit_empresa"].get().strip(),
         }
         try:
@@ -8581,9 +9166,12 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
             messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
             return
 
+        modalidad = _get_required_modalidad(self)
+        if not modalidad:
+            return
         user_inputs = {
             "fecha_visita": self.fields["fecha_visita"].get().strip(),
-            "modalidad": self.fields["modalidad"].get().strip(),
+            "modalidad": modalidad,
             "nit_empresa": self.fields["nit_empresa"].get().strip(),
         }
         try:
@@ -9459,9 +10047,12 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         if not self.company_data:
             messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
             return
+        modalidad = _get_required_modalidad(self)
+        if not modalidad:
+            return
         user_inputs = {
             "fecha_visita": self.fields["fecha_visita"].get().strip(),
-            "modalidad": self.fields["modalidad"].get().strip(),
+            "modalidad": modalidad,
             "nit_empresa": self.fields["nit_empresa"].get().strip(),
         }
         try:
@@ -9964,9 +10555,12 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         if not self.company_data:
             messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
             return
+        modalidad = _get_required_modalidad(self)
+        if not modalidad:
+            return
         user_inputs = {
             "fecha_visita": self.fields["fecha_visita"].get().strip(),
-            "modalidad": self.fields["modalidad"].get().strip(),
+            "modalidad": modalidad,
             "nit_empresa": self.fields["nit_empresa"].get().strip(),
         }
         try:

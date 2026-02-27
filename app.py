@@ -13,6 +13,7 @@ import hmac
 import secrets
 import json
 import copy
+import urllib.error
 from zoneinfo import ZoneInfo
 from datetime import date, datetime
 import tkinter as tk
@@ -30,9 +31,15 @@ from formularios.sensibilizacion import sensibilizacion
 from formularios.seguimientos import seguimientos
 from formularios.common import (
     _supabase_upsert,
-    _supabase_patch,
     _supabase_enqueue_upsert,
-    _supabase_enqueue_patch,
+    _supabase_upsert_with_queue,
+    _supabase_patch_with_queue,
+    _supabase_ping,
+    _supabase_get_paged,
+    _get_supabase_write_queue_stats,
+    _get_supabase_write_queue_snapshot,
+    _get_supabase_failed_writes_snapshot,
+    _supabase_retry_all_queued_writes,
 )
 from version_info import get_version
 from updater import (
@@ -77,6 +84,7 @@ DEFAULT_EMPRESA_ESTADOS = [
 _MOJIBAKE_PATTERNS = ("Ã", "Â", "â€", "ï¿½", "\ufffd", "Ð", "Ñ")
 _ENCODING_CHECK_DONE = False
 DRAFTS_FILE_NAME = "form_drafts_il.json"
+OFFLINE_AUTH_FILE_NAME = "offline_auth_users.json"
 FORM_MODULE_MAP = {
     "presentacion_programa": presentacion_programa,
     "evaluacion_accesibilidad": evaluacion_accesibilidad,
@@ -112,6 +120,33 @@ def _get_local_cache_dir():
 
 def _get_drafts_path():
     return os.path.join(_get_local_cache_dir(), DRAFTS_FILE_NAME)
+
+
+def _get_offline_auth_path():
+    return os.path.join(_get_local_cache_dir(), OFFLINE_AUTH_FILE_NAME)
+
+
+def _load_offline_auth_store():
+    path = _get_offline_auth_path()
+    if not os.path.exists(path):
+        return {"version": 1, "users": {}}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle) or {}
+    except Exception:
+        return {"version": 1, "users": {}}
+    if not isinstance(data, dict):
+        return {"version": 1, "users": {}}
+    users = data.get("users")
+    if not isinstance(users, dict):
+        data["users"] = {}
+    data.setdefault("version", 1)
+    return data
+
+
+def _save_offline_auth_store(data):
+    with open(_get_offline_auth_path(), "w", encoding="utf-8") as handle:
+        json.dump(data, handle, ensure_ascii=False, indent=2)
 
 
 def _load_drafts_store():
@@ -550,6 +585,25 @@ def _password_candidates(password):
     return options
 
 
+def _is_connectivity_exception(exc):
+    if exc is None:
+        return False
+    root = exc
+    if isinstance(root, RuntimeError) and getattr(root, "__cause__", None) is not None:
+        root = root.__cause__
+    if isinstance(root, urllib.error.HTTPError):
+        code = int(getattr(root, "code", 0) or 0)
+        return code >= 500 or code == 429
+    if isinstance(root, urllib.error.URLError):
+        return True
+    if isinstance(root, TimeoutError):
+        return True
+    if isinstance(root, OSError):
+        return True
+    text = str(exc).lower()
+    return "supabase no esta disponible" in text or "timed out" in text
+
+
 def _is_seguimiento_form(form_name):
     return "seguimiento" in str(form_name or "").strip().lower()
 
@@ -936,6 +990,7 @@ def _section1_build_groups(self, parent, groups, labels, modalidad_options=None)
         width=ENTRY_W_MED,
         date_pattern="yyyy-mm-dd",
     )
+    self.fields["fecha_visita"].delete(0, tk.END)
     self.fields["fecha_visita"].grid(row=0, column=1, sticky="w", padx=(0, 24))
 
     tk.Label(
@@ -1004,6 +1059,21 @@ def _get_required_modalidad(window):
     if modalidad:
         return modalidad
     messagebox.showerror("Campo obligatorio", "Debes seleccionar una modalidad para continuar.")
+    try:
+        if widget:
+            widget.focus_set()
+    except Exception:
+        pass
+    return None
+
+
+def _get_required_fecha_visita(window):
+    fields = getattr(window, "fields", {}) or {}
+    widget = fields.get("fecha_visita")
+    fecha_visita = widget.get().strip() if widget else ""
+    if fecha_visita:
+        return fecha_visita
+    messagebox.showerror("Campo obligatorio", "Debes seleccionar una fecha de visita para continuar.")
     try:
         if widget:
             widget.focus_set()
@@ -1537,6 +1607,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             width=ENTRY_W_MED,
             date_pattern="yyyy-mm-dd",
         )
+        self.fields["fecha_visita"].delete(0, tk.END)
         self.fields["fecha_visita"].grid(row=0, column=1, sticky="w", padx=(0, 24))
 
         tk.Label(
@@ -1672,11 +1743,14 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
             return
 
+        fecha_visita = _get_required_fecha_visita(self)
+        if not fecha_visita:
+            return
         modalidad = _get_required_modalidad(self)
         if not modalidad:
             return
         user_inputs = {
-            "fecha_visita": self.fields["fecha_visita"].get().strip(),
+            "fecha_visita": fecha_visita,
             "modalidad": modalidad,
             "nit_empresa": self.fields["nit_empresa"].get().strip(),
             "tipo_visita": self.fields["tipo_visita"].get().strip(),
@@ -1800,11 +1874,14 @@ def _section1_update_nombre_suggestions(self):
             messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
             return
 
+        fecha_visita = _get_required_fecha_visita(self)
+        if not fecha_visita:
+            return
         modalidad = _get_required_modalidad(self)
         if not modalidad:
             return
         user_inputs = {
-            "fecha_visita": self.fields["fecha_visita"].get().strip(),
+            "fecha_visita": fecha_visita,
             "modalidad": modalidad,
             "nit_empresa": self.fields["nit_empresa"].get().strip(),
             "tipo_visita": self.fields["tipo_visita"].get().strip(),
@@ -1847,6 +1924,11 @@ class HubWindow(tk.Tk):
         self._version_check_thread = None
         self._drafts_btn = None
         self._refresh_db_btn = None
+        self._sync_panel_btn = None
+        self._net_status_label = None
+        self._net_status_after_id = None
+        self._is_online = False
+        self._net_check_thread = None
 
         self._configure_input_styles()
         self.protocol("WM_DELETE_WINDOW", self._on_app_close)
@@ -1935,19 +2017,39 @@ class HubWindow(tk.Tk):
         if not username or not password:
             messagebox.showerror("Error", "Ingresa usuario y contraseña.")
             return
+        used_offline = False
+        auth_exc = None
         try:
             self.login_status.config(text="Validando credenciales...")
             self.update_idletasks()
             user_row = self._authenticate_user(username, password)
         except Exception as exc:
-            self.login_status.config(text="")
-            messagebox.showerror("Error", str(exc))
-            return
+            auth_exc = exc
+            user_row = None
+            if not _is_connectivity_exception(exc):
+                self.login_status.config(text="")
+                messagebox.showerror("Error", str(exc))
+                return
+        if not user_row:
+            can_use_offline = bool(auth_exc)
+            if not can_use_offline:
+                try:
+                    can_use_offline = not _supabase_ping(timeout=3)
+                except Exception:
+                    can_use_offline = True
+            if can_use_offline:
+                user_row = self._authenticate_user_offline(username, password)
+                if user_row:
+                    used_offline = True
+                    self.login_status.config(text="Modo offline: sesión local")
         if not user_row:
             self.login_status.config(text="")
+            if auth_exc:
+                messagebox.showerror("Error", str(auth_exc))
+                return
             messagebox.showerror("Error", "Usuario y contraseña incorrectos.")
             return
-        if self._must_force_password_change(user_row, password):
+        if not used_offline and self._must_force_password_change(user_row, password):
             changed = self._prompt_force_password_change(user_row, password)
             if not changed:
                 self.login_status.config(text="")
@@ -1970,6 +2072,7 @@ class HubWindow(tk.Tk):
                     user_row = refreshed[0]
             except Exception:
                 pass
+        self._cache_offline_user_auth(user_row, password)
         self.current_user = (user_row.get("usuario_login") or username).strip()
         self.current_user_profile = user_row
         try:
@@ -2001,9 +2104,11 @@ class HubWindow(tk.Tk):
             row = data[0]
         else:
             # Fallback robusto: tolera espacios/mayúsculas/acentos inconsistentes en usuario_login.
-            candidates = presentacion_programa._supabase_get(
+            candidates = _supabase_get_paged(
                 "profesionales",
-                {"select": select_fields, "limit": 5000},
+                {"select": select_fields},
+                page_size=1000,
+                max_pages=20,
             )
             for item in candidates:
                 if _normalize_login_value(item.get("usuario_login")) == username_norm:
@@ -2037,6 +2142,59 @@ class HubWindow(tk.Tk):
             row["_auth_source"] = "plain"
             return row
         return None
+
+    def _authenticate_user_offline(self, username, password):
+        username_norm = _normalize_login_value(username)
+        if not username_norm:
+            return None
+        store = _load_offline_auth_store()
+        users = store.get("users", {})
+        if not isinstance(users, dict):
+            return None
+        cached = users.get(username_norm)
+        if not isinstance(cached, dict):
+            return None
+        pass_hash = (cached.get("usuario_pass_hash") or "").strip()
+        if not pass_hash:
+            return None
+        for candidate in _password_candidates(password):
+            if _verify_password_hash(candidate, pass_hash):
+                return {
+                    "id": cached.get("id"),
+                    "usuario_login": cached.get("usuario_login") or username_norm,
+                    "usuario_pass_hash": pass_hash,
+                    "nombre_profesional": cached.get("nombre_profesional") or "",
+                    "programa": cached.get("programa") or "",
+                    "_auth_source": "offline",
+                }
+        return None
+
+    def _cache_offline_user_auth(self, user_row, password):
+        if not isinstance(user_row, dict):
+            return
+        login = _normalize_login_value(user_row.get("usuario_login") or "")
+        if not login:
+            return
+        pass_hash = (user_row.get("usuario_pass_hash") or "").strip()
+        if not pass_hash:
+            # Compatibilidad con cuentas heredadas si el login fue exitoso.
+            pass_hash = _hash_password(str(password or "").strip())
+        if not pass_hash:
+            return
+        store = _load_offline_auth_store()
+        users = store.get("users")
+        if not isinstance(users, dict):
+            users = {}
+            store["users"] = users
+        users[login] = {
+            "id": user_row.get("id"),
+            "usuario_login": user_row.get("usuario_login") or login,
+            "usuario_pass_hash": pass_hash,
+            "nombre_profesional": user_row.get("nombre_profesional") or "",
+            "programa": user_row.get("programa") or "",
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        _save_offline_auth_store(store)
 
     def _must_force_password_change(self, user_row, current_password):
         # Force update for legacy users still relying on plaintext credentials.
@@ -2140,13 +2298,13 @@ class HubWindow(tk.Tk):
 
     def _usage_upsert_sync(self, table, row, on_conflict):
         try:
-            _supabase_upsert(table, [row], on_conflict=on_conflict)
-            return True
+            result = _supabase_upsert_with_queue(
+                table,
+                [row],
+                on_conflict=on_conflict,
+            )
+            return (result or {}).get("status") in {"synced", "queued"}
         except Exception:
-            try:
-                _supabase_enqueue_upsert(table, [row], on_conflict=on_conflict)
-            except Exception:
-                pass
             return False
 
     def _start_usage_session(self):
@@ -2169,22 +2327,13 @@ class HubWindow(tk.Tk):
             return
         closed_at = self._get_colombia_now().isoformat()
         try:
-            updated = _supabase_patch(
+            result = _supabase_patch_with_queue(
                 "utilizacion_il",
                 {"session_id": self.current_session_id},
                 {"app_closed_at": closed_at},
             )
-            if updated:
+            if (result or {}).get("status") in {"synced", "queued"}:
                 return
-        except Exception:
-            pass
-        try:
-            _supabase_enqueue_patch(
-                "utilizacion_il",
-                {"session_id": self.current_session_id},
-                {"app_closed_at": closed_at},
-            )
-            return
         except Exception:
             pass
         row = {"session_id": self.current_session_id, "app_closed_at": closed_at}
@@ -2215,12 +2364,12 @@ class HubWindow(tk.Tk):
             return
         finished_at = self._get_colombia_now().isoformat()
         try:
-            updated = _supabase_patch(
+            result = _supabase_patch_with_queue(
                 "utilizacion_il_eventos",
                 {"event_id": event_id},
                 {"finished_at": finished_at},
             )
-            if updated:
+            if (result or {}).get("status") in {"synced", "queued"}:
                 self._form_event_ids.pop(form_id, None)
                 self._form_event_payloads.pop(form_id, None)
                 return
@@ -2236,14 +2385,7 @@ class HubWindow(tk.Tk):
             }
         )
         if not self._usage_upsert_sync("utilizacion_il_eventos", payload, on_conflict="event_id"):
-            try:
-                _supabase_enqueue_patch(
-                    "utilizacion_il_eventos",
-                    {"event_id": event_id},
-                    {"finished_at": finished_at},
-                )
-            except Exception:
-                pass
+            pass
         self._form_event_ids.pop(form_id, None)
         self._form_event_payloads.pop(form_id, None)
 
@@ -2271,6 +2413,12 @@ class HubWindow(tk.Tk):
             except tk.TclError:
                 pass
             self._session_clock_after_id = None
+        if self._net_status_after_id:
+            try:
+                self.after_cancel(self._net_status_after_id)
+            except tk.TclError:
+                pass
+            self._net_status_after_id = None
         self._mark_app_closed()
         self.after(250, self.destroy)
 
@@ -2516,14 +2664,235 @@ class HubWindow(tk.Tk):
             text="Actualizar aplicación",
             command=self._open_update_page,
         ).pack(anchor="e", pady=(2, 0))
+        self._net_status_label = tk.Label(
+            right,
+            text="Estado: verificando...",
+            justify="left",
+            anchor="w",
+            font=("Arial", 9, "bold"),
+            fg="#1F2A44",
+            bg="#EEF5FF",
+        )
+        self._net_status_label.pack(anchor="w", pady=(8, 0))
+        self._sync_panel_btn = ttk.Button(
+            right,
+            text="Sincronización",
+            command=self._open_sync_panel,
+        )
+        self._sync_panel_btn.pack(anchor="e", pady=(4, 0))
         if self._session_clock_after_id:
             try:
                 self.after_cancel(self._session_clock_after_id)
             except tk.TclError:
                 pass
             self._session_clock_after_id = None
+        if self._net_status_after_id:
+            try:
+                self.after_cancel(self._net_status_after_id)
+            except tk.TclError:
+                pass
+            self._net_status_after_id = None
         self._update_session_clock()
+        self._start_network_status_monitor()
         self._refresh_version_info_async()
+
+    def _start_network_status_monitor(self):
+        if self._net_check_thread and self._net_check_thread.is_alive():
+            self._net_status_after_id = self.after(1500, self._start_network_status_monitor)
+            return
+
+        result = {"online": False, "pending": 0, "failed": 0}
+
+        def _worker():
+            result["online"] = bool(_supabase_ping())
+            stats = _get_supabase_write_queue_stats() or {}
+            result["pending"] = int(stats.get("pending") or 0)
+            result["failed"] = int(stats.get("failed") or 0)
+
+        self._net_check_thread = threading.Thread(target=_worker, daemon=True)
+        self._net_check_thread.start()
+
+        def _finish():
+            if self._net_check_thread and self._net_check_thread.is_alive():
+                self._net_status_after_id = self.after(200, _finish)
+                return
+            self._is_online = bool(result.get("online"))
+            pending = int(result.get("pending") or 0)
+            failed = int(result.get("failed") or 0)
+            if self._net_status_label:
+                state_text = "Online" if self._is_online else "Offline"
+                color = "#0A7D2E" if self._is_online else "#B00020"
+                self._net_status_label.config(
+                    text=f"Estado: {state_text} | Cola pendiente: {pending} | Fallidos: {failed}",
+                    fg=color,
+                )
+            if self._sync_panel_btn:
+                self._sync_panel_btn.config(text=f"Sincronización ({pending}/{failed})")
+            self._net_status_after_id = self.after(9000, self._start_network_status_monitor)
+
+        _finish()
+
+    def _open_sync_panel(self):
+        modal = tk.Toplevel(self)
+        modal.title("Estado de sincronización")
+        modal.configure(bg=COLOR_LIGHT_BG)
+        modal.transient(self)
+        modal.grab_set()
+        modal.geometry("980x620")
+
+        frame = tk.Frame(modal, bg=COLOR_LIGHT_BG, padx=12, pady=10)
+        frame.pack(fill="both", expand=True)
+
+        status_txt = "Online" if self._is_online else "Offline"
+        status_color = "#0A7D2E" if self._is_online else "#B00020"
+        header = tk.Label(
+            frame,
+            text=f"Conectividad: {status_txt}",
+            font=("Arial", 11, "bold"),
+            fg=status_color,
+            bg=COLOR_LIGHT_BG,
+        )
+        header.pack(anchor="w", pady=(0, 8))
+
+        summary_lbl = tk.Label(
+            frame,
+            text="",
+            font=("Arial", 9),
+            fg="#333333",
+            bg=COLOR_LIGHT_BG,
+        )
+        summary_lbl.pack(anchor="w", pady=(0, 8))
+
+        tk.Label(
+            frame,
+            text="Pendientes de envío",
+            font=("Arial", 10, "bold"),
+            fg="#1F2A44",
+            bg=COLOR_LIGHT_BG,
+        ).pack(anchor="w", pady=(0, 4))
+
+        columns = ("op", "tabla", "intentos", "proximo", "error")
+        pending_box = tk.Frame(frame, bg="white", bd=1, relief="solid")
+        pending_box.pack(fill="both", expand=True)
+        pending_scrollbar = tk.Scrollbar(pending_box, orient="vertical")
+        pending_scrollbar.pack(side="right", fill="y")
+        pending_tree = ttk.Treeview(
+            pending_box,
+            columns=columns,
+            show="headings",
+            yscrollcommand=pending_scrollbar.set,
+        )
+        pending_scrollbar.config(command=pending_tree.yview)
+        pending_tree.heading("op", text="Operación")
+        pending_tree.heading("tabla", text="Tabla")
+        pending_tree.heading("intentos", text="Intentos")
+        pending_tree.heading("proximo", text="Próximo intento")
+        pending_tree.heading("error", text="Último error")
+        pending_tree.column("op", width=90, anchor="w")
+        pending_tree.column("tabla", width=170, anchor="w")
+        pending_tree.column("intentos", width=80, anchor="center")
+        pending_tree.column("proximo", width=170, anchor="w")
+        pending_tree.column("error", width=420, anchor="w")
+        pending_tree.pack(side="left", fill="both", expand=True)
+
+        tk.Label(
+            frame,
+            text="Fallidos no reintentables",
+            font=("Arial", 10, "bold"),
+            fg="#1F2A44",
+            bg=COLOR_LIGHT_BG,
+        ).pack(anchor="w", pady=(10, 4))
+
+        failed_box = tk.Frame(frame, bg="white", bd=1, relief="solid")
+        failed_box.pack(fill="both", expand=True)
+        failed_scrollbar = tk.Scrollbar(failed_box, orient="vertical")
+        failed_scrollbar.pack(side="right", fill="y")
+        failed_tree = ttk.Treeview(
+            failed_box,
+            columns=("op", "tabla", "intentos", "failed_at", "error"),
+            show="headings",
+            yscrollcommand=failed_scrollbar.set,
+        )
+        failed_scrollbar.config(command=failed_tree.yview)
+        failed_tree.heading("op", text="Operación")
+        failed_tree.heading("tabla", text="Tabla")
+        failed_tree.heading("intentos", text="Intentos")
+        failed_tree.heading("failed_at", text="Falló en")
+        failed_tree.heading("error", text="Error")
+        failed_tree.column("op", width=90, anchor="w")
+        failed_tree.column("tabla", width=170, anchor="w")
+        failed_tree.column("intentos", width=80, anchor="center")
+        failed_tree.column("failed_at", width=170, anchor="w")
+        failed_tree.column("error", width=420, anchor="w")
+        failed_tree.pack(side="left", fill="both", expand=True)
+
+        def _fmt_epoch(value):
+            try:
+                ts = float(value or 0)
+                if ts <= 0:
+                    return "-"
+                return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                return "-"
+
+        def _reload_rows():
+            for item in pending_tree.get_children():
+                pending_tree.delete(item)
+            for item in failed_tree.get_children():
+                failed_tree.delete(item)
+
+            pending_rows = _get_supabase_write_queue_snapshot(limit=500)
+            failed_rows = _get_supabase_failed_writes_snapshot(limit=500)
+
+            summary_lbl.config(
+                text=f"Pendientes: {len(pending_rows)} | Fallidos: {len(failed_rows)}"
+            )
+
+            if not pending_rows:
+                pending_tree.insert("", "end", values=("-", "-", "-", "-", "Sin pendientes"))
+            else:
+                for row in pending_rows:
+                    pending_tree.insert(
+                        "",
+                        "end",
+                        values=(
+                            row.get("op") or "-",
+                            row.get("table") or "-",
+                            int(row.get("attempts") or 0),
+                            _fmt_epoch(row.get("next_try_at")),
+                            (row.get("last_error") or "")[:280],
+                        ),
+                    )
+
+            if not failed_rows:
+                failed_tree.insert("", "end", values=("-", "-", "-", "-", "Sin fallidos"))
+            else:
+                for row in failed_rows:
+                    failed_tree.insert(
+                        "",
+                        "end",
+                        values=(
+                            row.get("op") or "-",
+                            row.get("table") or "-",
+                            int(row.get("attempts") or 0),
+                            _fmt_epoch(row.get("failed_at")),
+                            (row.get("error") or "")[:280],
+                        ),
+                    )
+
+        def _retry_now():
+            count = _supabase_retry_all_queued_writes()
+            self.show_toast(f"Reintento forzado para {count} pendientes")
+            _reload_rows()
+            self._start_network_status_monitor()
+
+        actions = tk.Frame(frame, bg=COLOR_LIGHT_BG)
+        actions.pack(fill="x", pady=(10, 0))
+        ttk.Button(actions, text="Reintentar ahora", command=_retry_now).pack(side="left")
+        ttk.Button(actions, text="Actualizar", command=_reload_rows).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Cerrar", command=modal.destroy).pack(side="right")
+
+        _reload_rows()
 
     def _norm_match(self, value):
         return _normalize_ascii_text(value).lower()
@@ -2566,9 +2935,11 @@ class HubWindow(tk.Tk):
         return False
 
     def _normalize_profesional_asignado(self):
-        profesionales = presentacion_programa._supabase_get(
+        profesionales = _supabase_get_paged(
             "profesionales",
-            {"select": "nombre_profesional", "limit": 5000},
+            {"select": "nombre_profesional"},
+            page_size=1000,
+            max_pages=20,
         )
         alias_map = {}
         for row in profesionales:
@@ -2578,13 +2949,14 @@ class HubWindow(tk.Tk):
             for alias in self._build_profesional_aliases(nombre):
                 alias_map.setdefault(alias, nombre)
 
-        empresas = presentacion_programa._supabase_get(
+        empresas = _supabase_get_paged(
             "empresas",
             {
                 "select": "id,profesional_asignado",
                 "profesional_asignado": "not.is.null",
-                "limit": 5000,
             },
+            page_size=1000,
+            max_pages=50,
         )
         updates = []
         for row in empresas:
@@ -2596,7 +2968,7 @@ class HubWindow(tk.Tk):
             if target and target != current:
                 updates.append({"id": row.get("id"), "profesional_asignado": target})
         if updates:
-            _supabase_upsert("empresas", updates, on_conflict="id")
+            _supabase_upsert_with_queue("empresas", updates, on_conflict="id")
 
     def _get_assigned_companies(self):
         user_login = self._norm_match(self.current_user_profile.get("usuario_login") or self.current_user)
@@ -2607,30 +2979,26 @@ class HubWindow(tk.Tk):
             or "sara zambrano" in full_name
         )
 
-        try:
-            empresas = presentacion_programa._supabase_get(
+        def _fetch_empresas(select_clause):
+            return _supabase_get_paged(
                 "empresas",
-                {
-                    "select": "id,nombre_empresa,nit_empresa,ciudad_empresa,profesional_asignado,estado,comentarios_empresas",
-                    "limit": 5000,
-                },
+                {"select": select_clause},
+                page_size=1000,
+                max_pages=50,
+            )
+
+        try:
+            empresas = _fetch_empresas(
+                "id,nombre_empresa,nit_empresa,ciudad_empresa,profesional_asignado,estado,comentarios_empresas"
             )
         except Exception:
             try:
-                empresas = presentacion_programa._supabase_get(
-                    "empresas",
-                    {
-                        "select": "id,nombre_empresa,nit_empresa,ciudad_empresa,profesional_asignado,estado,comentarios_empresas,comentarios",
-                        "limit": 5000,
-                    },
+                empresas = _fetch_empresas(
+                    "id,nombre_empresa,nit_empresa,ciudad_empresa,profesional_asignado,estado,comentarios_empresas,comentarios"
                 )
             except Exception:
-                empresas = presentacion_programa._supabase_get(
-                    "empresas",
-                    {
-                        "select": "id,nombre_empresa,nit_empresa,ciudad_empresa,profesional_asignado",
-                        "limit": 5000,
-                    },
+                empresas = _fetch_empresas(
+                    "id,nombre_empresa,nit_empresa,ciudad_empresa,profesional_asignado"
                 )
             for row in empresas:
                 row.setdefault("estado", "")
@@ -2780,9 +3148,10 @@ class HubWindow(tk.Tk):
                 return
             try:
                 last_exc = None
+                last_status = "synced"
                 for comments_col in ("comentarios_empresas", "comentarios_empresa", "comentarios", "comentario_empresa"):
                     try:
-                        _supabase_patch(
+                        result = _supabase_patch_with_queue(
                             "empresas",
                             {"id": company_id},
                             {
@@ -2790,12 +3159,15 @@ class HubWindow(tk.Tk):
                                 comments_col: comentarios,
                             },
                         )
+                        last_status = (result or {}).get("status") or "synced"
                         company_row["estado"] = estado
                         company_row["comentarios_empresas"] = comentarios
                         company_row["comentarios_empresa"] = comentarios
                         company_row["comentarios"] = comentarios
                         self._render_companies()
                         modal.destroy()
+                        if last_status == "queued":
+                            self.show_toast("Sin internet: cambio de empresa en cola")
                         return
                     except Exception as exc:
                         last_exc = exc
@@ -5379,11 +5751,14 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
             messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
             return
 
+        fecha_visita = _get_required_fecha_visita(self)
+        if not fecha_visita:
+            return
         modalidad = _get_required_modalidad(self)
         if not modalidad:
             return
         user_inputs = {
-            "fecha_visita": self.fields["fecha_visita"].get().strip(),
+            "fecha_visita": fecha_visita,
             "modalidad": modalidad,
             "nit_empresa": self.fields["nit_empresa"].get().strip(),
         }
@@ -5594,11 +5969,14 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
             return
 
+        fecha_visita = _get_required_fecha_visita(self)
+        if not fecha_visita:
+            return
         modalidad = _get_required_modalidad(self)
         if not modalidad:
             return
         user_inputs = {
-            "fecha_visita": self.fields["fecha_visita"].get().strip(),
+            "fecha_visita": fecha_visita,
             "modalidad": modalidad,
             "nit_empresa": self.fields["nit_empresa"].get().strip(),
         }
@@ -6775,11 +7153,14 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         if not self.company_data:
             messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
             return
+        fecha_visita = _get_required_fecha_visita(self)
+        if not fecha_visita:
+            return
         modalidad = _get_required_modalidad(self)
         if not modalidad:
             return
         user_inputs = {
-            "fecha_visita": self.fields["fecha_visita"].get().strip(),
+            "fecha_visita": fecha_visita,
             "modalidad": modalidad,
             "nit_empresa": self.fields["nit_empresa"].get().strip(),
         }
@@ -7013,6 +7394,8 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 return
             state = "normal" if len(self.oferente_blocks) > 1 else "disabled"
             remove_btn.config(state=state)
+
+        remove_btn = None
 
         def _add_oferente_block():
             idx = len(self.oferente_blocks) + 1
@@ -7260,6 +7643,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 )
             )
             self.oferente_blocks.append(fields)
+            _update_remove_button_state()
             self.oferente_frames.append(block)
             _refresh_oferente_numbers()
             _update_remove_button_state()
@@ -7838,7 +8222,12 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 _add_fields_grid(
                     row2,
                     [
-                        {"id": "genero", "label": "Género", "width": 12},
+                        {
+                            "id": "genero",
+                            "label": "Género",
+                            "options": contratacion_incluyente.GENERO_OPTIONS,
+                            "width": 12,
+                        },
                         {"id": "correo_oferente", "label": "Email", "width": 26},
                         {"id": "fecha_nacimiento", "label": "Fecha de nacimiento", "width": 12},
                         {"id": "edad", "label": "Edad", "width": 6},
@@ -8250,6 +8639,8 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                     numero_widget.configure(state="readonly")
 
         def _update_remove_button_state():
+            if remove_btn is None:
+                return
             if len(self.oferente_blocks) <= 1:
                 remove_btn.configure(state="disabled")
             else:
@@ -8553,11 +8944,14 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
             return
 
+        fecha_visita = _get_required_fecha_visita(self)
+        if not fecha_visita:
+            return
         modalidad = _get_required_modalidad(self)
         if not modalidad:
             return
         user_inputs = {
-            "fecha_visita": self.fields["fecha_visita"].get().strip(),
+            "fecha_visita": fecha_visita,
             "modalidad": modalidad,
             "nit_empresa": self.fields["nit_empresa"].get().strip(),
         }
@@ -9249,11 +9643,14 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
             messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
             return
 
+        fecha_visita = _get_required_fecha_visita(self)
+        if not fecha_visita:
+            return
         modalidad = _get_required_modalidad(self)
         if not modalidad:
             return
         user_inputs = {
-            "fecha_visita": self.fields["fecha_visita"].get().strip(),
+            "fecha_visita": fecha_visita,
             "modalidad": modalidad,
             "nit_empresa": self.fields["nit_empresa"].get().strip(),
         }
@@ -10130,11 +10527,14 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         if not self.company_data:
             messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
             return
+        fecha_visita = _get_required_fecha_visita(self)
+        if not fecha_visita:
+            return
         modalidad = _get_required_modalidad(self)
         if not modalidad:
             return
         user_inputs = {
-            "fecha_visita": self.fields["fecha_visita"].get().strip(),
+            "fecha_visita": fecha_visita,
             "modalidad": modalidad,
             "nit_empresa": self.fields["nit_empresa"].get().strip(),
         }
@@ -10638,11 +11038,14 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         if not self.company_data:
             messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
             return
+        fecha_visita = _get_required_fecha_visita(self)
+        if not fecha_visita:
+            return
         modalidad = _get_required_modalidad(self)
         if not modalidad:
             return
         user_inputs = {
-            "fecha_visita": self.fields["fecha_visita"].get().strip(),
+            "fecha_visita": fecha_visita,
             "modalidad": modalidad,
             "nit_empresa": self.fields["nit_empresa"].get().strip(),
         }

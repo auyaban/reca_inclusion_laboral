@@ -1,7 +1,6 @@
 ﻿import os
 import json
 import time
-import re
 import shutil
 
 from formularios.evaluacion_programa import evaluacion_accesibilidad
@@ -12,7 +11,7 @@ from formularios.common import (
     _parse_date_value,
     _sanitize_filename,
     _supabase_get,
-    _supabase_upsert,
+    _supabase_upsert_with_queue,
 )
 
 
@@ -36,6 +35,8 @@ DISCAPACIDAD_OPTIONS = [
     "Discapacidad multiple",
     "No aplica",
 ]
+
+GENERO_OPTIONS = ["Binario", "No binario", "Otro"]
 
 _DISCAPACIDAD_CATEGORIA_MAP = {
     "discapacidad visual perdida total de la vision": "Visual",
@@ -691,11 +692,19 @@ def sync_usuarios_reca(env_path=".env"):
         cleaned = {k: v for k, v in row.items() if v not in ("", None)}
         rows.append(cleaned)
     if rows:
-        _supabase_upsert("usuarios_reca", rows, env_path=env_path, on_conflict="cedula_usuario")
+        sync_result = _supabase_upsert_with_queue(
+            "usuarios_reca",
+            rows,
+            env_path=env_path,
+            on_conflict="cedula_usuario",
+        )
         cedulas = [row.get("cedula_usuario") for row in rows if row.get("cedula_usuario")]
         preview = ", ".join(cedulas[:10])
         extra = "" if len(cedulas) <= 10 else f" (+{len(cedulas) - 10} mas)"
-        _log_excel(f"SUPABASE usuarios_reca upsert count={len(rows)} cedulas={preview}{extra}")
+        status = sync_result.get("status") or "synced"
+        _log_excel(
+            f"SUPABASE usuarios_reca upsert status={status} count={len(rows)} cedulas={preview}{extra}"
+        )
     return len(rows)
 
 

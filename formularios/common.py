@@ -6,6 +6,8 @@ import json
 import sys
 import threading
 import uuid
+import sqlite3
+import hashlib
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -101,10 +103,56 @@ def _supabase_get(table, params, env_path=".env"):
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
                 payload = response.read().decode("utf-8")
-            return json.loads(payload)
+            data = json.loads(payload)
+            try:
+                if _can_cache_supabase_response(table, params):
+                    _cache_supabase_get_response(
+                        table,
+                        params,
+                        _sanitize_payload_for_cache(data),
+                    )
+            except Exception:
+                pass
+            return data
         except Exception as exc:
             last_error = exc
+    try:
+        cached = _load_supabase_get_cached_response(table, params)
+    except Exception:
+        cached = None
+    if cached is not None:
+        return cached
     raise RuntimeError(_format_supabase_error("Supabase no esta disponible", last_error)) from last_error
+
+
+def _supabase_get_paged(table, params=None, env_path=".env", page_size=1000, max_pages=200):
+    """
+    Obtiene registros de forma paginada usando limit/offset.
+    """
+    base = dict(params or {})
+    try:
+        page_size_int = max(1, int(page_size))
+    except Exception:
+        page_size_int = 1000
+    try:
+        max_pages_int = max(1, int(max_pages))
+    except Exception:
+        max_pages_int = 200
+
+    offset = 0
+    all_rows = []
+    for _ in range(max_pages_int):
+        query = dict(base)
+        query["limit"] = page_size_int
+        query["offset"] = offset
+        rows = _supabase_get(table, query, env_path=env_path)
+        if not isinstance(rows, list):
+            break
+        all_rows.extend(rows)
+        if len(rows) < page_size_int:
+            break
+        offset += page_size_int
+    return all_rows
 
 
 def _format_supabase_error(prefix, exc):
@@ -126,6 +174,22 @@ def _format_supabase_error(prefix, exc):
 _WRITE_QUEUE_LOCK = threading.Lock()
 _WRITE_QUEUE = []
 _WRITE_WORKER_STARTED = False
+_FAILED_WRITE_QUEUE = []
+_SENSITIVE_CACHE_KEYS = {
+    "usuario_pass",
+    "usuario_pass_hash",
+    "password",
+    "pass",
+    "passwd",
+    "token",
+    "access_token",
+    "refresh_token",
+    "api_key",
+    "apikey",
+    "authorization",
+}
+_OFFLINE_DB_LOCK = threading.Lock()
+_OFFLINE_DB_READY = False
 
 
 def _get_cache_dir():
@@ -142,10 +206,166 @@ def _get_supabase_queue_path():
     return os.path.join(_get_cache_dir(), "supabase_write_queue.json")
 
 
+def _get_supabase_failed_queue_path():
+    return os.path.join(_get_cache_dir(), "supabase_write_failed.json")
+
+
+def _get_offline_db_path():
+    return os.path.join(_get_cache_dir(), "offline_store.db")
+
+
+def _offline_connect():
+    return sqlite3.connect(_get_offline_db_path(), timeout=15)
+
+
+def _ensure_offline_db():
+    global _OFFLINE_DB_READY
+    if _OFFLINE_DB_READY:
+        return
+    with _OFFLINE_DB_LOCK:
+        if _OFFLINE_DB_READY:
+            return
+        conn = _offline_connect()
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS supabase_get_cache (
+                    table_name TEXT NOT NULL,
+                    query_hash TEXT NOT NULL,
+                    query_json TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (table_name, query_hash)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_supabase_get_cache_table_updated
+                ON supabase_get_cache (table_name, updated_at DESC)
+                """
+            )
+            conn.commit()
+            _OFFLINE_DB_READY = True
+        finally:
+            conn.close()
+
+
+def _serialize_query_for_cache(params):
+    clean = {}
+    for key in sorted((params or {}).keys()):
+        value = (params or {}).get(key)
+        if isinstance(value, (list, tuple)):
+            clean[str(key)] = [str(v) for v in value]
+        elif value is None:
+            clean[str(key)] = ""
+        else:
+            clean[str(key)] = str(value)
+    query_json = json.dumps(clean, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    query_hash = hashlib.sha256(query_json.encode("utf-8")).hexdigest()
+    return query_hash, query_json
+
+
+def _can_cache_supabase_response(table, params):
+    table_name = str(table or "").strip().lower()
+    select = str((params or {}).get("select") or "").lower()
+    if table_name == "profesionales" and (
+        "usuario_pass" in select or "usuario_pass_hash" in select
+    ):
+        return False
+    return True
+
+
+def _sanitize_payload_for_cache(payload):
+    if isinstance(payload, list):
+        return [_sanitize_payload_for_cache(item) for item in payload]
+    if isinstance(payload, dict):
+        clean = {}
+        for key, value in payload.items():
+            key_str = str(key or "").strip().lower()
+            if key_str in _SENSITIVE_CACHE_KEYS:
+                clean[key] = None
+            else:
+                clean[key] = _sanitize_payload_for_cache(value)
+        return clean
+    return payload
+
+
+def _cache_supabase_get_response(table, params, payload):
+    _ensure_offline_db()
+    query_hash, query_json = _serialize_query_for_cache(params)
+    payload_json = json.dumps(payload, ensure_ascii=False)
+    now = time.time()
+    with _OFFLINE_DB_LOCK:
+        conn = _offline_connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO supabase_get_cache (table_name, query_hash, query_json, payload_json, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(table_name, query_hash) DO UPDATE SET
+                    query_json=excluded.query_json,
+                    payload_json=excluded.payload_json,
+                    updated_at=excluded.updated_at
+                """,
+                (str(table), query_hash, query_json, payload_json, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def _load_supabase_get_cached_response(table, params):
+    _ensure_offline_db()
+    query_hash, _ = _serialize_query_for_cache(params)
+    with _OFFLINE_DB_LOCK:
+        conn = _offline_connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT payload_json
+                FROM supabase_get_cache
+                WHERE table_name = ? AND query_hash = ?
+                LIMIT 1
+                """,
+                (str(table), query_hash),
+            ).fetchone()
+        finally:
+            conn.close()
+    if not row:
+        return None
+    try:
+        return json.loads(row[0])
+    except Exception:
+        return None
+
+
+def _clear_supabase_get_cache():
+    _ensure_offline_db()
+    with _OFFLINE_DB_LOCK:
+        conn = _offline_connect()
+        try:
+            conn.execute("DELETE FROM supabase_get_cache")
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def _atomic_write_json(path, payload):
+    tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
+
+
 def _persist_write_queue_locked():
     path = _get_supabase_queue_path()
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(_WRITE_QUEUE, handle, ensure_ascii=False, indent=2)
+    _atomic_write_json(path, _WRITE_QUEUE)
+
+
+def _persist_failed_write_queue_locked():
+    path = _get_supabase_failed_queue_path()
+    _atomic_write_json(path, _FAILED_WRITE_QUEUE)
 
 
 def _load_write_queue_once():
@@ -162,6 +382,99 @@ def _load_write_queue_once():
                         _WRITE_QUEUE.append(item)
     except Exception:
         return
+
+
+def _load_failed_write_queue_once():
+    path = _get_supabase_failed_queue_path()
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, list):
+            with _WRITE_QUEUE_LOCK:
+                _FAILED_WRITE_QUEUE[:] = [item for item in data if isinstance(item, dict)]
+    except Exception:
+        return
+
+
+def _get_supabase_write_queue_snapshot(limit=200):
+    path = _get_supabase_queue_path()
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    rows = [item for item in data if isinstance(item, dict)]
+    rows.sort(key=lambda r: float(r.get("next_try_at") or 0))
+    if limit and limit > 0:
+        rows = rows[: int(limit)]
+    return rows
+
+
+def _get_supabase_failed_writes_snapshot(limit=200):
+    path = _get_supabase_failed_queue_path()
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    rows = [item for item in data if isinstance(item, dict)]
+    rows.sort(key=lambda r: float(r.get("failed_at") or 0), reverse=True)
+    if limit and limit > 0:
+        rows = rows[: int(limit)]
+    return rows
+
+
+def _clear_supabase_failed_writes():
+    with _WRITE_QUEUE_LOCK:
+        _FAILED_WRITE_QUEUE.clear()
+        _persist_failed_write_queue_locked()
+
+
+def _get_supabase_write_queue_stats():
+    rows = _get_supabase_write_queue_snapshot(limit=0)
+    failed = _get_supabase_failed_writes_snapshot(limit=0)
+    pending = len(rows)
+    if not rows:
+        return {
+            "pending": 0,
+            "failed": len(failed),
+            "max_attempts": 0,
+            "oldest_next_try_at": None,
+        }
+    max_attempts = max(int(r.get("attempts") or 0) for r in rows)
+    oldest_next_try_at = min(float(r.get("next_try_at") or 0) for r in rows)
+    return {
+        "pending": pending,
+        "failed": len(failed),
+        "max_attempts": max_attempts,
+        "oldest_next_try_at": oldest_next_try_at,
+    }
+
+
+def _supabase_retry_all_queued_writes():
+    """
+    Fuerza reintento inmediato de todos los jobs en cola.
+    """
+    _ensure_write_worker()
+    with _WRITE_QUEUE_LOCK:
+        if not _WRITE_QUEUE:
+            return 0
+        now = time.time()
+        for idx, item in enumerate(_WRITE_QUEUE):
+            item["next_try_at"] = now
+            _WRITE_QUEUE[idx] = item
+        _persist_write_queue_locked()
+        return len(_WRITE_QUEUE)
 
 
 def _next_retry_delay_seconds(attempts):
@@ -203,6 +516,30 @@ def _supabase_write_worker_loop():
                 raise RuntimeError(f"Operacion de cola no soportada: {job.get('op')}")
         except Exception as exc:
             with _WRITE_QUEUE_LOCK:
+                if not _is_transient_supabase_exception(exc):
+                    _FAILED_WRITE_QUEUE.append(
+                        {
+                            "id": job.get("id"),
+                            "op": job.get("op"),
+                            "table": job.get("table"),
+                            "attempts": int(job.get("attempts") or 0),
+                            "failed_at": time.time(),
+                            "error": str(exc),
+                            "payload": {
+                                "rows": job.get("rows"),
+                                "filters": job.get("filters"),
+                                "values": job.get("values"),
+                                "on_conflict": job.get("on_conflict"),
+                            },
+                        }
+                    )
+                    if len(_FAILED_WRITE_QUEUE) > 2000:
+                        _FAILED_WRITE_QUEUE[:] = _FAILED_WRITE_QUEUE[-2000:]
+                    _persist_failed_write_queue_locked()
+                    _WRITE_QUEUE[:] = [item for item in _WRITE_QUEUE if item.get("id") != job.get("id")]
+                    _persist_write_queue_locked()
+                    time.sleep(0.2)
+                    continue
                 for idx, item in enumerate(_WRITE_QUEUE):
                     if item.get("id") != job.get("id"):
                         continue
@@ -225,6 +562,7 @@ def _ensure_write_worker():
     if _WRITE_WORKER_STARTED:
         return
     _load_write_queue_once()
+    _load_failed_write_queue_once()
     worker = threading.Thread(target=_supabase_write_worker_loop, daemon=True)
     worker.start()
     _WRITE_WORKER_STARTED = True
@@ -271,6 +609,116 @@ def _supabase_enqueue_patch(table, filters, values, env_path=".env"):
             "env_path": env_path,
         }
     )
+
+
+def _is_transient_supabase_exception(exc):
+    if exc is None:
+        return False
+    root = exc
+    if isinstance(root, RuntimeError) and getattr(root, "__cause__", None) is not None:
+        root = root.__cause__
+
+    if isinstance(root, urllib.error.HTTPError):
+        code = int(getattr(root, "code", 0) or 0)
+        # 5xx + 429 are typically transient.
+        return code >= 500 or code == 429
+    if isinstance(root, urllib.error.URLError):
+        return True
+    if isinstance(root, TimeoutError):
+        return True
+    if isinstance(root, OSError):
+        return True
+    return False
+
+
+def _supabase_ping(env_path=".env", timeout=4):
+    """
+    Verifica conectividad básica con Supabase sin depender de una tabla específica.
+    Devuelve True si hay conexión alcanzable, False en caso contrario.
+    """
+    try:
+        supabase_url, supabase_key = _load_supabase_credentials(env_path)
+    except Exception:
+        return False
+    url = f"{supabase_url.rstrip('/')}/rest/v1/"
+    request = urllib.request.Request(url, headers=_supabase_headers(supabase_key), method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout):
+            return True
+    except urllib.error.HTTPError as exc:
+        # 401/403 indican que el host está alcanzable.
+        code = int(getattr(exc, "code", 0) or 0)
+        return code in {401, 403}
+    except Exception:
+        return False
+
+
+def _supabase_upsert_with_queue(table, rows, env_path=".env", on_conflict=None):
+    if not rows:
+        return {"status": "skipped", "queued": False, "rows": 0, "data": []}
+    try:
+        data = _supabase_upsert(
+            table,
+            rows,
+            env_path=env_path,
+            on_conflict=on_conflict,
+        )
+        return {"status": "synced", "queued": False, "rows": len(rows), "data": data}
+    except Exception as exc:
+        if not _is_transient_supabase_exception(exc):
+            raise
+        try:
+            _supabase_enqueue_upsert(
+                table,
+                rows,
+                env_path=env_path,
+                on_conflict=on_conflict,
+            )
+        except Exception as enqueue_exc:
+            raise RuntimeError(
+                f"No se pudo guardar ni encolar {table}: {enqueue_exc}"
+            ) from enqueue_exc
+        return {
+            "status": "queued",
+            "queued": True,
+            "rows": len(rows),
+            "data": [],
+            "error": str(exc),
+        }
+
+
+def _supabase_patch_with_queue(table, filters, values, env_path=".env"):
+    if not values:
+        return {"status": "skipped", "queued": False, "rows": 0, "data": []}
+    try:
+        data = _supabase_patch(
+            table,
+            filters,
+            values,
+            env_path=env_path,
+        )
+        return {"status": "synced", "queued": False, "rows": 1, "data": data}
+    except Exception as exc:
+        if not _is_transient_supabase_exception(exc):
+            raise
+        try:
+            _supabase_enqueue_patch(
+                table,
+                filters,
+                values,
+                env_path=env_path,
+            )
+        except Exception as enqueue_exc:
+            raise RuntimeError(
+                f"No se pudo actualizar ni encolar {table}: {enqueue_exc}"
+            ) from enqueue_exc
+        return {
+            "status": "queued",
+            "queued": True,
+            "rows": 1,
+            "data": [],
+            "error": str(exc),
+        }
 
 
 def _supabase_upsert(table, rows, env_path=".env", on_conflict=None):

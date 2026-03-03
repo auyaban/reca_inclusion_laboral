@@ -1052,6 +1052,30 @@ def _section1_build_actions(self, parent):
     self.continue_btn.pack(side="right")
 
 
+def _build_scrollable_content(parent, owner=None):
+    canvas = tk.Canvas(parent, bg=COLOR_LIGHT_BG, highlightthickness=0)
+    scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=scrollbar.set)
+    content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
+    content.bind(
+        "<Configure>",
+        lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
+    )
+    content_window = canvas.create_window((0, 0), window=content, anchor="nw")
+    canvas.bind(
+        "<Configure>",
+        lambda e: canvas.itemconfigure(content_window, width=e.width),
+    )
+    canvas.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+    if owner and hasattr(owner, "_bind_mousewheel"):
+        try:
+            owner._bind_mousewheel(canvas, content)
+        except Exception:
+            pass
+    return content
+
+
 def _get_required_modalidad(window):
     fields = getattr(window, "fields", {}) or {}
     widget = fields.get("modalidad")
@@ -1240,9 +1264,10 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Busca empresa por NIT y confirma datos.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-        self._build_search(section_frame)
-        self._build_groups(section_frame)
-        self._build_actions(section_frame)
+        content = _build_scrollable_content(section_frame, self)
+        self._build_search(content)
+        self._build_groups(content)
+        self._build_actions(content)
     def _show_section_2(self):
         self._clear_section_container()
         self.header_title.config(text="2. TEMARIO")
@@ -1779,119 +1804,6 @@ def _section1_update_nombre_suggestions(self):
     except Exception:
         suggestions = []
     entry["values"] = suggestions
-
-    def _build_actions(self, parent):
-        actions = tk.Frame(parent, bg=COLOR_LIGHT_BG)
-        _pack_actions(actions)
-
-        self.continue_btn = ttk.Button(
-            actions,
-            text="Continuar",
-            command=self._confirm_and_continue,
-            state="disabled",
-        )
-        self.continue_btn.pack(side="right")
-
-    def _label_for_field(self, field_id):
-        labels = {
-            "nombre_empresa": "Nombre de la empresa",
-            "direccion_empresa": "Dirección de la empresa",
-            "correo_1": "Correo electrónico",
-            "contacto_empresa": "Contacto de la empresa",
-            "telefono_empresa": "Teléfonos responsable empresa",
-            "cargo": "Cargo responsable empresa",
-            "ciudad_empresa": "Ciudad/Municipio",
-            "sede_empresa": "Sede Compensar",
-            "caja_compensacion": "Empresa afiliada a Caja de Compensación",
-            "asesor": "Asesor fidelización",
-            "correo_asesor": "Correo asesor",
-            "profesional_asignado": "Profesional asignado RECA",
-            "correo_profesional": "Correo profesional RECA",
-        }
-        return labels.get(field_id, field_id)
-
-    def _set_readonly_value(self, field_id, value):
-        entry = self.fields.get(field_id)
-        if not entry:
-            return
-        entry.configure(state="normal")
-        entry.delete(0, tk.END)
-        entry.insert(0, value if value is not None else "")
-        entry.configure(state="readonly")
-
-    def _search_company(self, mode="nit"):
-        nit = self.fields["nit_empresa"].get().strip()
-        nombre = self.fields.get("nombre_busqueda").get().strip() if self.fields.get("nombre_busqueda") else ""
-        if mode == "nit":
-            if not nit:
-                messagebox.showerror("Error", "Ingresa un NIT.")
-                return
-        elif mode == "nombre":
-            if not nombre:
-                messagebox.showerror("Error", "Ingresa el nombre de la empresa.")
-                return
-        else:
-            messagebox.showerror("Error", "Tipo de búsqueda no válido.")
-            return
-
-        try:
-            self.status_label.config(text="Buscando empresa...")
-            self.update_idletasks()
-            if mode == "nombre":
-                company = presentacion_programa.get_empresa_by_nombre(nombre)
-            else:
-                company = presentacion_programa.get_empresa_by_nit(nit)
-        except Exception as exc:
-            self.status_label.config(text="")
-            messagebox.showerror("Error", str(exc))
-            return
-
-        if not company:
-            self.company_data = None
-            msg = "No se encontró empresa para ese nombre." if mode == "nombre" else "No se encontró empresa para ese NIT."
-            self.status_label.config(text=msg)
-            self.continue_btn.config(state="disabled")
-            for key in presentacion_programa.SECTION_1_SUPABASE_MAP.keys():
-                self._set_readonly_value(key, "")
-            return
-
-        if mode == "nombre":
-            nit_value = company.get("nit_empresa")
-            if nit_value:
-                entry = self.fields.get("nit_empresa")
-                if entry:
-                    entry.delete(0, tk.END)
-                    entry.insert(0, nit_value)
-
-        self.company_data = company
-        self.status_label.config(text="Empresa encontrada.")
-        self.continue_btn.config(state="normal")
-        for key in presentacion_programa.SECTION_1_SUPABASE_MAP.keys():
-            self._set_readonly_value(key, company.get(key))
-
-    def _confirm_and_continue(self):
-        if not self.company_data:
-            messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
-            return
-
-        fecha_visita = _get_required_fecha_visita(self)
-        if not fecha_visita:
-            return
-        modalidad = _get_required_modalidad(self)
-        if not modalidad:
-            return
-        user_inputs = {
-            "fecha_visita": fecha_visita,
-            "modalidad": modalidad,
-            "nit_empresa": self.fields["nit_empresa"].get().strip(),
-            "tipo_visita": self.fields["tipo_visita"].get().strip(),
-        }
-        try:
-            presentacion_programa.confirm_section_1(self.company_data, user_inputs)
-        except Exception as exc:
-            messagebox.showerror("Error", str(exc))
-            return
-        self._show_section_2()
 
 
 class HubWindow(tk.Tk):
@@ -3534,6 +3446,7 @@ class HubWindow(tk.Tk):
 
         forms_content = tk.Frame(forms_canvas, bg=COLOR_LIGHT_BG)
         forms_window_id = forms_canvas.create_window((0, 0), window=forms_content, anchor="nw")
+        forms_content.grid_columnconfigure(0, weight=1)
 
         def _sync_forms_scrollregion(_event=None):
             forms_canvas.configure(scrollregion=forms_canvas.bbox("all"))
@@ -3541,11 +3454,13 @@ class HubWindow(tk.Tk):
         def _sync_forms_width(_event=None):
             try:
                 forms_canvas.itemconfigure(forms_window_id, width=forms_canvas.winfo_width())
+                forms_canvas.xview_moveto(0.0)
             except Exception:
                 pass
 
         forms_content.bind("<Configure>", _sync_forms_scrollregion)
         forms_canvas.bind("<Configure>", _sync_forms_width)
+        forms_canvas.after_idle(_sync_forms_width)
 
         def _on_forms_wheel(event):
             try:
@@ -3572,22 +3487,24 @@ class HubWindow(tk.Tk):
             for form in forms:
                 card = tk.Frame(forms_content, bg="white", bd=1, relief="solid")
                 card.pack(fill="x", pady=6, padx=8)
+                card.grid_columnconfigure(0, weight=1)
                 title = tk.Label(
                     card,
                     text=form["name"],
                     font=("Arial", 12, "bold"),
                     bg="white",
                     fg="#222222",
-                    padx=12,
-                    pady=8,
+                    anchor="w",
+                    justify="left",
+                    wraplength=460,
                 )
-                title.pack(side="left", anchor="w")
+                title.grid(row=0, column=0, sticky="ew", padx=(12, 8), pady=8)
                 action = ttk.Button(
                     card,
                     text="Abrir",
                     command=lambda f=form: self._open_form(f),
                 )
-                action.pack(side="right", padx=12, pady=8)
+                action.grid(row=0, column=1, sticky="e", padx=12, pady=8)
                 card.bind("<MouseWheel>", _on_forms_wheel)
                 title.bind("<MouseWheel>", _on_forms_wheel)
                 action.bind("<MouseWheel>", _on_forms_wheel)
@@ -3932,9 +3849,10 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         self._clear_section_container()
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-        self._build_search(section_frame)
-        self._build_groups(section_frame)
-        self._build_actions(section_frame)
+        content = _build_scrollable_content(section_frame, self)
+        self._build_search(content)
+        self._build_groups(content)
+        self._build_actions(content)
 
     def _show_section_2(self):
         self._clear_section_container()
@@ -5916,9 +5834,10 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         self._clear_section_container()
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-        self._build_search(section_frame)
-        self._build_groups(section_frame)
-        self._build_actions(section_frame)
+        content = _build_scrollable_content(section_frame, self)
+        self._build_search(content)
+        self._build_groups(content)
+        self._build_actions(content)
 
     def _build_search(self, parent):
         _section1_build_search(self, parent)
@@ -7097,11 +7016,12 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         self._clear_section_container()
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-        self._build_search(section_frame)
-        self._build_groups(section_frame)
+        content = _build_scrollable_content(section_frame, self)
+        self._build_search(content)
+        self._build_groups(content)
         self._prefill_section_1()
 
-        actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
+        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         self.continue_btn = ttk.Button(
             actions,
@@ -8124,9 +8044,10 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Busca empresa por NIT y confirma datos.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-        self._build_search(section_frame)
-        self._build_groups(section_frame)
-        self._build_actions(section_frame)
+        content = _build_scrollable_content(section_frame, self)
+        self._build_search(content)
+        self._build_groups(content)
+        self._build_actions(content)
 
     def _show_section_2(self):
         self._clear_section_container()
@@ -9092,11 +9013,12 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
 
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-        self._build_search(section_frame)
-        self._build_groups(section_frame)
+        content = _build_scrollable_content(section_frame, self)
+        self._build_search(content)
+        self._build_groups(content)
         self._prefill_section_1()
 
-        actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
+        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         ttk.Button(actions, text="Regresar", command=self._close_to_hub).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_and_continue).pack(side="right")
@@ -10042,11 +9964,12 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Busca empresa por NIT y confirma datos.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-        self._build_search(section_frame)
-        self._build_groups(section_frame)
+        content = _build_scrollable_content(section_frame, self)
+        self._build_search(content)
+        self._build_groups(content)
         self._prefill_section_1()
 
-        actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
+        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         ttk.Button(actions, text="Regresar", command=self._close_to_hub).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_and_continue).pack(side="right")
@@ -10934,11 +10857,12 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Busca empresa por NIT y confirma datos.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-        self._build_search(section_frame)
-        self._build_groups(section_frame)
+        content = _build_scrollable_content(section_frame, self)
+        self._build_search(content)
+        self._build_groups(content)
         self._prefill_section_1()
 
-        actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
+        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         ttk.Button(actions, text="Regresar", command=self._close_to_hub).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_1).pack(side="right")

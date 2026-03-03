@@ -74,9 +74,72 @@ def _latest_release_via_redirect(owner: str, repo: str, timeout: int = 20) -> st
     return str(match.group(1)).lstrip("v")
 
 
+def _latest_release_via_powershell(owner: str, repo: str, token: str = "", timeout: int = 25) -> str | None:
+    """
+    Fallback para entornos corporativos donde urllib falla por proxy/TLS,
+    usando stack de red de Windows via PowerShell.
+    """
+    token_escaped = token.replace("'", "''")
+    script = (
+        "$ErrorActionPreference='Stop';"
+        f"$u='https://api.github.com/repos/{owner}/{repo}/releases/latest';"
+        "$h=@{ 'User-Agent'='reca-inclusion-laboral-updater'; 'Accept'='application/vnd.github+json' };"
+        + (
+            f"$h['Authorization']='Bearer {token_escaped}';"
+            if token
+            else ""
+        )
+        + "$r=Invoke-RestMethod -Uri $u -Headers $h -Method Get;"
+        "if ($r -and $r.tag_name) { [Console]::Out.Write(($r.tag_name.ToString())) }"
+    )
+    completed = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+    if completed.returncode != 0:
+        stderr = (completed.stderr or "").strip()
+        if stderr:
+            _log_update(f"ERROR powershell api latest: {stderr}")
+        return None
+    out = (completed.stdout or "").strip()
+    if not out:
+        return None
+    return out.lstrip("v")
+
+
 def _get_latest_release() -> tuple[str | None, dict]:
     owner, repo, token, installer_asset, hash_asset = _repo_config()
     api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
+
+    def _assets_for_version(version: str) -> dict:
+        tag = f"v{version}"
+        return {
+            installer_asset: f"https://github.com/{owner}/{repo}/releases/download/{tag}/{installer_asset}",
+            hash_asset: f"https://github.com/{owner}/{repo}/releases/download/{tag}/{hash_asset}",
+        }
+
+    def _fallback_version_lookup() -> tuple[str | None, dict]:
+        # 1) Redirect publico de releases/latest.
+        try:
+            version = _latest_release_via_redirect(owner, repo, timeout=20)
+            if version:
+                _log_update(f"FALLBACK releases/latest redirect OK: v{version}")
+                return version, _assets_for_version(version)
+        except Exception as fallback_exc:
+            _log_update(f"ERROR fallback release/latest redirect: {fallback_exc}")
+        # 2) PowerShell API (Windows trust/proxy stack).
+        try:
+            version = _latest_release_via_powershell(owner, repo, token=token, timeout=25)
+            if version:
+                _log_update(f"FALLBACK powershell api OK: v{version}")
+                return version, _assets_for_version(version)
+        except Exception as fallback_exc:
+            _log_update(f"ERROR fallback powershell api: {fallback_exc}")
+        return None, {}
+
     try:
         data = _http_get_json(api_url, timeout=20, token=token)
     except urllib.error.HTTPError as exc:
@@ -87,32 +150,10 @@ def _get_latest_release() -> tuple[str | None, dict]:
         except Exception:
             pass
         _log_update(f"ERROR release/latest HTTP {code}: {exc} {detail}")
-        try:
-            version = _latest_release_via_redirect(owner, repo, timeout=20)
-            if version:
-                tag = f"v{version}"
-                _log_update(f"FALLBACK releases/latest redirect OK: {tag}")
-                return version, {
-                    installer_asset: f"https://github.com/{owner}/{repo}/releases/download/{tag}/{installer_asset}",
-                    hash_asset: f"https://github.com/{owner}/{repo}/releases/download/{tag}/{hash_asset}",
-                }
-        except Exception as fallback_exc:
-            _log_update(f"ERROR fallback release/latest redirect: {fallback_exc}")
-        return None, {}
+        return _fallback_version_lookup()
     except Exception as exc:
         _log_update(f"ERROR release/latest: {exc}")
-        try:
-            version = _latest_release_via_redirect(owner, repo, timeout=20)
-            if version:
-                tag = f"v{version}"
-                _log_update(f"FALLBACK releases/latest redirect OK: {tag}")
-                return version, {
-                    installer_asset: f"https://github.com/{owner}/{repo}/releases/download/{tag}/{installer_asset}",
-                    hash_asset: f"https://github.com/{owner}/{repo}/releases/download/{tag}/{hash_asset}",
-                }
-        except Exception as fallback_exc:
-            _log_update(f"ERROR fallback release/latest redirect: {fallback_exc}")
-        return None, {}
+        return _fallback_version_lookup()
 
     remote_version = str(data.get("tag_name", "")).lstrip("v")
     assets = {}

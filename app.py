@@ -3485,18 +3485,23 @@ class HubWindow(tk.Tk):
 
     def _build_body(self):
         self.body = tk.Frame(self, bg=COLOR_LIGHT_BG)
-        self.body.pack(fill="both", expand=True, padx=24, pady=16)
-        self.body.grid_columnconfigure(0, weight=1, uniform="hub_split")
-        self.body.grid_columnconfigure(1, weight=1, uniform="hub_split")
+        self.body.pack(fill="both", expand=True, padx=14, pady=10)
+        # Layout responsive: formularios (izquierda) mas ancho que empresas (derecha).
+        self.body.grid_columnconfigure(0, weight=3)
+        self.body.grid_columnconfigure(1, weight=2)
         self.body.grid_rowconfigure(0, weight=1)
 
         left = tk.Frame(self.body, bg=COLOR_LIGHT_BG)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left.grid_rowconfigure(1, weight=1)
+        left.grid_columnconfigure(0, weight=1)
         right = tk.Frame(self.body, bg=COLOR_LIGHT_BG)
         right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        right.grid_rowconfigure(2, weight=1)
+        right.grid_columnconfigure(0, weight=1)
 
         left_header = tk.Frame(left, bg=COLOR_LIGHT_BG)
-        left_header.pack(fill="x", pady=(0, 8))
+        left_header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         tk.Label(
             left_header,
             text="Formularios",
@@ -3518,19 +3523,55 @@ class HubWindow(tk.Tk):
         self._refresh_db_btn.pack(side="right", padx=(0, 8))
         self._refresh_drafts_badge()
 
+        # Lista de formularios con scroll para pantallas pequenas.
+        forms_box = tk.Frame(left, bg="white", bd=1, relief="solid")
+        forms_box.grid(row=1, column=0, sticky="nsew")
+        forms_canvas = tk.Canvas(forms_box, bg=COLOR_LIGHT_BG, highlightthickness=0)
+        forms_scroll = ttk.Scrollbar(forms_box, orient="vertical", command=forms_canvas.yview)
+        forms_canvas.configure(yscrollcommand=forms_scroll.set)
+        forms_scroll.pack(side="right", fill="y")
+        forms_canvas.pack(side="left", fill="both", expand=True)
+
+        forms_content = tk.Frame(forms_canvas, bg=COLOR_LIGHT_BG)
+        forms_window_id = forms_canvas.create_window((0, 0), window=forms_content, anchor="nw")
+
+        def _sync_forms_scrollregion(_event=None):
+            forms_canvas.configure(scrollregion=forms_canvas.bbox("all"))
+
+        def _sync_forms_width(_event=None):
+            try:
+                forms_canvas.itemconfigure(forms_window_id, width=forms_canvas.winfo_width())
+            except Exception:
+                pass
+
+        forms_content.bind("<Configure>", _sync_forms_scrollregion)
+        forms_canvas.bind("<Configure>", _sync_forms_width)
+
+        def _on_forms_wheel(event):
+            try:
+                forms_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            except Exception:
+                pass
+            return "break"
+
+        for widget in (forms_canvas, forms_content):
+            widget.bind("<MouseWheel>", _on_forms_wheel)
+            widget.bind("<Button-4>", lambda _e: forms_canvas.yview_scroll(-3, "units"))
+            widget.bind("<Button-5>", lambda _e: forms_canvas.yview_scroll(3, "units"))
+
         forms = get_forms()
         if not forms:
             tk.Label(
-                left,
+                forms_content,
                 text="No hay formularios disponibles.",
                 font=("Arial", 12),
                 bg=COLOR_LIGHT_BG,
                 fg="#555555",
-            ).pack(anchor="w")
+            ).pack(anchor="w", padx=8, pady=8)
         else:
             for form in forms:
-                card = tk.Frame(left, bg="white", bd=1, relief="solid")
-                card.pack(fill="x", pady=6)
+                card = tk.Frame(forms_content, bg="white", bd=1, relief="solid")
+                card.pack(fill="x", pady=6, padx=8)
                 title = tk.Label(
                     card,
                     text=form["name"],
@@ -3547,6 +3588,9 @@ class HubWindow(tk.Tk):
                     command=lambda f=form: self._open_form(f),
                 )
                 action.pack(side="right", padx=12, pady=8)
+                card.bind("<MouseWheel>", _on_forms_wheel)
+                title.bind("<MouseWheel>", _on_forms_wheel)
+                action.bind("<MouseWheel>", _on_forms_wheel)
 
         tk.Label(
             right,
@@ -3554,39 +3598,40 @@ class HubWindow(tk.Tk):
             font=("Arial", 13, "bold"),
             fg=COLOR_PURPLE,
             bg=COLOR_LIGHT_BG,
-        ).pack(anchor="w", pady=(0, 8))
+        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
 
         controls = tk.Frame(right, bg=COLOR_LIGHT_BG)
-        controls.pack(fill="x", pady=(0, 8))
+        controls.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        controls.grid_columnconfigure(1, weight=1)
 
         tk.Label(
             controls,
             text="Buscar:",
             font=("Arial", 10, "bold"),
             bg=COLOR_LIGHT_BG,
-        ).pack(side="left", padx=(0, 6))
+        ).grid(row=0, column=0, sticky="w", padx=(0, 6))
         self._companies_search_var = tk.StringVar()
-        search_entry = tk.Entry(controls, textvariable=self._companies_search_var, width=30)
-        search_entry.pack(side="left", padx=(0, 12))
+        search_entry = tk.Entry(controls, textvariable=self._companies_search_var, width=24)
+        search_entry.grid(row=0, column=1, sticky="ew", padx=(0, 10))
 
         tk.Label(
             controls,
             text="Ordenar:",
             font=("Arial", 10, "bold"),
             bg=COLOR_LIGHT_BG,
-        ).pack(side="left", padx=(0, 6))
+        ).grid(row=0, column=2, sticky="w", padx=(0, 6))
         self._companies_sort_var = tk.StringVar(value="Empresa A-Z")
         sort_combo = ttk.Combobox(
             controls,
             textvariable=self._companies_sort_var,
             state="readonly",
-            width=20,
+            width=17,
             values=["Empresa A-Z", "Empresa Z-A", "NIT menor-mayor", "NIT mayor-menor"],
         )
-        sort_combo.pack(side="left")
+        sort_combo.grid(row=0, column=3, sticky="e")
 
         box = tk.Frame(right, bg="white", bd=1, relief="solid")
-        box.pack(fill="both", expand=True)
+        box.grid(row=2, column=0, sticky="nsew")
 
         scrollbar = tk.Scrollbar(box, orient="vertical")
         scrollbar.pack(side="right", fill="y")

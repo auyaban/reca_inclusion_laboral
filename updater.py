@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 import urllib.error
@@ -33,38 +34,84 @@ def _repo_config():
     env = _load_env_file(".env")
     owner = (env.get("GITHUB_REPO_OWNER") or DEFAULT_REPO_OWNER).strip()
     name = (env.get("GITHUB_REPO_NAME") or DEFAULT_REPO_NAME).strip()
+    token = (env.get("GITHUB_TOKEN") or "").strip()
     installer_asset = (
         env.get("GITHUB_INSTALLER_ASSET")
         or env.get("INSTALLER_ASSET_NAME")
         or DEFAULT_INSTALLER_ASSET
     ).strip()
     hash_asset = (env.get("GITHUB_HASH_ASSET") or f"{installer_asset}.sha256").strip()
-    return owner, name, installer_asset, hash_asset
+    return owner, name, token, installer_asset, hash_asset
 
 
-def _http_get_json(url: str, timeout: int = 20) -> dict:
+def _http_get_json(url: str, timeout: int = 20, token: str = "") -> dict:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "reca-inclusion-laboral-updater",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(
         url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "reca-inclusion-laboral-updater",
-        },
+        headers=headers,
     )
     with urllib.request.urlopen(req, timeout=timeout) as response:
         payload = response.read().decode("utf-8", errors="replace")
     return json.loads(payload)
 
 
+def _latest_release_via_redirect(owner: str, repo: str, timeout: int = 20) -> str | None:
+    url = f"https://github.com/{owner}/{repo}/releases/latest"
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "reca-inclusion-laboral-updater"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        final_url = str(response.geturl() or "")
+    match = re.search(r"/releases/tag/([^/?#]+)", final_url)
+    if not match:
+        return None
+    return str(match.group(1)).lstrip("v")
+
+
 def _get_latest_release() -> tuple[str | None, dict]:
-    owner, repo, _installer_asset, _hash_asset = _repo_config()
+    owner, repo, token, installer_asset, hash_asset = _repo_config()
     api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
     try:
-        data = _http_get_json(api_url, timeout=20)
+        data = _http_get_json(api_url, timeout=20, token=token)
     except urllib.error.HTTPError as exc:
-        _log_update(f"ERROR release/latest HTTP {getattr(exc, 'code', '?')}: {exc}")
+        code = getattr(exc, "code", "?")
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", errors="replace").strip()
+        except Exception:
+            pass
+        _log_update(f"ERROR release/latest HTTP {code}: {exc} {detail}")
+        try:
+            version = _latest_release_via_redirect(owner, repo, timeout=20)
+            if version:
+                tag = f"v{version}"
+                _log_update(f"FALLBACK releases/latest redirect OK: {tag}")
+                return version, {
+                    installer_asset: f"https://github.com/{owner}/{repo}/releases/download/{tag}/{installer_asset}",
+                    hash_asset: f"https://github.com/{owner}/{repo}/releases/download/{tag}/{hash_asset}",
+                }
+        except Exception as fallback_exc:
+            _log_update(f"ERROR fallback release/latest redirect: {fallback_exc}")
         return None, {}
     except Exception as exc:
         _log_update(f"ERROR release/latest: {exc}")
+        try:
+            version = _latest_release_via_redirect(owner, repo, timeout=20)
+            if version:
+                tag = f"v{version}"
+                _log_update(f"FALLBACK releases/latest redirect OK: {tag}")
+                return version, {
+                    installer_asset: f"https://github.com/{owner}/{repo}/releases/download/{tag}/{installer_asset}",
+                    hash_asset: f"https://github.com/{owner}/{repo}/releases/download/{tag}/{hash_asset}",
+                }
+        except Exception as fallback_exc:
+            _log_update(f"ERROR fallback release/latest redirect: {fallback_exc}")
         return None, {}
 
     remote_version = str(data.get("tag_name", "")).lstrip("v")
@@ -127,7 +174,7 @@ def _download_file(url: str, destination: Path, progress_callback=None) -> None:
 
 
 def _verify_hash(installer_path: Path, assets: dict) -> None:
-    _owner, _repo, _installer_asset, hash_asset = _repo_config()
+    _owner, _repo, _token, _installer_asset, hash_asset = _repo_config()
     url = assets.get(hash_asset)
     if not url:
         return
@@ -143,7 +190,7 @@ def _verify_hash(installer_path: Path, assets: dict) -> None:
 
 
 def download_installer(assets: dict, progress_callback=None) -> Path:
-    _owner, _repo, installer_asset, _hash_asset = _repo_config()
+    _owner, _repo, _token, installer_asset, _hash_asset = _repo_config()
     url = assets.get(installer_asset)
     if not url:
         raise RuntimeError(f"No se encontró el instalador '{installer_asset}' en el release.")

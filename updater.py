@@ -1,4 +1,4 @@
-import hashlib
+﻿import hashlib
 import json
 import os
 import re
@@ -74,6 +74,20 @@ def _latest_release_via_redirect(owner: str, repo: str, timeout: int = 20) -> st
     return str(match.group(1)).lstrip("v")
 
 
+def _latest_version_via_raw(owner: str, repo: str, timeout: int = 20) -> str | None:
+    url = f"https://raw.githubusercontent.com/{owner}/{repo}/main/VERSION"
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "reca-inclusion-laboral-updater"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        payload = response.read().decode("utf-8", errors="replace")
+    version = (payload or "").strip().splitlines()[0].strip().lstrip("v")
+    if not re.match(r"^\d+\.\d+\.\d+$", version):
+        return None
+    return version
+
+
 def _latest_release_via_powershell(owner: str, repo: str, token: str = "", timeout: int = 25) -> str | None:
     """
     Fallback para entornos corporativos donde urllib falla por proxy/TLS,
@@ -130,7 +144,15 @@ def _get_latest_release() -> tuple[str | None, dict]:
                 return version, _assets_for_version(version)
         except Exception as fallback_exc:
             _log_update(f"ERROR fallback release/latest redirect: {fallback_exc}")
-        # 2) PowerShell API (Windows trust/proxy stack).
+        # 2) VERSION en raw.githubusercontent.com.
+        try:
+            version = _latest_version_via_raw(owner, repo, timeout=20)
+            if version:
+                _log_update(f"FALLBACK raw VERSION OK: v{version}")
+                return version, _assets_for_version(version)
+        except Exception as fallback_exc:
+            _log_update(f"ERROR fallback raw VERSION: {fallback_exc}")
+        # 3) PowerShell API (Windows trust/proxy stack).
         try:
             version = _latest_release_via_powershell(owner, repo, token=token, timeout=25)
             if version:
@@ -253,3 +275,4 @@ def run_installer(installer_path: Path, wait: bool = True) -> None:
         subprocess.run(args, check=False)
     else:
         subprocess.Popen(args, close_fds=True)
+

@@ -374,6 +374,9 @@ def _detect_mojibake_issues(project_root):
             try:
                 with open(path, "r", encoding="utf-8", errors="replace") as handle:
                     for lineno, line in enumerate(handle, start=1):
+                        # Evita falso positivo por la línea de definición de patrones.
+                        if "_MOJIBAKE_PATTERNS" in line:
+                            continue
                         if any(mark in line for mark in _MOJIBAKE_PATTERNS):
                             text = line.strip()
                             issues.append((path, lineno, text[:180]))
@@ -700,13 +703,30 @@ def _append_sheet_to_company_workbook(individual_excel_path, company_name, form_
 
 
 def _maximize_window(window):
+    screen_w = None
+    screen_h = None
+    try:
+        screen_w = int(window.winfo_screenwidth() or 0)
+        screen_h = int(window.winfo_screenheight() or 0)
+    except Exception:
+        screen_w = screen_h = 0
     try:
         window.state("zoomed")
     except tk.TclError:
         try:
             window.attributes("-zoomed", True)
         except tk.TclError:
-            pass
+            if screen_w and screen_h:
+                window.geometry(f"{screen_w}x{screen_h}+0+0")
+    try:
+        window.update_idletasks()
+        if screen_w and screen_h:
+            cur_w = int(window.winfo_width() or 0)
+            cur_h = int(window.winfo_height() or 0)
+            if cur_w < int(screen_w * 0.9) or cur_h < int(screen_h * 0.9):
+                window.geometry(f"{screen_w}x{screen_h}+0+0")
+    except Exception:
+        pass
 
 
 def _finish_with_loading(loading, message, output_path=None):
@@ -900,6 +920,15 @@ def _pack_actions(frame, pad_y=(8, FORM_PADY), pad_x=True):
 
 
 def _section1_build_search(self, parent, include_tipo_visita=False):
+    search_w = ENTRY_W_LONG
+    try:
+        sw = int(self.winfo_screenwidth() or 0)
+        if sw and sw <= 1366:
+            search_w = 22
+        elif sw and sw <= 1600:
+            search_w = 25
+    except Exception:
+        pass
     frame = tk.Frame(parent, bg=COLOR_LIGHT_BG)
     frame.pack(fill="x", padx=FORM_PADX, pady=(8, FORM_PADY))
 
@@ -929,7 +958,7 @@ def _section1_build_search(self, parent, include_tipo_visita=False):
         bg=COLOR_LIGHT_BG,
     ).grid(row=current_row, column=0, sticky="w", padx=(0, 8))
 
-    self.fields["nit_empresa"] = tk.Entry(frame, width=ENTRY_W_LONG)
+    self.fields["nit_empresa"] = tk.Entry(frame, width=search_w)
     self.fields["nit_empresa"].grid(row=current_row, column=1, sticky="w")
 
     search_nit_btn = ttk.Button(
@@ -947,7 +976,7 @@ def _section1_build_search(self, parent, include_tipo_visita=False):
         bg=COLOR_LIGHT_BG,
     ).grid(row=current_row, column=0, sticky="w", padx=(0, 8))
 
-    self.fields["nombre_busqueda"] = ttk.Combobox(frame, width=ENTRY_W_LONG)
+    self.fields["nombre_busqueda"] = ttk.Combobox(frame, width=search_w)
     self.fields["nombre_busqueda"].grid(row=current_row, column=1, sticky="w")
     self.fields["nombre_busqueda"].bind(
         "<KeyRelease>",
@@ -972,6 +1001,15 @@ def _section1_build_search(self, parent, include_tipo_visita=False):
 
 
 def _section1_build_groups(self, parent, groups, labels, modalidad_options=None):
+    readonly_w = ENTRY_W_XL
+    try:
+        sw = int(self.winfo_screenwidth() or 0)
+        if sw and sw <= 1366:
+            readonly_w = 42
+        elif sw and sw <= 1600:
+            readonly_w = 50
+    except Exception:
+        pass
     container = tk.Frame(parent, bg=COLOR_LIGHT_BG)
     container.pack(fill="both", expand=True)
     self._section1_labels = labels
@@ -1035,7 +1073,7 @@ def _section1_build_groups(self, parent, groups, labels, modalidad_options=None)
                 bg=color,
             ).grid(row=row, column=0, sticky="w", padx=6, pady=ROW_PADY)
 
-            entry = tk.Entry(group_frame, state="readonly", width=ENTRY_W_XL)
+            entry = tk.Entry(group_frame, state="readonly", width=readonly_w)
             entry.grid(row=row, column=1, sticky="w", padx=6, pady=ROW_PADY)
             self.fields[field_id] = entry
 
@@ -1595,6 +1633,15 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
     def _build_groups(self, parent):
         container = tk.Frame(parent, bg=COLOR_LIGHT_BG)
         container.pack(fill="both", expand=True)
+        readonly_w = ENTRY_W_XL
+        try:
+            sw = int(self.winfo_screenwidth() or 0)
+            if sw and sw <= 1366:
+                readonly_w = 42
+            elif sw and sw <= 1600:
+                readonly_w = 50
+        except Exception:
+            pass
 
         groups = [
             ("Información de Empresa", COLOR_GROUP_EMPRESA, [
@@ -1677,7 +1724,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
                     bg=color,
                 ).grid(row=row, column=0, sticky="w", padx=6, pady=4)
 
-                entry = tk.Entry(group_frame, state="readonly", width=ENTRY_W_XL)
+                entry = tk.Entry(group_frame, state="readonly", width=readonly_w)
                 entry.grid(row=row, column=1, sticky="w", padx=6, pady=4)
                 self.fields[field_id] = entry
 
@@ -3464,6 +3511,7 @@ class HubWindow(tk.Tk):
 
         def _on_forms_wheel(event):
             try:
+                forms_canvas.xview_moveto(0.0)
                 forms_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
             except Exception:
                 pass
@@ -3473,6 +3521,8 @@ class HubWindow(tk.Tk):
             widget.bind("<MouseWheel>", _on_forms_wheel)
             widget.bind("<Button-4>", lambda _e: forms_canvas.yview_scroll(-3, "units"))
             widget.bind("<Button-5>", lambda _e: forms_canvas.yview_scroll(3, "units"))
+            widget.bind("<Shift-MouseWheel>", lambda _e: "break")
+            widget.bind("<Enter>", lambda _e: forms_canvas.xview_moveto(0.0))
 
         forms = get_forms()
         if not forms:
@@ -12163,7 +12213,13 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
 
 if __name__ == "__main__":
     app = HubWindow()
-    app.mainloop()
+    try:
+        app.mainloop()
+    except KeyboardInterrupt:
+        try:
+            app.destroy()
+        except Exception:
+            pass
 
 
 

@@ -85,6 +85,7 @@ _MOJIBAKE_PATTERNS = ("Ã", "Â", "â€", "ï¿½", "\ufffd", "Ð", "Ñ")
 _ENCODING_CHECK_DONE = False
 DRAFTS_FILE_NAME = "form_drafts_il.json"
 OFFLINE_AUTH_FILE_NAME = "offline_auth_users.json"
+_LOG_CURRENT_DAY = None
 FORM_MODULE_MAP = {
     "presentacion_programa": presentacion_programa,
     "evaluacion_accesibilidad": evaluacion_accesibilidad,
@@ -106,6 +107,54 @@ WINDOW_CLASS_FORM_ID_MAP = {
     "SensibilizacionWindow": "sensibilizacion",
     "SeguimientosWindow": "seguimientos",
 }
+
+
+def _desktop_log_path():
+    try:
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        os.makedirs(desktop, exist_ok=True)
+        return os.path.join(desktop, "log")
+    except Exception:
+        return os.path.join(os.getcwd(), "log")
+
+
+def _ensure_daily_log(path):
+    global _LOG_CURRENT_DAY
+    today = datetime.now().strftime("%Y-%m-%d")
+    rotate = False
+    if _LOG_CURRENT_DAY != today:
+        rotate = True
+    elif os.path.exists(path):
+        try:
+            file_day = datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d")
+            if file_day != today:
+                rotate = True
+        except Exception:
+            rotate = True
+    else:
+        rotate = True
+
+    if not rotate:
+        return
+
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            handle.write(f"[{stamp}] [SYSTEM] Inicio de log diario ({today})\n")
+    except Exception:
+        pass
+    _LOG_CURRENT_DAY = today
+
+
+def _log_capture(message):
+    try:
+        path = _desktop_log_path()
+        _ensure_daily_log(path)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(f"[{timestamp}] [APP] {str(message).rstrip()}\n")
+    except Exception:
+        pass
 
 
 def _get_local_cache_dir():
@@ -1856,6 +1905,8 @@ def _section1_update_nombre_suggestions(self):
 class HubWindow(tk.Tk):
     def __init__(self):
         super().__init__()
+        _log_capture("==== Inicio de app ====")
+        _log_capture(f"Python={sys.version.split()[0]} | platform={sys.platform} | cwd={os.getcwd()}")
         _run_encoding_health_check()
         self.title(APP_NAME)
         self.configure(bg=COLOR_LIGHT_BG)
@@ -2366,6 +2417,7 @@ class HubWindow(tk.Tk):
         self._usage_upsert_async("formatos_finalizados_il", row, on_conflict="registro_id")
 
     def _on_app_close(self):
+        _log_capture("_on_app_close: cerrando app")
         if self._session_clock_after_id:
             try:
                 self.after_cancel(self._session_clock_after_id)
@@ -2407,25 +2459,34 @@ class HubWindow(tk.Tk):
     def set_version_info(self, local_version, remote_version):
         local = (local_version or "-").strip()
         remote = (remote_version or "-").strip()
+        _log_capture(f"set_version_info local={local} remote={remote}")
         self._version_var.set(f"Versión local: {local} | GitHub: {remote}")
 
     def _refresh_version_info_async(self):
         if self._version_check_thread and self._version_check_thread.is_alive():
+            _log_capture("_refresh_version_info_async omitido: hilo activo")
             return
 
         def _worker():
             local = get_version()
             remote = None
+            _log_capture(f"_refresh_version_info_async worker start local={local}")
             try:
                 remote, _assets = get_latest_release_assets()
+                _log_capture(
+                    f"_refresh_version_info_async worker success remote={remote} assets={list((_assets or {}).keys())}"
+                )
             except Exception:
                 remote = None
+                _log_capture("_refresh_version_info_async worker error al obtener versión remota")
             self.after(0, lambda: self.set_version_info(local, remote))
 
         self._version_check_thread = threading.Thread(target=_worker, daemon=True)
+        _log_capture("_refresh_version_info_async hilo iniciado")
         self._version_check_thread.start()
 
     def _open_update_page(self):
+        _log_capture("_open_update_page: inicio de verificación manual")
         dialog = LoadingDialog(self, title="Verificando actualización")
         dialog.set_status("Consultando versión en GitHub...")
         dialog.set_progress(20)
@@ -2439,8 +2500,12 @@ class HubWindow(tk.Tk):
                 result["local"] = local
                 result["remote"] = remote
                 result["assets"] = assets
+                _log_capture(
+                    f"_open_update_page worker success local={local} remote={remote} assets={list((assets or {}).keys())}"
+                )
             except Exception as exc:
                 result["error"] = str(exc)
+                _log_capture(f"_open_update_page worker error: {exc}")
 
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
@@ -2451,34 +2516,54 @@ class HubWindow(tk.Tk):
                 return
             dialog.close()
             if result["error"]:
+                _log_capture(f"_open_update_page resultado error: {result['error']}")
                 messagebox.showerror("Actualización", f"No se pudo verificar: {result['error']}")
                 return
             local = result["local"] or "0.0.0"
             remote = result["remote"]
             self.set_version_info(local, remote)
             if not remote:
+                _log_capture("_open_update_page: remote vacío")
                 messagebox.showerror("Actualización", "No se pudo obtener la versión remota.")
                 return
             if not is_update_available(local, remote):
+                _log_capture("_open_update_page: sin actualización disponible")
                 messagebox.showinfo("Actualización", "Ya estás usando la última versión.")
                 return
+            _log_capture(f"_open_update_page: actualización disponible remote={remote} local={local}")
             confirm = messagebox.askyesno(
                 "Actualización disponible",
                 f"Hay una nueva versión disponible ({remote}).\n¿Deseas actualizar ahora?",
             )
             if not confirm:
+                _log_capture("_open_update_page: usuario canceló actualización")
                 return
+            _log_capture("_open_update_page: usuario confirmó actualización")
             self._start_manual_update(result["assets"] or {})
 
         self.after(200, _check_done)
 
     def _start_manual_update(self, assets):
+        _log_capture(f"_start_manual_update: inicio assets={list((assets or {}).keys())}")
         dialog = LoadingDialog(self, title="Descargando instalador")
         dialog.set_status("Preparando descarga...")
         dialog.set_progress(5)
         result = {"error": None, "path": None}
+        progress_state = {"last": -1, "last_msg": ""}
 
         def _progress(message, value):
+            try:
+                value_int = int(value)
+            except Exception:
+                value_int = -1
+            if (
+                message != progress_state["last_msg"]
+                or value_int >= progress_state["last"] + 10
+                or value_int in {0, 100}
+            ):
+                _log_capture(f"_start_manual_update progress: {message} ({value_int})")
+                progress_state["last"] = value_int
+                progress_state["last_msg"] = message
             self.after(0, lambda: dialog.set_status(message))
             self.after(0, lambda: dialog.set_progress(value))
 
@@ -2486,11 +2571,14 @@ class HubWindow(tk.Tk):
             try:
                 path = download_installer(assets, progress_callback=_progress)
                 result["path"] = path
+                _log_capture(f"_start_manual_update: instalador descargado en {path}")
                 self.after(0, lambda: dialog.set_status("Instalando actualización..."))
                 self.after(0, lambda: dialog.set_progress(100))
                 run_installer(path, wait=True)
+                _log_capture("_start_manual_update: run_installer finalizado")
             except Exception as exc:
                 result["error"] = str(exc)
+                _log_capture(f"_start_manual_update error: {exc}")
 
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
@@ -2501,8 +2589,10 @@ class HubWindow(tk.Tk):
                 return
             dialog.close()
             if result["error"]:
+                _log_capture(f"_start_manual_update resultado error: {result['error']}")
                 messagebox.showerror("Actualización", f"No se pudo actualizar: {result['error']}")
                 return
+            _log_capture("_start_manual_update resultado OK: mostrando countdown")
             self._show_restart_countdown()
 
         self.after(300, _check_done)
@@ -2558,8 +2648,10 @@ class HubWindow(tk.Tk):
                 args = [sys.executable]
             else:
                 args = [sys.executable, os.path.abspath(__file__)]
+            _log_capture(f"_restart_app: relanzando con args={args}")
             subprocess.Popen(args, close_fds=True)
         except Exception:
+            _log_capture("_restart_app: fallo al relanzar app")
             pass
         self.after(200, self.destroy)
 

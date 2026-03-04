@@ -29,6 +29,7 @@ from formularios.induccion_organizacional import induccion_organizacional
 from formularios.induccion_operativa import induccion_operativa
 from formularios.sensibilizacion import sensibilizacion
 from formularios.seguimientos import seguimientos
+from spell_check import attach_spell_checker
 from formularios.common import (
     _supabase_upsert,
     _supabase_enqueue_upsert,
@@ -1564,6 +1565,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             wrap="word",
         )
         self.section4_text.pack(fill="x", pady=(6, 16))
+        attach_spell_checker(self.section4_text)
 
         asistentes_frame = tk.Frame(form_container, bg=COLOR_LIGHT_BG)
         asistentes_frame.pack(fill="x")
@@ -3177,6 +3179,7 @@ class HubWindow(tk.Tk):
         )
         comentarios_txt = tk.Text(frame, width=52, height=6, wrap="word")
         comentarios_txt.grid(row=2, column=1, sticky="w", pady=(0, 6))
+        attach_spell_checker(comentarios_txt)
         comentarios_txt.insert(
             "1.0",
             company_row.get("comentarios_empresas")
@@ -5425,6 +5428,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
             ).pack(anchor="w", pady=(6, 2))
             text_box = tk.Text(section_frame, height=4, wrap="word")
             text_box.pack(fill="x", pady=(0, 12))
+            attach_spell_checker(text_box)
             self.section6_fields[field["id"]] = {"texto": text_box}
 
         self._prefill_section_fields("section_6", self.section6_fields)
@@ -5479,6 +5483,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
             ).pack(anchor="w", pady=(8, 2))
             text_box = tk.Text(section_frame, height=4, wrap="word")
             text_box.pack(fill="x", pady=(0, 12))
+            attach_spell_checker(text_box)
             self.section7_fields[field["id"]] = {"texto": text_box}
 
         self._prefill_section_fields("section_7", self.section7_fields)
@@ -6160,6 +6165,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
                 ).grid(row=0, column=0, sticky="w", padx=8, pady=6)
                 obs_text = tk.Text(obs_row, height=3, wrap="word")
                 obs_text.grid(row=0, column=1, sticky="we", padx=8, pady=6)
+                attach_spell_checker(obs_text)
                 self.section2_fields["requiere_certificado_observaciones"] = obs_text
 
         competencias_frame = tk.Frame(content, bg=COLOR_LIGHT_BG)
@@ -6350,6 +6356,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             elif field["type"] == "texto_largo":
                 widget = tk.Text(row, height=3, wrap="word")
                 widget.grid(row=0, column=1, sticky="we", padx=8, pady=8)
+                attach_spell_checker(widget)
             else:
                 widget = tk.Entry(row, width=48)
                 widget.grid(row=0, column=1, sticky="w", padx=8, pady=8)
@@ -6462,6 +6469,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             ).grid(row=0, column=0, sticky="w", padx=8, pady=6)
             obs_text = tk.Text(obs_row, height=3, wrap="word")
             obs_text.grid(row=0, column=1, sticky="we", padx=8, pady=6)
+            attach_spell_checker(obs_text)
             self.section3_fields[category["observaciones_id"]] = obs_text
 
         self._prefill_section3_fields()
@@ -6664,6 +6672,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
         obs_text = tk.Text(obs_row, height=4, wrap="word")
         obs_text.grid(row=0, column=1, sticky="we", padx=8, pady=6)
+        attach_spell_checker(obs_text)
         self.section5_fields[condiciones_vacante.SECTION_5["observaciones"]["id"]] = obs_text
 
         self._prefill_section5_fields()
@@ -6782,6 +6791,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
         consideraciones = tk.Text(row, height=3, wrap="word", width=ENTRY_W_WIDE)
         consideraciones.grid(row=0, column=1, sticky="w", padx=8, pady=6)
+        attach_spell_checker(consideraciones)
 
         descripcion = tk.Text(row, height=3, wrap="word", width=50, state="disabled")
         descripcion.grid(row=0, column=2, sticky="we", padx=8, pady=6)
@@ -6856,6 +6866,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
         self.section7_text = tk.Text(section_frame, height=8, wrap="word")
         self.section7_text.pack(fill="x", padx=24, pady=(12, 12))
+        attach_spell_checker(self.section7_text)
 
         cached = condiciones_vacante.get_form_cache().get("section_7", {})
         cached_text = cached.get(condiciones_vacante.SECTION_7["field_id"])
@@ -7346,7 +7357,9 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             if meta.get("type") == "lista":
                 return ttk.Combobox(parent, values=meta.get("options", []), state="readonly", width=width)
             if meta.get("type") == "texto_largo":
-                return tk.Text(parent, width=width, height=text_height, wrap="word")
+                w = tk.Text(parent, width=width, height=text_height, wrap="word")
+                attach_spell_checker(w)
+                return w
             if field_id == "cedula":
                 widget = ttk.Combobox(parent, values=self.cedula_options, state="normal", width=width)
                 self._apply_numeric_entry(widget)
@@ -7841,6 +7854,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         ).pack(anchor="w", pady=(8, 4))
         ajustes = tk.Text(content, height=8, width=TEXT_WIDE, wrap="word")
         ajustes.pack(fill="x", padx=4, pady=(0, 10))
+        attach_spell_checker(ajustes)
         self.section5_fields["ajustes_recomendaciones"] = ajustes
 
         tk.Label(
@@ -8467,6 +8481,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             section4_frame.pack(fill="x", padx=8, pady=(0, 8))
             fields["desarrollo_actividad"] = tk.Text(section4_frame, height=5, wrap="word")
             fields["desarrollo_actividad"].pack(fill="x", padx=6, pady=6)
+            attach_spell_checker(fields["desarrollo_actividad"])
 
             section51_frame = tk.LabelFrame(
                 block,
@@ -8823,6 +8838,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         ).pack(anchor="w", pady=(8, 4))
         ajustes = tk.Text(content, height=6, width=TEXT_WIDE, wrap="word")
         ajustes.pack(fill="x", padx=4, pady=(0, 16))
+        attach_spell_checker(ajustes)
         self.section6_fields["ajustes_recomendaciones"] = ajustes
 
         cache = contratacion_incluyente.get_form_cache().get("section_6", {})
@@ -9486,6 +9502,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
             )
             texto = tk.Text(card, width=95, height=8, wrap="word")
             texto.grid(row=1, column=1, sticky="we", padx=4, pady=4)
+            attach_spell_checker(texto)
 
             medio.bind("<<ComboboxSelected>>", lambda _e, idx=i: _on_medio_change(idx))
 
@@ -9525,6 +9542,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
 
         self.section5_text = tk.Text(section_frame, width=120, height=10, wrap="word")
         self.section5_text.pack(fill="x", padx=FORM_PADX, pady=(0, 8))
+        attach_spell_checker(self.section5_text)
 
         cache = induccion_organizacional.get_form_cache().get("section_5", {})
         if cache.get("observaciones"):
@@ -10518,6 +10536,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         )
         self.section6_text = tk.Text(section_frame, width=120, height=8, wrap="word")
         self.section6_text.pack(fill="x", padx=FORM_PADX, pady=(0, 8))
+        attach_spell_checker(self.section6_text)
 
         cached = induccion_operativa.get_form_cache().get("section_6", {})
         if cached.get("ajustes_requeridos"):
@@ -10571,6 +10590,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         ).pack(anchor="w", padx=FORM_PADX, pady=(8, 4))
         self.section8_text = tk.Text(section_frame, width=120, height=8, wrap="word")
         self.section8_text.pack(fill="x", padx=FORM_PADX, pady=(0, 8))
+        attach_spell_checker(self.section8_text)
 
         cached = induccion_operativa.get_form_cache().get("section_8", {})
         if cached.get("observaciones_recomendaciones"):
@@ -11065,6 +11085,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         )
         self.section3_text = tk.Text(section_frame, width=120, height=8, wrap="word")
         self.section3_text.pack(fill="x", padx=FORM_PADX, pady=(0, 8))
+        attach_spell_checker(self.section3_text)
         cache = sensibilizacion.get_form_cache().get("section_3", {})
         if cache.get("observaciones"):
             self.section3_text.insert("1.0", cache.get("observaciones", ""))
@@ -11910,6 +11931,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         txt.pack(fill="x", pady=(0, 10))
         self.base_text["apoyos_ajustes"] = tk.Text(txt, height=4, wrap="word")
         self.base_text["apoyos_ajustes"].pack(fill="x")
+        attach_spell_checker(self.base_text["apoyos_ajustes"])
         self.base_text["apoyos_ajustes"].insert("1.0", str(payload.get("apoyos_ajustes", "")))
 
         funcs = tk.LabelFrame(
@@ -12130,11 +12152,13 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         txt.pack(fill="x", pady=(0, 10))
         self.follow_text["situacion_encontrada"] = tk.Text(txt, height=5, wrap="word")
         self.follow_text["situacion_encontrada"].pack(fill="x", pady=(0, 8))
+        attach_spell_checker(self.follow_text["situacion_encontrada"])
         self.follow_text["situacion_encontrada"].insert(
             "1.0", str(payload.get("situacion_encontrada") or "")
         )
         self.follow_text["estrategias_ajustes"] = tk.Text(txt, height=5, wrap="word")
         self.follow_text["estrategias_ajustes"].pack(fill="x")
+        attach_spell_checker(self.follow_text["estrategias_ajustes"])
         self.follow_text["estrategias_ajustes"].insert(
             "1.0", str(payload.get("estrategias_ajustes") or "")
         )

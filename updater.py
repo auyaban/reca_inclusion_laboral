@@ -284,23 +284,66 @@ def _download_file(url: str, destination: Path, progress_callback=None) -> None:
         headers={"User-Agent": "reca-inclusion-laboral-updater"},
     )
     _log_update(f"Download start: url={url}, destination={destination}")
-    with urllib.request.urlopen(req, timeout=40) as response:
-        total = int(response.headers.get("Content-Length") or 0)
-        status = getattr(response, "status", "?")
-        _log_update(f"Download response: status={status}, total_bytes={total}")
-        downloaded = 0
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        with destination.open("wb") as handle:
-            while True:
-                chunk = response.read(1024 * 256)
-                if not chunk:
-                    break
-                handle.write(chunk)
-                downloaded += len(chunk)
-                if progress_callback and total:
-                    percent = int((downloaded / total) * 100)
-                    progress_callback("Descargando instalador...", max(1, min(99, percent)))
-    _log_update(f"Download completed: bytes={downloaded}, destination={destination}")
+    try:
+        with urllib.request.urlopen(req, timeout=40) as response:
+            total = int(response.headers.get("Content-Length") or 0)
+            status = getattr(response, "status", "?")
+            _log_update(f"Download response: status={status}, total_bytes={total}")
+            downloaded = 0
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with destination.open("wb") as handle:
+                while True:
+                    chunk = response.read(1024 * 256)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    downloaded += len(chunk)
+                    if progress_callback and total:
+                        percent = int((downloaded / total) * 100)
+                        progress_callback("Descargando instalador...", max(1, min(99, percent)))
+        _log_update(f"Download completed: bytes={downloaded}, destination={destination}")
+        return
+    except Exception as exc:
+        _log_update(f"ERROR urllib download: {exc}")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if progress_callback:
+        progress_callback("Descargando instalador (fallback Windows)...", 50)
+
+    url_ps = url.replace("'", "''")
+    out_ps = str(destination).replace("'", "''")
+    script = (
+        "$ErrorActionPreference='Stop';"
+        "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;"
+        f"$u='{url_ps}';"
+        f"$o='{out_ps}';"
+        "$h=@{ 'User-Agent'='reca-inclusion-laboral-updater' };"
+        "Invoke-WebRequest -Uri $u -Headers $h -OutFile $o -UseBasicParsing;"
+        "if (Test-Path $o) { [Console]::Out.Write((Get-Item $o).Length) }"
+    )
+    completed = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    _log_update(
+        "Fallback PowerShell download completed: "
+        f"returncode={completed.returncode}, stdout_len={len(completed.stdout or '')}, "
+        f"stderr_len={len(completed.stderr or '')}"
+    )
+    if completed.returncode != 0 or not destination.exists():
+        stderr = (completed.stderr or "").strip()
+        if stderr:
+            _log_update(f"ERROR fallback powershell download: {stderr}")
+        raise RuntimeError(
+            "No se pudo descargar el instalador (falló TLS de Python y fallback de Windows)."
+        )
+    if progress_callback:
+        progress_callback("Descarga completada.", 95)
+    size = destination.stat().st_size if destination.exists() else 0
+    _log_update(f"Download completed (fallback): bytes={size}, destination={destination}")
 
 
 def _verify_hash(installer_path: Path, assets: dict) -> None:

@@ -41,6 +41,10 @@ from formularios.common import (
     _get_supabase_write_queue_snapshot,
     _get_supabase_failed_writes_snapshot,
     _supabase_retry_all_queued_writes,
+    _supabase_rpc,
+    _supabase_auth_password_login,
+    _supabase_auth_update_password,
+    _clear_supabase_session,
 )
 from version_info import get_version
 from updater import (
@@ -2072,16 +2076,9 @@ class HubWindow(tk.Tk):
                 return
             # Reload profile to keep local state aligned.
             try:
-                refreshed = presentacion_programa._supabase_get(
-                    "profesionales",
-                    {
-                        "select": "id,usuario_login,usuario_pass,usuario_pass_hash,nombre_profesional,programa",
-                        "usuario_login": f"eq.{user_row.get('usuario_login') or username}",
-                        "limit": 1,
-                    },
-                )
-                if refreshed:
-                    user_row = refreshed[0]
+                refreshed = _supabase_rpc("get_my_profesional_profile", {})
+                if isinstance(refreshed, dict):
+                    user_row = refreshed
             except Exception:
                 pass
         self._cache_offline_user_auth(user_row, password)
@@ -2102,57 +2099,33 @@ class HubWindow(tk.Tk):
         username_norm = _normalize_login_value(username)
         if not username_norm:
             return None
-        select_fields = "id,usuario_login,usuario_pass,usuario_pass_hash,nombre_profesional,programa"
-        row = None
-        data = presentacion_programa._supabase_get(
-            "profesionales",
-            {
-                "select": select_fields,
-                "usuario_login": f"eq.{username_norm}",
-                "limit": 1,
-            },
-        )
-        if data:
-            row = data[0]
-        else:
-            # Fallback robusto: tolera espacios/mayúsculas/acentos inconsistentes en usuario_login.
-            candidates = _supabase_get_paged(
-                "profesionales",
-                {"select": select_fields},
-                page_size=1000,
-                max_pages=20,
+        _clear_supabase_session()
+        try:
+            resolved = _supabase_rpc(
+                "resolve_login_email",
+                {"p_login": username_norm},
+                use_session=False,
             )
-            for item in candidates:
-                if _normalize_login_value(item.get("usuario_login")) == username_norm:
-                    row = item
-                    break
-        if not row:
-            return None
-        stored_hash = row.get("usuario_pass_hash")
-        if stored_hash:
-            for candidate in _password_candidates(password):
-                if _verify_password_hash(candidate, stored_hash):
-                    row["_auth_source"] = "hash"
-                    return row
+        except Exception as exc:
+            raise RuntimeError(str(exc)) from exc
 
-        # Backward-compatible fallback while plaintext credentials still exist.
-        plain = str(row.get("usuario_pass") or "")
-        if plain and any(plain == candidate for candidate in _password_candidates(password)):
-            try:
-                _supabase_upsert(
-                    "profesionales",
-                    [
-                        {
-                            "id": row.get("id"),
-                            "usuario_pass_hash": _hash_password(password.strip()),
-                        }
-                    ],
-                    on_conflict="id",
-                )
-            except Exception:
-                pass
-            row["_auth_source"] = "plain"
-            return row
+        if isinstance(resolved, str):
+            email = resolved.strip()
+        elif isinstance(resolved, dict):
+            email = str(
+                resolved.get("resolve_login_email")
+                or resolved.get("email")
+                or ""
+            ).strip()
+        else:
+            email = ""
+        if not email:
+            return None
+        _supabase_auth_password_login(email, password)
+        profile = _supabase_rpc("get_my_profesional_profile", {})
+        if isinstance(profile, dict) and profile.get("id"):
+            profile["_auth_source"] = "jwt"
+            return profile
         return None
 
     def _authenticate_user_offline(self, username, password):
@@ -2209,11 +2182,11 @@ class HubWindow(tk.Tk):
         _save_offline_auth_store(store)
 
     def _must_force_password_change(self, user_row, current_password):
-        # Force update for legacy users still relying on plaintext credentials.
+        if bool(user_row.get("auth_password_temp")):
+            return True
+        # Legacy fallback for old rows not migrated yet.
         plain = str(user_row.get("usuario_pass") or "")
         if plain and any(plain == candidate for candidate in _password_candidates(current_password)):
-            return True
-        if not user_row.get("usuario_pass_hash"):
             return True
         return False
 
@@ -2277,17 +2250,18 @@ class HubWindow(tk.Tk):
                 status.config(text="La confirmación no coincide.")
                 return
             try:
-                _supabase_upsert(
+                _supabase_auth_update_password(new_pwd)
+                result = _supabase_patch_with_queue(
                     "profesionales",
-                    [
-                        {
-                            "id": user_row.get("id"),
-                            "usuario_pass_hash": _hash_password(new_pwd),
-                            "usuario_pass": None,
-                        }
-                    ],
-                    on_conflict="id",
+                    {"id": user_row.get("id")},
+                    {
+                        "usuario_pass_hash": _hash_password(new_pwd),
+                        "usuario_pass": None,
+                        "auth_password_temp": False,
+                    },
                 )
+                if (result or {}).get("status") != "synced":
+                    raise RuntimeError("No se pudo guardar el estado de contraseña.")
             except Exception as exc:
                 status.config(text=f"No se pudo actualizar contraseña: {exc}")
                 return

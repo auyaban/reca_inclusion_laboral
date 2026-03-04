@@ -26,5 +26,6 @@ logs/
 
 # OS/IDE
 .vscode/
+.claude/
 .DS_Store
 Thumbs.db

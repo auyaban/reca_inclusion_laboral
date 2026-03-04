@@ -8,9 +8,17 @@ import threading
 import uuid
 import sqlite3
 import hashlib
+import base64
 import urllib.parse
 import urllib.request
 import urllib.error
+
+_SUPABASE_SESSION_LOCK = threading.Lock()
+_SUPABASE_SESSION = {
+    "access_token": "",
+    "refresh_token": "",
+    "expires_at": 0.0,
+}
 
 
 def _resolve_env_candidates(env_path=".env"):
@@ -86,20 +94,248 @@ def _load_supabase_credentials(env_path=".env"):
     raise RuntimeError("Missing SUPABASE_URL or SUPABASE_KEY")
 
 
-def _supabase_headers(api_key):
+def _supabase_headers(api_key, bearer_token=None):
+    token = (bearer_token or "").strip() or api_key
     return {
         "apikey": api_key,
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {token}",
     }
+
+
+def _coerce_expires_at(expires_at=None, expires_in=None):
+    now = time.time()
+    try:
+        if expires_at is not None:
+            return float(expires_at)
+    except Exception:
+        pass
+    try:
+        if expires_in is not None:
+            return now + max(0.0, float(expires_in))
+    except Exception:
+        pass
+    return now + 3600.0
+
+
+def _set_supabase_session(access_token, refresh_token=None, expires_at=None, expires_in=None):
+    with _SUPABASE_SESSION_LOCK:
+        _SUPABASE_SESSION["access_token"] = str(access_token or "").strip()
+        _SUPABASE_SESSION["refresh_token"] = str(refresh_token or "").strip()
+        _SUPABASE_SESSION["expires_at"] = _coerce_expires_at(
+            expires_at=expires_at,
+            expires_in=expires_in,
+        )
+
+
+def _clear_supabase_session():
+    with _SUPABASE_SESSION_LOCK:
+        _SUPABASE_SESSION["access_token"] = ""
+        _SUPABASE_SESSION["refresh_token"] = ""
+        _SUPABASE_SESSION["expires_at"] = 0.0
+
+
+def _get_supabase_session():
+    with _SUPABASE_SESSION_LOCK:
+        return dict(_SUPABASE_SESSION)
+
+
+def _extract_error_message(exc):
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            body = exc.read().decode("utf-8", errors="replace")
+            payload = json.loads(body) if body else {}
+            if isinstance(payload, dict):
+                for key in ("msg", "message", "error_description", "error"):
+                    value = payload.get(key)
+                    if value:
+                        return str(value)
+        except Exception:
+            pass
+    return str(exc)
+
+
+def _decode_jwt_payload(token):
+    raw = str(token or "").strip()
+    if not raw:
+        return {}
+    parts = raw.split(".")
+    if len(parts) < 2:
+        return {}
+    segment = parts[1]
+    padding = "=" * ((4 - len(segment) % 4) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode((segment + padding).encode("utf-8"))
+        payload = json.loads(decoded.decode("utf-8", errors="replace"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _get_cache_scope(token):
+    payload = _decode_jwt_payload(token)
+    uid = str(payload.get("sub") or "").strip()
+    role = str(payload.get("role") or "").strip()
+    if uid:
+        return f"{role or 'authenticated'}:{uid}"
+    if role:
+        return role
+    return "anon"
+
+
+def _supabase_refresh_session(env_path=".env"):
+    session = _get_supabase_session()
+    refresh_token = (session.get("refresh_token") or "").strip()
+    if not refresh_token:
+        return False
+    supabase_url, supabase_key = _load_supabase_credentials(env_path)
+    url = f"{supabase_url.rstrip('/')}/auth/v1/token?grant_type=refresh_token"
+    payload = {"refresh_token": refresh_token}
+    body = json.dumps(payload).encode("utf-8")
+    headers = _supabase_headers(supabase_key)
+    headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            raw = response.read().decode("utf-8")
+        data = json.loads(raw) if raw else {}
+    except Exception:
+        _clear_supabase_session()
+        return False
+    access_token = (data.get("access_token") or "").strip()
+    if not access_token:
+        return False
+    _set_supabase_session(
+        access_token=access_token,
+        refresh_token=data.get("refresh_token") or refresh_token,
+        expires_at=data.get("expires_at"),
+        expires_in=data.get("expires_in"),
+    )
+    return True
+
+
+def _supabase_get_access_token(env_path=".env"):
+    session = _get_supabase_session()
+    access_token = (session.get("access_token") or "").strip()
+    expires_at = float(session.get("expires_at") or 0.0)
+    if not access_token:
+        return ""
+    if expires_at <= (time.time() + 60.0):
+        if _supabase_refresh_session(env_path=env_path):
+            refreshed = _get_supabase_session()
+            return (refreshed.get("access_token") or "").strip()
+        return ""
+    return access_token
+
+
+def _supabase_auth_password_login(email, password, env_path=".env"):
+    supabase_url, supabase_key = _load_supabase_credentials(env_path)
+    url = f"{supabase_url.rstrip('/')}/auth/v1/token?grant_type=password"
+    payload = {"email": str(email or "").strip(), "password": str(password or "")}
+    body = json.dumps(payload).encode("utf-8")
+    headers = _supabase_headers(supabase_key)
+    headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            raw = response.read().decode("utf-8")
+        data = json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        code = int(getattr(exc, "code", 0) or 0)
+        if code in {400, 401}:
+            raise RuntimeError("Usuario y contraseña incorrectos.") from exc
+        raise RuntimeError(_format_supabase_error("No se pudo autenticar con Supabase", exc)) from exc
+    except Exception as exc:
+        raise RuntimeError(_format_supabase_error("No se pudo autenticar con Supabase", exc)) from exc
+
+    access_token = (data.get("access_token") or "").strip()
+    if not access_token:
+        raise RuntimeError("No se recibió access token de Supabase Auth.")
+    _set_supabase_session(
+        access_token=access_token,
+        refresh_token=data.get("refresh_token") or "",
+        expires_at=data.get("expires_at"),
+        expires_in=data.get("expires_in"),
+    )
+    return data
+
+
+def _supabase_auth_update_password(new_password, env_path=".env"):
+    supabase_url, supabase_key = _load_supabase_credentials(env_path)
+    token = _supabase_get_access_token(env_path=env_path)
+    if not token:
+        raise RuntimeError("Sesion no valida para actualizar contraseña.")
+    url = f"{supabase_url.rstrip('/')}/auth/v1/user"
+    payload = {"password": str(new_password or "")}
+    body = json.dumps(payload).encode("utf-8")
+    attempted_refresh = False
+    last_exc = None
+    for _ in range(2):
+        headers = _supabase_headers(supabase_key, bearer_token=token)
+        headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(url, data=body, headers=headers, method="PUT")
+        try:
+            with urllib.request.urlopen(request, timeout=45) as response:
+                raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            last_exc = exc
+            if int(getattr(exc, "code", 0) or 0) == 401 and not attempted_refresh:
+                attempted_refresh = True
+                if _supabase_refresh_session(env_path=env_path):
+                    token = _supabase_get_access_token(env_path=env_path)
+                    continue
+            break
+        except Exception as exc:
+            last_exc = exc
+            break
+    raise RuntimeError(_format_supabase_error("No se pudo actualizar la contraseña en Auth", last_exc)) from last_exc
+
+
+def _supabase_rpc(function_name, params=None, env_path=".env", use_session=True):
+    supabase_url, supabase_key = _load_supabase_credentials(env_path)
+    url = f"{supabase_url.rstrip('/')}/rest/v1/rpc/{function_name}"
+    body = json.dumps(params or {}).encode("utf-8")
+    attempted_refresh = False
+    last_exc = None
+    for _ in range(3):
+        token = _supabase_get_access_token(env_path=env_path) if use_session else ""
+        headers = _supabase_headers(supabase_key, bearer_token=token)
+        headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else None
+        except urllib.error.HTTPError as exc:
+            last_exc = exc
+            if (
+                use_session
+                and int(getattr(exc, "code", 0) or 0) == 401
+                and not attempted_refresh
+                and _supabase_refresh_session(env_path=env_path)
+            ):
+                attempted_refresh = True
+                continue
+            break
+        except Exception as exc:
+            last_exc = exc
+            break
+    raise RuntimeError(_format_supabase_error(f"No se pudo ejecutar RPC {function_name}", last_exc)) from last_exc
 
 
 def _supabase_get(table, params, env_path=".env"):
     supabase_url, supabase_key = _load_supabase_credentials(env_path)
     query = urllib.parse.urlencode(params)
     url = f"{supabase_url.rstrip('/')}/rest/v1/{table}?{query}"
-    request = urllib.request.Request(url, headers=_supabase_headers(supabase_key))
     last_error = None
+    attempted_refresh = False
     for _ in range(3):
+        token = _supabase_get_access_token(env_path=env_path)
+        cache_scope = _get_cache_scope(token)
+        request = urllib.request.Request(
+            url,
+            headers=_supabase_headers(supabase_key, bearer_token=token),
+        )
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
                 payload = response.read().decode("utf-8")
@@ -110,14 +346,28 @@ def _supabase_get(table, params, env_path=".env"):
                         table,
                         params,
                         _sanitize_payload_for_cache(data),
+                        scope=cache_scope,
                     )
             except Exception:
                 pass
             return data
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if (
+                int(getattr(exc, "code", 0) or 0) == 401
+                and not attempted_refresh
+                and _supabase_refresh_session(env_path=env_path)
+            ):
+                attempted_refresh = True
+                continue
         except Exception as exc:
             last_error = exc
     try:
-        cached = _load_supabase_get_cached_response(table, params)
+        cached = _load_supabase_get_cached_response(
+            table,
+            params,
+            scope=_get_cache_scope(_supabase_get_access_token(env_path=env_path)),
+        )
     except Exception:
         cached = None
     if cached is not None:
@@ -251,7 +501,7 @@ def _ensure_offline_db():
             conn.close()
 
 
-def _serialize_query_for_cache(params):
+def _serialize_query_for_cache(params, scope=""):
     clean = {}
     for key in sorted((params or {}).keys()):
         value = (params or {}).get(key)
@@ -261,6 +511,7 @@ def _serialize_query_for_cache(params):
             clean[str(key)] = ""
         else:
             clean[str(key)] = str(value)
+    clean["__scope"] = str(scope or "")
     query_json = json.dumps(clean, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     query_hash = hashlib.sha256(query_json.encode("utf-8")).hexdigest()
     return query_hash, query_json
@@ -291,9 +542,9 @@ def _sanitize_payload_for_cache(payload):
     return payload
 
 
-def _cache_supabase_get_response(table, params, payload):
+def _cache_supabase_get_response(table, params, payload, scope=""):
     _ensure_offline_db()
-    query_hash, query_json = _serialize_query_for_cache(params)
+    query_hash, query_json = _serialize_query_for_cache(params, scope=scope)
     payload_json = json.dumps(payload, ensure_ascii=False)
     now = time.time()
     with _OFFLINE_DB_LOCK:
@@ -315,9 +566,9 @@ def _cache_supabase_get_response(table, params, payload):
             conn.close()
 
 
-def _load_supabase_get_cached_response(table, params):
+def _load_supabase_get_cached_response(table, params, scope=""):
     _ensure_offline_db()
-    query_hash, _ = _serialize_query_for_cache(params)
+    query_hash, _ = _serialize_query_for_cache(params, scope=scope)
     with _OFFLINE_DB_LOCK:
         conn = _offline_connect()
         try:
@@ -641,7 +892,11 @@ def _supabase_ping(env_path=".env", timeout=4):
     except Exception:
         return False
     url = f"{supabase_url.rstrip('/')}/rest/v1/"
-    request = urllib.request.Request(url, headers=_supabase_headers(supabase_key), method="GET")
+    request = urllib.request.Request(
+        url,
+        headers=_supabase_headers(supabase_key),
+        method="GET",
+    )
     try:
         with urllib.request.urlopen(request, timeout=timeout):
             return True
@@ -728,18 +983,29 @@ def _supabase_upsert(table, rows, env_path=".env", on_conflict=None):
     conflict_query = f"?on_conflict={on_conflict}" if on_conflict else ""
     url = f"{supabase_url.rstrip('/')}/rest/v1/{table}{conflict_query}"
     body = json.dumps(rows, ensure_ascii=False).encode("utf-8")
-    headers = _supabase_headers(supabase_key)
-    headers["Content-Type"] = "application/json"
-    headers["Prefer"] = "resolution=merge-duplicates"
-    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
     last_exc = None
+    attempted_refresh = False
     for delay in (0, 0.6, 1.5):
         if delay:
             time.sleep(delay)
+        token = _supabase_get_access_token(env_path=env_path)
+        headers = _supabase_headers(supabase_key, bearer_token=token)
+        headers["Content-Type"] = "application/json"
+        headers["Prefer"] = "resolution=merge-duplicates"
+        request = urllib.request.Request(url, data=body, headers=headers, method="POST")
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
                 payload = response.read().decode("utf-8")
             return json.loads(payload) if payload else []
+        except urllib.error.HTTPError as exc:
+            last_exc = exc
+            if (
+                int(getattr(exc, "code", 0) or 0) == 401
+                and not attempted_refresh
+                and _supabase_refresh_session(env_path=env_path)
+            ):
+                attempted_refresh = True
+                continue
         except Exception as exc:
             last_exc = exc
             continue
@@ -760,18 +1026,29 @@ def _supabase_patch(table, filters, values, env_path=".env"):
     if query:
         url = f"{url}?{query}"
     body = json.dumps(values, ensure_ascii=False).encode("utf-8")
-    headers = _supabase_headers(supabase_key)
-    headers["Content-Type"] = "application/json"
-    headers["Prefer"] = "return=representation"
-    request = urllib.request.Request(url, data=body, headers=headers, method="PATCH")
     last_exc = None
+    attempted_refresh = False
     for delay in (0, 0.6, 1.5):
         if delay:
             time.sleep(delay)
+        token = _supabase_get_access_token(env_path=env_path)
+        headers = _supabase_headers(supabase_key, bearer_token=token)
+        headers["Content-Type"] = "application/json"
+        headers["Prefer"] = "return=representation"
+        request = urllib.request.Request(url, data=body, headers=headers, method="PATCH")
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
                 payload = response.read().decode("utf-8")
             return json.loads(payload) if payload else []
+        except urllib.error.HTTPError as exc:
+            last_exc = exc
+            if (
+                int(getattr(exc, "code", 0) or 0) == 401
+                and not attempted_refresh
+                and _supabase_refresh_session(env_path=env_path)
+            ):
+                attempted_refresh = True
+                continue
         except Exception as exc:
             last_exc = exc
             continue

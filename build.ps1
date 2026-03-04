@@ -47,6 +47,7 @@ $pyiArgs = @(
     "--hidden-import", "win32com.client",
     "--hidden-import", "pythoncom",
     "--hidden-import", "pywintypes",
+    "--collect-data", "spellchecker",
     "app.py"
 )
 

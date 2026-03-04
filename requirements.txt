@@ -1,3 +1,4 @@
 openpyxl>=3.1.5
 tkcalendar>=1.6.1
 pywin32>=306
+pyspellchecker>=0.8.0

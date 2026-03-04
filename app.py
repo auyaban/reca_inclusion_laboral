@@ -45,6 +45,7 @@ from formularios.common import (
     _supabase_auth_password_login,
     _supabase_auth_update_password,
     _clear_supabase_session,
+    _get_desktop_dir,
 )
 from version_info import get_version
 from updater import (
@@ -115,12 +116,24 @@ WINDOW_CLASS_FORM_ID_MAP = {
 
 
 def _desktop_log_path():
+    # Preferimos Desktop real del usuario (incluye OneDrive/GPO).
     try:
-        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-        os.makedirs(desktop, exist_ok=True)
-        return os.path.join(desktop, "log")
+        desktop = _get_desktop_dir()
+        path = os.path.join(desktop, "log")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        return path
     except Exception:
-        return os.path.join(os.getcwd(), "log")
+        pass
+    # Fallback estable para no perder trazas.
+    local_app_data = os.getenv("LOCALAPPDATA")
+    if local_app_data:
+        fallback_dir = os.path.join(local_app_data, "RECA", "logs")
+        try:
+            os.makedirs(fallback_dir, exist_ok=True)
+            return os.path.join(fallback_dir, "log")
+        except Exception:
+            pass
+    return os.path.join(os.getcwd(), "log")
 
 
 def _ensure_daily_log(path):
@@ -1913,6 +1926,7 @@ class HubWindow(tk.Tk):
         super().__init__()
         _log_capture("==== Inicio de app ====")
         _log_capture(f"Python={sys.version.split()[0]} | platform={sys.platform} | cwd={os.getcwd()}")
+        _log_capture(f"log_path={_desktop_log_path()}")
         _run_encoding_health_check()
         self.title(APP_NAME)
         self.configure(bg=COLOR_LIGHT_BG)

@@ -4,6 +4,7 @@ import time
 import unicodedata
 import json
 import sys
+import ctypes
 import threading
 import uuid
 import sqlite3
@@ -1086,17 +1087,61 @@ def _parse_date_value(value):
 
 
 def _get_desktop_dir():
+    def _validate(path):
+        candidate = str(path or "").strip()
+        if not candidate:
+            return None
+        try:
+            os.makedirs(candidate, exist_ok=True)
+            return candidate
+        except Exception:
+            return None
+
+    # 0) Windows User Shell Folders: soporta redirecciones/GPO.
+    if os.name == "nt":
+        try:
+            import winreg
+
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+            ) as key:
+                desktop_raw, _ = winreg.QueryValueEx(key, "Desktop")
+            resolved = _validate(os.path.expandvars(str(desktop_raw or "").strip()))
+            if resolved:
+                return resolved
+        except Exception:
+            pass
+
+    # 1) OneDrive.
     for env_key in ("OneDrive", "OneDriveConsumer"):
         base = os.getenv(env_key)
         if base:
-            desktop = os.path.join(base, "Desktop")
-            if os.path.isdir(desktop):
-                return desktop
+            resolved = _validate(os.path.join(base, "Desktop"))
+            if resolved:
+                return resolved
+
+    # 2) USERPROFILE.
     userprofile = os.getenv("USERPROFILE")
     if userprofile:
-        desktop = os.path.join(userprofile, "Desktop")
-        if os.path.isdir(desktop):
-            return desktop
+        for name in ("Desktop", "Escritorio"):
+            resolved = _validate(os.path.join(userprofile, name))
+            if resolved:
+                return resolved
+
+    # 3) HOME.
+    home = os.path.expanduser("~")
+    for name in ("Desktop", "Escritorio"):
+        resolved = _validate(os.path.join(home, name))
+        if resolved:
+            return resolved
+
+    # 4) Fallback estable.
+    local_app_data = os.getenv("LOCALAPPDATA")
+    if local_app_data:
+        resolved = _validate(os.path.join(local_app_data, "RECA", "outputs"))
+        if resolved:
+            return resolved
     return os.getcwd()
 
 

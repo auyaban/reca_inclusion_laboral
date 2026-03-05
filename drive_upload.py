@@ -4,7 +4,6 @@ import re
 import time
 
 
-DEFAULT_FOLDER_ID = "1zbuUkpHPEDfNuLN-tPQax-3ua26oxjjA"
 SCOPE = "https://www.googleapis.com/auth/drive.file"
 DEFAULT_CONFIG_PATH = "config.json"
 
@@ -30,10 +29,16 @@ def _get_credentials_path():
 
 
 def _get_folder_id():
-    if os.getenv("GOOGLE_DRIVE_FOLDER_ID"):
-        return os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+    env_folder = str(os.getenv("GOOGLE_DRIVE_FOLDER_ID") or "").strip()
+    if env_folder:
+        return env_folder
     config = _load_config()
-    return config.get("google_drive_folder_id") or DEFAULT_FOLDER_ID
+    cfg_folder = str(config.get("google_drive_folder_id") or "").strip()
+    if cfg_folder:
+        return cfg_folder
+    raise RuntimeError(
+        "Falta GOOGLE_DRIVE_FOLDER_ID o config.json con google_drive_folder_id."
+    )
 
 
 def _get_excel_folder_id():

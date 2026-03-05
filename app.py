@@ -31,6 +31,7 @@ from formularios.induccion_operativa import induccion_operativa
 from formularios.sensibilizacion import sensibilizacion
 from formularios.seguimientos import seguimientos
 from spell_check import attach_spell_checker
+from dictation import attach_dictation, cleanup_stale_audio
 from formularios.common import (
     _supabase_upsert,
     _supabase_enqueue_upsert,
@@ -43,10 +44,12 @@ from formularios.common import (
     _get_supabase_failed_writes_snapshot,
     _supabase_retry_all_queued_writes,
     _supabase_rpc,
+    _supabase_get_access_token,
     _supabase_auth_password_login,
     _supabase_auth_update_password,
     _clear_supabase_session,
     _get_desktop_dir,
+    _load_env_file,
 )
 from version_info import get_version
 from updater import (
@@ -94,7 +97,7 @@ DRAFTS_FILE_NAME = "form_drafts_il.json"
 OFFLINE_AUTH_FILE_NAME = "offline_auth_users.json"
 LOGIN_CREDENTIALS_FILE_NAME = "login_credentials.json"
 _LOG_CURRENT_DAY = None
-USAGE_EXEMPT_LOGINS = {"testaaron"}
+_USAGE_EXEMPT_LOGINS_CACHE = None
 FORM_MODULE_MAP = {
     "presentacion_programa": presentacion_programa,
     "evaluacion_accesibilidad": evaluacion_accesibilidad,
@@ -375,8 +378,11 @@ def _load_offline_auth_store():
 
 
 def _save_offline_auth_store(data):
-    with open(_get_offline_auth_path(), "w", encoding="utf-8") as handle:
+    path = _get_offline_auth_path()
+    tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
         json.dump(data, handle, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
 
 
 def _load_drafts_store():
@@ -398,8 +404,11 @@ def _load_drafts_store():
 
 
 def _save_drafts_store(data):
-    with open(_get_drafts_path(), "w", encoding="utf-8") as handle:
+    path = _get_drafts_path()
+    tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
         json.dump(data, handle, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
 
 
 def _extract_draft_company_name(cache_snapshot):
@@ -807,6 +816,26 @@ def _normalize_login_value(value):
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
     text = re.sub(r"\s+", "", text).lower().strip()
     return text
+
+
+def _get_usage_exempt_logins():
+    global _USAGE_EXEMPT_LOGINS_CACHE
+    if _USAGE_EXEMPT_LOGINS_CACHE is not None:
+        return _USAGE_EXEMPT_LOGINS_CACHE
+    raw = str(os.getenv("USAGE_EXEMPT_LOGINS") or "").strip()
+    if not raw:
+        try:
+            env = _load_env_file(".env") or {}
+            raw = str(env.get("USAGE_EXEMPT_LOGINS") or "").strip()
+        except Exception:
+            raw = ""
+    tokens = re.split(r"[,\n;]+", raw)
+    _USAGE_EXEMPT_LOGINS_CACHE = {
+        _normalize_login_value(token)
+        for token in tokens
+        if _normalize_login_value(token)
+    }
+    return _USAGE_EXEMPT_LOGINS_CACHE
 
 
 def _password_candidates(password):
@@ -1372,6 +1401,53 @@ def _get_required_fecha_visita(window):
     except Exception:
         pass
     return None
+
+
+def _iter_widget_tree(root):
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        yield node
+        try:
+            children = list(node.winfo_children())
+        except Exception:
+            children = []
+        stack.extend(children)
+
+
+def _attach_dictation_for_section(window, form_id, section_name):
+    if not window or not form_id:
+        return
+    container = getattr(window, "section_container", None) or window
+    text_widgets = []
+    for widget in _iter_widget_tree(container):
+        if not isinstance(widget, tk.Text):
+            continue
+        try:
+            if str(widget.cget("state")) == "disabled":
+                continue
+            height = int(widget.cget("height") or 0)
+            if height < 4:
+                continue
+        except Exception:
+            continue
+        text_widgets.append(widget)
+
+    for idx, widget in enumerate(text_widgets, start=1):
+        field_id = f"{section_name}:text_{idx}"
+        try:
+            attach_dictation(
+                widget,
+                form_id=form_id,
+                field_id=field_id,
+                session_provider=lambda: _supabase_get_access_token(".env"),
+                log_fn=_log_capture,
+            )
+        except Exception as exc:
+            _log_capture(
+                f"[DICTATION] attach_failed form={form_id} section={section_name} "
+                f"field={field_id} err={exc}"
+            )
 
 
 class FormMousewheelMixin:
@@ -2091,6 +2167,11 @@ class HubWindow(tk.Tk):
         _log_capture(f"Python={sys.version.split()[0]} | platform={sys.platform} | cwd={os.getcwd()}")
         _log_capture(f"log_path={_desktop_log_path()}")
         _run_encoding_health_check()
+        try:
+            removed = cleanup_stale_audio(ttl_hours=24)
+            _log_capture(f"[DICTATION] cleanup_stale_audio removed={removed}")
+        except Exception as exc:
+            _log_capture(f"[DICTATION] cleanup_stale_audio_failed err={exc}")
         self.title(APP_NAME)
         self.configure(bg=COLOR_LIGHT_BG)
         self.geometry("900x600")
@@ -2384,13 +2465,8 @@ class HubWindow(tk.Tk):
         _save_offline_auth_store(store)
 
     def _must_force_password_change(self, user_row, current_password):
-        if bool(user_row.get("auth_password_temp")):
-            return True
-        # Legacy fallback for old rows not migrated yet.
-        plain = str(user_row.get("usuario_pass") or "")
-        if plain and any(plain == candidate for candidate in _password_candidates(current_password)):
-            return True
-        return False
+        _ = current_password
+        return bool(user_row.get("auth_password_temp"))
 
     def _validate_new_password(self, new_password, current_password):
         pwd = str(new_password or "")
@@ -2453,7 +2529,7 @@ class HubWindow(tk.Tk):
                 return
             try:
                 _supabase_auth_update_password(new_pwd)
-                result = _supabase_patch_with_queue(
+                patch_result = _supabase_patch_with_queue(
                     "profesionales",
                     {"id": user_row.get("id")},
                     {
@@ -2462,7 +2538,7 @@ class HubWindow(tk.Tk):
                         "auth_password_temp": False,
                     },
                 )
-                if (result or {}).get("status") != "synced":
+                if (patch_result or {}).get("status") not in {"synced", "queued"}:
                     raise RuntimeError("No se pudo guardar el estado de contraseña.")
             except Exception as exc:
                 status.config(text=f"No se pudo actualizar contraseña: {exc}")
@@ -2501,7 +2577,7 @@ class HubWindow(tk.Tk):
         )
         if not login:
             return True
-        return login not in USAGE_EXEMPT_LOGINS
+        return login not in _get_usage_exempt_logins()
 
     def _start_usage_session(self):
         if not self._should_track_usage():
@@ -3945,7 +4021,14 @@ class HubWindow(tk.Tk):
                 def _wrapped(*args, **kwargs):
                     section = method_name.replace("_show_", "")
                     window._current_section = section
-                    return fn(*args, **kwargs)
+                    result = fn(*args, **kwargs)
+                    try:
+                        _attach_dictation_for_section(window, form_id, section)
+                    except Exception as exc:
+                        _log_capture(
+                            f"[DICTATION] attach_wrapper_failed form={form_id} section={section} err={exc}"
+                        )
+                    return result
 
                 _wrapped._section_wrapped = True
                 return _wrapped
@@ -3957,6 +4040,12 @@ class HubWindow(tk.Tk):
                 window._current_section = str(cache.get("_last_section"))
         except Exception:
             pass
+        try:
+            _attach_dictation_for_section(window, form_id, getattr(window, "_current_section", "section_1"))
+        except Exception as exc:
+            _log_capture(
+                f"[DICTATION] attach_initial_failed form={form_id} section={getattr(window, '_current_section', 'section_1')} err={exc}"
+            )
 
     def _open_form(self, form_meta):
         if form_meta["id"] == "presentacion_programa":
@@ -12092,6 +12181,13 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         self.base_text["apoyos_ajustes"] = tk.Text(txt, height=4, wrap="word")
         self.base_text["apoyos_ajustes"].pack(fill="x")
         attach_spell_checker(self.base_text["apoyos_ajustes"])
+        attach_dictation(
+            self.base_text["apoyos_ajustes"],
+            form_id="seguimientos",
+            field_id="base:apoyos_ajustes",
+            session_provider=lambda: _supabase_get_access_token(".env"),
+            log_fn=_log_capture,
+        )
         self.base_text["apoyos_ajustes"].insert("1.0", str(payload.get("apoyos_ajustes", "")))
 
         funcs = tk.LabelFrame(
@@ -12313,12 +12409,26 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         self.follow_text["situacion_encontrada"] = tk.Text(txt, height=5, wrap="word")
         self.follow_text["situacion_encontrada"].pack(fill="x", pady=(0, 8))
         attach_spell_checker(self.follow_text["situacion_encontrada"])
+        attach_dictation(
+            self.follow_text["situacion_encontrada"],
+            form_id="seguimientos",
+            field_id=f"followup_{idx}:situacion_encontrada",
+            session_provider=lambda: _supabase_get_access_token(".env"),
+            log_fn=_log_capture,
+        )
         self.follow_text["situacion_encontrada"].insert(
             "1.0", str(payload.get("situacion_encontrada") or "")
         )
         self.follow_text["estrategias_ajustes"] = tk.Text(txt, height=5, wrap="word")
         self.follow_text["estrategias_ajustes"].pack(fill="x")
         attach_spell_checker(self.follow_text["estrategias_ajustes"])
+        attach_dictation(
+            self.follow_text["estrategias_ajustes"],
+            form_id="seguimientos",
+            field_id=f"followup_{idx}:estrategias_ajustes",
+            session_provider=lambda: _supabase_get_access_token(".env"),
+            log_fn=_log_capture,
+        )
         self.follow_text["estrategias_ajustes"].insert(
             "1.0", str(payload.get("estrategias_ajustes") or "")
         )

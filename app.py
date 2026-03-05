@@ -4,6 +4,7 @@ import os
 import time
 import sys
 import subprocess
+import ctypes
 import unicodedata
 import shutil
 import uuid
@@ -91,7 +92,9 @@ _MOJIBAKE_PATTERNS = ("Ã", "Â", "â€", "ï¿½", "\ufffd", "Ð", "Ñ")
 _ENCODING_CHECK_DONE = False
 DRAFTS_FILE_NAME = "form_drafts_il.json"
 OFFLINE_AUTH_FILE_NAME = "offline_auth_users.json"
+LOGIN_CREDENTIALS_FILE_NAME = "login_credentials.json"
 _LOG_CURRENT_DAY = None
+USAGE_EXEMPT_LOGINS = {"testaaron"}
 FORM_MODULE_MAP = {
     "presentacion_programa": presentacion_programa,
     "evaluacion_accesibilidad": evaluacion_accesibilidad,
@@ -191,6 +194,166 @@ def _get_drafts_path():
 
 def _get_offline_auth_path():
     return os.path.join(_get_local_cache_dir(), OFFLINE_AUTH_FILE_NAME)
+
+
+def _get_login_credentials_path():
+    return os.path.join(_get_local_cache_dir(), LOGIN_CREDENTIALS_FILE_NAME)
+
+
+def _dpapi_encrypt_text(plain_text):
+    if os.name != "nt":
+        return ""
+    text = str(plain_text or "")
+    if not text:
+        return ""
+    try:
+        from ctypes import wintypes
+
+        class DATA_BLOB(ctypes.Structure):
+            _fields_ = [
+                ("cbData", wintypes.DWORD),
+                ("pbData", ctypes.POINTER(ctypes.c_byte)),
+            ]
+
+        def _make_blob(data_bytes):
+            if not data_bytes:
+                return DATA_BLOB(0, None), None
+            buf = (ctypes.c_byte * len(data_bytes)).from_buffer_copy(data_bytes)
+            return DATA_BLOB(len(data_bytes), ctypes.cast(buf, ctypes.POINTER(ctypes.c_byte))), buf
+
+        crypt32 = ctypes.windll.crypt32
+        kernel32 = ctypes.windll.kernel32
+        CRYPTPROTECT_UI_FORBIDDEN = 0x01
+
+        in_blob, in_buf = _make_blob(text.encode("utf-8"))
+        entropy_blob, entropy_buf = _make_blob(APP_NAME.encode("utf-8"))
+        out_blob = DATA_BLOB()
+        ok = crypt32.CryptProtectData(
+            ctypes.byref(in_blob),
+            None,
+            ctypes.byref(entropy_blob),
+            None,
+            None,
+            CRYPTPROTECT_UI_FORBIDDEN,
+            ctypes.byref(out_blob),
+        )
+        if not ok:
+            return ""
+        try:
+            encrypted = ctypes.string_at(out_blob.pbData, out_blob.cbData)
+            return base64.b64encode(encrypted).decode("ascii")
+        finally:
+            if out_blob.pbData:
+                kernel32.LocalFree(out_blob.pbData)
+            _ = in_buf, entropy_buf
+    except Exception:
+        return ""
+
+
+def _dpapi_decrypt_text(cipher_b64):
+    if os.name != "nt":
+        return ""
+    payload = str(cipher_b64 or "").strip()
+    if not payload:
+        return ""
+    try:
+        encrypted = base64.b64decode(payload.encode("ascii"), validate=False)
+    except Exception:
+        return ""
+    if not encrypted:
+        return ""
+    try:
+        from ctypes import wintypes
+
+        class DATA_BLOB(ctypes.Structure):
+            _fields_ = [
+                ("cbData", wintypes.DWORD),
+                ("pbData", ctypes.POINTER(ctypes.c_byte)),
+            ]
+
+        def _make_blob(data_bytes):
+            if not data_bytes:
+                return DATA_BLOB(0, None), None
+            buf = (ctypes.c_byte * len(data_bytes)).from_buffer_copy(data_bytes)
+            return DATA_BLOB(len(data_bytes), ctypes.cast(buf, ctypes.POINTER(ctypes.c_byte))), buf
+
+        crypt32 = ctypes.windll.crypt32
+        kernel32 = ctypes.windll.kernel32
+        CRYPTPROTECT_UI_FORBIDDEN = 0x01
+
+        in_blob, in_buf = _make_blob(encrypted)
+        entropy_blob, entropy_buf = _make_blob(APP_NAME.encode("utf-8"))
+        out_blob = DATA_BLOB()
+        ok = crypt32.CryptUnprotectData(
+            ctypes.byref(in_blob),
+            None,
+            ctypes.byref(entropy_blob),
+            None,
+            None,
+            CRYPTPROTECT_UI_FORBIDDEN,
+            ctypes.byref(out_blob),
+        )
+        if not ok:
+            return ""
+        try:
+            decrypted = ctypes.string_at(out_blob.pbData, out_blob.cbData)
+            return decrypted.decode("utf-8", errors="replace")
+        finally:
+            if out_blob.pbData:
+                kernel32.LocalFree(out_blob.pbData)
+            _ = in_buf, entropy_buf
+    except Exception:
+        return ""
+
+
+def _load_saved_login_credentials():
+    payload = {"remember": True, "username": "", "password": ""}
+    path = _get_login_credentials_path()
+    if not os.path.exists(path):
+        return payload
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            raw = json.load(handle) or {}
+    except Exception:
+        return payload
+    if not isinstance(raw, dict):
+        return payload
+    remember = bool(raw.get("remember", True))
+    username = str(raw.get("username") or "").strip()
+    password = _dpapi_decrypt_text(raw.get("password_enc"))
+    payload["remember"] = remember
+    payload["username"] = username
+    payload["password"] = password if remember else ""
+    return payload
+
+
+def _save_login_credentials(username, password):
+    user = str(username or "").strip()
+    pwd = str(password or "")
+    cipher = _dpapi_encrypt_text(pwd)
+    if not user or not cipher:
+        return
+    payload = {
+        "version": 1,
+        "remember": True,
+        "username": user,
+        "password_enc": cipher,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    path = _get_login_credentials_path()
+    tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
+
+
+def _clear_login_credentials():
+    path = _get_login_credentials_path()
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
 
 
 def _load_offline_auth_store():
@@ -694,7 +857,7 @@ def _append_sheet_to_company_workbook(individual_excel_path, company_name, form_
         return individual_excel_path
 
     try:
-        import win32com.client as win32
+        import win32com.client as win32  # pyright: ignore[reportMissingModuleSource]
     except ImportError as exc:
         raise RuntimeError("Falta pywin32 para consolidar hojas por empresa.") from exc
 
@@ -1979,6 +2142,7 @@ class HubWindow(tk.Tk):
     def _build_login(self):
         self.login_frame = tk.Frame(self, bg=COLOR_LIGHT_BG)
         self.login_frame.place(relx=0.5, rely=0.5, anchor="center")
+        saved_login = _load_saved_login_credentials()
 
         title = tk.Label(
             self.login_frame,
@@ -2010,6 +2174,21 @@ class HubWindow(tk.Tk):
         self.login_pass_entry = tk.Entry(form, width=30, show="*")
         self.login_pass_entry.grid(row=1, column=1, sticky="w", pady=(0, 8))
 
+        self.remember_login_var = tk.BooleanVar(value=bool(saved_login.get("remember", True)))
+        remember_cb = tk.Checkbutton(
+            form,
+            text="Recordarme",
+            variable=self.remember_login_var,
+            bg=COLOR_LIGHT_BG,
+            activebackground=COLOR_LIGHT_BG,
+        )
+        remember_cb.grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+        if saved_login.get("username"):
+            self.login_user_entry.insert(0, str(saved_login.get("username")))
+        if saved_login.get("password"):
+            self.login_pass_entry.insert(0, str(saved_login.get("password")))
+
         self.login_status = tk.Label(
             self.login_frame,
             text="",
@@ -2017,7 +2196,7 @@ class HubWindow(tk.Tk):
             fg="#555555",
             bg=COLOR_LIGHT_BG,
         )
-        self.login_status.pack(anchor="w", pady=(4, 12))
+        self.login_status.pack(anchor="w", pady=(2, 12))
 
         login_btn = ttk.Button(
             self.login_frame,
@@ -2096,6 +2275,15 @@ class HubWindow(tk.Tk):
             except Exception:
                 pass
         self._cache_offline_user_auth(user_row, password)
+        remember_enabled = True
+        try:
+            remember_enabled = bool(self.remember_login_var.get())
+        except Exception:
+            pass
+        if remember_enabled:
+            _save_login_credentials(username_input or username, password)
+        else:
+            _clear_login_credentials()
         self.current_user = (user_row.get("usuario_login") or username).strip()
         self.current_user_profile = user_row
         try:
@@ -2307,7 +2495,17 @@ class HubWindow(tk.Tk):
         except Exception:
             return False
 
+    def _should_track_usage(self):
+        login = _normalize_login_value(
+            self.current_user_profile.get("usuario_login") or self.current_user or ""
+        )
+        if not login:
+            return True
+        return login not in USAGE_EXEMPT_LOGINS
+
     def _start_usage_session(self):
+        if not self._should_track_usage():
+            return
         if self.current_session_id:
             return
         self.current_session_id = str(uuid.uuid4())
@@ -2323,6 +2521,8 @@ class HubWindow(tk.Tk):
         self._usage_upsert_async("utilizacion_il", row, on_conflict="session_id")
 
     def _mark_app_closed(self):
+        if not self._should_track_usage():
+            return
         if not self.current_session_id:
             return
         closed_at = self._get_colombia_now().isoformat()
@@ -2340,6 +2540,8 @@ class HubWindow(tk.Tk):
         self._usage_upsert_sync("utilizacion_il", row, on_conflict="session_id")
 
     def track_form_open(self, form_id, form_name):
+        if not self._should_track_usage():
+            return
         if not self.current_session_id:
             return
         event_id = str(uuid.uuid4())
@@ -2357,6 +2559,8 @@ class HubWindow(tk.Tk):
         self._usage_upsert_async("utilizacion_il_eventos", row, on_conflict="event_id")
 
     def track_form_finished(self, form_id):
+        if not self._should_track_usage():
+            return
         if not self.current_session_id:
             return
         event_id = self._form_event_ids.get(form_id)
@@ -2390,6 +2594,8 @@ class HubWindow(tk.Tk):
         self._form_event_payloads.pop(form_id, None)
 
     def track_form_completed(self, form_name, company_name, path_formato=None):
+        if not self._should_track_usage():
+            return
         usuario_login = (self.current_user_profile.get("usuario_login") or self.current_user or "").strip()
         nombre_usuario = (self.current_user_profile.get("nombre_profesional") or self.current_user or "").strip()
         now_col = self._get_colombia_now()
@@ -3014,7 +3220,10 @@ class HubWindow(tk.Tk):
     def _get_assigned_companies(self):
         user_login = self._norm_match(self.current_user_profile.get("usuario_login") or self.current_user)
         full_name = self._norm_match(self.current_user_profile.get("nombre_profesional"))
+        is_admin = bool(self.current_user_profile.get("is_admin"))
         can_view_all = (
+            is_admin
+            or
             user_login in {"test", "sanpac", "sarzam", "sarzambrano"}
             or "sandra pachon" in full_name
             or "sara zambrano" in full_name
@@ -5886,20 +6095,6 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             return
         self._show_section_1()
 
-    def _format_currency_entry(self, event, entry):
-        value = entry.get()
-        digits = "".join(ch for ch in value if ch.isdigit())
-        if not digits:
-            entry.delete(0, tk.END)
-            return
-        try:
-            formatted = f"{int(digits):,}".replace(",", ".")
-        except ValueError:
-            return
-        entry.delete(0, tk.END)
-        entry.insert(0, formatted)
-        entry.icursor(tk.END)
-
     def _build_header(self):
         header = tk.Frame(self, bg=COLOR_LIGHT_BG)
         header.pack(fill="x", padx=FORM_PADX, pady=(24, 8))
@@ -6132,11 +6327,6 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             else:
                 widget = tk.Entry(row, width=48)
                 widget.grid(row=0, column=1, sticky="w", padx=8, pady=8)
-                if field["id"] == "salario_asignado":
-                    widget.bind(
-                        "<KeyRelease>",
-                        lambda event, entry=widget: self._format_currency_entry(event, entry),
-                    )
 
             self.section2_fields[field["id"]] = widget
 
@@ -6282,32 +6472,14 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             cb.grid(row=idx // 3, column=idx % 3, padx=8, pady=4, sticky="w")
             self.section2_1_fields[field_id] = var
 
-        time_options = [
-            "1:00 am",
-            "2:00 am",
-            "3:00 am",
-            "4:00 am",
-            "5:00 am",
-            "6:00 am",
-            "7:00 am",
-            "8:00 am",
-            "9:00 am",
-            "10:00 am",
-            "11:00 am",
-            "12:00 am",
-            "12:00 pm",
-            "1:00 pm",
-            "2:00 pm",
-            "3:00 pm",
-            "4:00 pm",
-            "5:00 pm",
-            "6:00 pm",
-            "7:00 pm",
-            "8:00 pm",
-            "9:00 pm",
-            "10:00 pm",
-            "11:00 pm",
-        ]
+        time_options = []
+        for hour in range(24):
+            for minute in (0, 30):
+                period = "am" if hour < 12 else "pm"
+                hour12 = hour % 12
+                if hour12 == 0:
+                    hour12 = 12
+                time_options.append(f"{hour12}:{minute:02d} {period}")
 
         for field in condiciones_vacante.SECTION_2_1["fields"]:
             row = tk.Frame(content, bg="white", bd=1, relief="solid")

@@ -9,6 +9,7 @@ from formularios.common import (
     _normalize_cedula,
     _normalize_text,
     sanitize_logo_error_cells,
+    autofit_rows,
     _sanitize_filename,
     _supabase_get,
 )
@@ -947,6 +948,7 @@ def export_to_excel(clear_cache=True):
         _write_section_8(ws, FORM_CACHE.get("section_8", {}))
         _write_section_9(ws, FORM_CACHE.get("section_9", []))
         sanitize_logo_error_cells(wb)
+        autofit_rows(ws)
         wb.Save()
     finally:
         if wb is not None:

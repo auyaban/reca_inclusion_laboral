@@ -15,6 +15,7 @@ from formularios.common import (
     _get_desktop_dir,
     _normalize_text,
     sanitize_logo_error_cells,
+    autofit_rows,
     _sanitize_filename,
     _supabase_get,
 )
@@ -353,6 +354,7 @@ def export_to_excel(progress_callback=None):
                 progress_callback(section_id)
             _write_section_with_ws(ws, section_id, payload)
         sanitize_logo_error_cells(wb)
+        autofit_rows(ws)
         wb.Save()
         _log_excel("SUCCESS export_all")
     except Exception as exc:

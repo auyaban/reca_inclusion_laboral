@@ -8,6 +8,7 @@ from formularios.common import (
     _get_desktop_dir,
     _normalize_text,
     sanitize_logo_error_cells,
+    autofit_rows,
     _sanitize_filename,
     _supabase_get,
 )
@@ -723,6 +724,7 @@ def export_to_excel(cache=None):
                 ws.Range(f"L{row}").Value = "Cargo:"
 
         sanitize_logo_error_cells(wb)
+        autofit_rows(ws)
         wb.Save()
         _log_excel("SUCCESS export_all", output_path)
     except Exception as exc:

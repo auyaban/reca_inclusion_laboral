@@ -10,6 +10,7 @@ from formularios.common import (
     _normalize_text,
     _parse_date_value,
     sanitize_logo_error_cells,
+    autofit_rows,
     _sanitize_filename,
     _supabase_get,
     _supabase_upsert_with_queue,
@@ -877,6 +878,7 @@ def export_to_excel(clear_cache=True):
         _write_section_6(ws, FORM_CACHE.get("section_6", {}))
         _write_section_7(ws, FORM_CACHE.get("section_7", []))
         sanitize_logo_error_cells(wb)
+        autofit_rows(ws)
         wb.Save()
         _log_excel("SUCCESS export_all")
     except Exception as exc:

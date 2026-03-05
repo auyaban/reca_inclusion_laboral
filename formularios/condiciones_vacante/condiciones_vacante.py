@@ -9,6 +9,7 @@ from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
     format_checkbox_symbol,
     sanitize_logo_error_cells,
+    autofit_rows,
     _get_desktop_dir,
     _normalize_text,
     _sanitize_filename,
@@ -266,7 +267,6 @@ EXCEL_MAPPING = {
     "section_6": {
         "start_row": 153,
         "discapacidad_col": "A",
-        "consideraciones_col": "G",
         "descripcion_col": "L",
         "base_rows": 4,
     },
@@ -1114,15 +1114,10 @@ def _write_section_with_ws(ws, section_id, payload):
         for idx, entry in enumerate(payload or []):
             row = start_row + idx
             discapacidad = entry.get("discapacidad", "")
-            consideraciones = entry.get("consideraciones", "")
             _log_excel(
                 f"WRITE section=section_6 cell={mapping['discapacidad_col']}{row} key=discapacidad value={discapacidad!r}"
             )
-            _log_excel(
-                f"WRITE section=section_6 cell={mapping['consideraciones_col']}{row} key=consideraciones value={consideraciones!r}"
-            )
             ws.Range(f"{mapping['discapacidad_col']}{row}").Value = discapacidad
-            ws.Range(f"{mapping['consideraciones_col']}{row}").Value = consideraciones
         return
 
     if section_id == "section_7":
@@ -1227,6 +1222,8 @@ def export_to_excel(progress_callback=None):
                 progress_callback(section_id)
             _write_section_with_ws(ws, section_id, payload)
         sanitize_logo_error_cells(wb)
+        autofit_rows(ws)
+        _log_excel("AUTOFIT rows adjusted")
         wb.Save()
         _log_excel("SUCCESS export_all")
     except Exception as exc:

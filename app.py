@@ -6988,7 +6988,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
     def _show_section_6(self):
         self._clear_section_container()
         self.header_title.config(text=condiciones_vacante.SECTION_6["title"])
-        self.header_subtitle.config(text="Selecciona discapacidad y consideraciones.")
+        self.header_subtitle.config(text="Selecciona discapacidad y descripción.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
 
@@ -7014,16 +7014,10 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         ).grid(row=0, column=0, sticky="w", padx=(0, 8))
         tk.Label(
             header,
-            text="Consideraciones",
-            font=FONT_LABEL,
-            bg=COLOR_LIGHT_BG,
-        ).grid(row=0, column=1, sticky="w", padx=(0, 8))
-        tk.Label(
-            header,
             text="Descripción sugerida",
             font=FONT_LABEL,
             bg=COLOR_LIGHT_BG,
-        ).grid(row=0, column=2, sticky="w")
+        ).grid(row=0, column=1, sticky="w")
 
         self.section6_rows = []
         self.section6_container = tk.Frame(content, bg=COLOR_LIGHT_BG)
@@ -7068,16 +7062,11 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         )
         combo.grid(row=0, column=0, sticky="w", padx=8, pady=6)
 
-        consideraciones = tk.Text(row, height=3, wrap="word", width=ENTRY_W_WIDE)
-        consideraciones.grid(row=0, column=1, sticky="w", padx=8, pady=6)
-        attach_spell_checker(consideraciones)
-
         descripcion = tk.Text(row, height=3, wrap="word", width=50, state="disabled")
-        descripcion.grid(row=0, column=2, sticky="we", padx=8, pady=6)
+        descripcion.grid(row=0, column=1, sticky="we", padx=8, pady=6)
 
         row_entry = {
             "combo": combo,
-            "consideraciones": consideraciones,
             "descripcion": descripcion,
         }
         self.section6_rows.append(row_entry)
@@ -7102,13 +7091,10 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _set_disability_row(self, row_entry, values):
         discapacidad = (values or {}).get("discapacidad", "")
-        consideraciones = (values or {}).get("consideraciones", "")
         descripcion = (values or {}).get("descripcion", "")
         if discapacidad:
             row_entry["combo"].set(discapacidad)
             self._update_disability_description(row_entry)
-        row_entry["consideraciones"].delete("1.0", tk.END)
-        row_entry["consideraciones"].insert("1.0", consideraciones)
         if descripcion:
             row_entry["descripcion"].configure(state="normal")
             row_entry["descripcion"].delete("1.0", tk.END)
@@ -7119,13 +7105,11 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         payload = []
         for row_entry in self.section6_rows:
             discapacidad = row_entry["combo"].get().strip()
-            consideraciones = row_entry["consideraciones"].get("1.0", tk.END).strip()
             descripcion = row_entry["descripcion"].get("1.0", tk.END).strip()
-            if discapacidad or consideraciones or descripcion:
+            if discapacidad or descripcion:
                 payload.append(
                     {
                         "discapacidad": discapacidad,
-                        "consideraciones": consideraciones,
                         "descripcion": descripcion,
                     }
                 )

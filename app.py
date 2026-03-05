@@ -81,6 +81,7 @@ ENTRY_W_LONG = 28
 ENTRY_W_WIDE = 42
 ENTRY_W_XL = 60
 TEXT_WIDE = 120
+SCROLLBAR_WIDTH = 18
 PASSWORD_HASH_ALGO = "pbkdf2_sha256"
 PASSWORD_HASH_ITERATIONS = 260000
 SHARED_DRIVE_EXPORT_DIR = r"G:\Unidades compartidas\RECA BDs"
@@ -1349,9 +1350,13 @@ def _section1_build_actions(self, parent):
     self.continue_btn.pack(side="right")
 
 
+def _create_vscroll(parent, command):
+    return tk.Scrollbar(parent, orient="vertical", command=command, width=SCROLLBAR_WIDTH)
+
+
 def _build_scrollable_content(parent, owner=None):
     canvas = tk.Canvas(parent, bg=COLOR_LIGHT_BG, highlightthickness=0)
-    scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+    scrollbar = _create_vscroll(parent, canvas.yview)
     canvas.configure(yscrollcommand=scrollbar.set)
     content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
     content.bind(
@@ -1452,27 +1457,66 @@ def _attach_dictation_for_section(window, form_id, section_name):
 
 class FormMousewheelMixin:
     def _bind_mousewheel(self, canvas, target):
+        def _is_descendant(widget, ancestor):
+            current = widget
+            while current is not None:
+                if current == ancestor:
+                    return True
+                try:
+                    current = current.master
+                except Exception:
+                    return False
+            return False
+
+        def _is_wheel_blocked(widget):
+            current = widget
+            while current is not None:
+                try:
+                    if isinstance(current, ttk.Combobox):
+                        return True
+                    if isinstance(current, tk.Spinbox):
+                        return True
+                    if current.winfo_class() in {"TSpinbox", "Spinbox"}:
+                        return True
+                except Exception:
+                    return False
+                try:
+                    current = current.master
+                except Exception:
+                    return False
+            return False
+
         def _on_mousewheel(event):
-            if event.delta:
-                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            widget = getattr(event, "widget", None)
+            if widget is None or not _is_descendant(widget, target):
+                return None
+            if _is_wheel_blocked(widget):
+                return "break"
+
+            if getattr(event, "delta", 0):
+                delta = int(-1 * (event.delta / 120))
+                if delta == 0:
+                    delta = -1 if event.delta > 0 else 1
+                canvas.yview_scroll(delta, "units")
             else:
-                if event.num == 4:
+                num = getattr(event, "num", None)
+                if num == 4:
                     canvas.yview_scroll(-3, "units")
-                elif event.num == 5:
+                elif num == 5:
                     canvas.yview_scroll(3, "units")
+            return "break"
 
-        def _bind(_):
-            canvas.bind_all("<MouseWheel>", _on_mousewheel)
-            canvas.bind_all("<Button-4>", _on_mousewheel)
-            canvas.bind_all("<Button-5>", _on_mousewheel)
+        def _bind_widget_tree(widget):
+            try:
+                widget.bind("<MouseWheel>", _on_mousewheel, add="+")
+                widget.bind("<Button-4>", _on_mousewheel, add="+")
+                widget.bind("<Button-5>", _on_mousewheel, add="+")
+            except Exception:
+                pass
+            for child in widget.winfo_children():
+                _bind_widget_tree(child)
 
-        def _unbind(_):
-            canvas.unbind_all("<MouseWheel>")
-            canvas.unbind_all("<Button-4>")
-            canvas.unbind_all("<Button-5>")
-
-        target.bind("<Enter>", _bind)
-        target.bind("<Leave>", _unbind)
+        _bind_widget_tree(target)
 
 
 class LoadingDialog:
@@ -1622,7 +1666,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         section_frame.pack(fill="both", expand=True)
 
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
         content.bind(
@@ -1686,7 +1730,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
 
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
@@ -3097,7 +3141,7 @@ class HubWindow(tk.Tk):
         columns = ("op", "tabla", "intentos", "proximo", "error")
         pending_box = tk.Frame(frame, bg="white", bd=1, relief="solid")
         pending_box.pack(fill="both", expand=True)
-        pending_scrollbar = tk.Scrollbar(pending_box, orient="vertical")
+        pending_scrollbar = tk.Scrollbar(pending_box, orient="vertical", width=SCROLLBAR_WIDTH)
         pending_scrollbar.pack(side="right", fill="y")
         pending_tree = ttk.Treeview(
             pending_box,
@@ -3128,7 +3172,7 @@ class HubWindow(tk.Tk):
 
         failed_box = tk.Frame(frame, bg="white", bd=1, relief="solid")
         failed_box.pack(fill="both", expand=True)
-        failed_scrollbar = tk.Scrollbar(failed_box, orient="vertical")
+        failed_scrollbar = tk.Scrollbar(failed_box, orient="vertical", width=SCROLLBAR_WIDTH)
         failed_scrollbar.pack(side="right", fill="y")
         failed_tree = ttk.Treeview(
             failed_box,
@@ -3729,7 +3773,7 @@ class HubWindow(tk.Tk):
 
         box = tk.Frame(frame, bg="white", bd=1, relief="solid")
         box.pack(fill="both", expand=True)
-        yscroll = tk.Scrollbar(box, orient="vertical")
+        yscroll = tk.Scrollbar(box, orient="vertical", width=SCROLLBAR_WIDTH)
         yscroll.pack(side="right", fill="y")
 
         tree = ttk.Treeview(
@@ -3854,7 +3898,7 @@ class HubWindow(tk.Tk):
         forms_box = tk.Frame(left, bg="white", bd=1, relief="solid")
         forms_box.grid(row=1, column=0, sticky="nsew")
         forms_canvas = tk.Canvas(forms_box, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        forms_scroll = ttk.Scrollbar(forms_box, orient="vertical", command=forms_canvas.yview)
+        forms_scroll = _create_vscroll(forms_box, forms_canvas.yview)
         forms_canvas.configure(yscrollcommand=forms_scroll.set)
         forms_scroll.pack(side="right", fill="y")
         forms_canvas.pack(side="left", fill="both", expand=True)
@@ -3968,7 +4012,7 @@ class HubWindow(tk.Tk):
         box = tk.Frame(right, bg="white", bd=1, relief="solid")
         box.grid(row=2, column=0, sticky="nsew")
 
-        scrollbar = tk.Scrollbar(box, orient="vertical")
+        scrollbar = tk.Scrollbar(box, orient="vertical", width=SCROLLBAR_WIDTH)
         scrollbar.pack(side="right", fill="y")
 
         tree = ttk.Treeview(
@@ -4293,7 +4337,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame.pack(fill="both", expand=True)
 
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
         content.bind(
@@ -4410,7 +4454,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame.pack(fill="both", expand=True)
 
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
         content.bind(
@@ -4620,7 +4664,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame.pack(fill="both", expand=True)
 
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
         content.bind(
@@ -4846,7 +4890,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame.pack(fill="both", expand=True)
 
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
         content.bind(
@@ -4989,7 +5033,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame.pack(fill="both", expand=True)
 
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
         content.bind(
@@ -5132,7 +5176,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame.pack(fill="both", expand=True)
 
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
         content.bind(
@@ -5234,7 +5278,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame.pack(fill="both", expand=True)
 
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
         content.bind(
@@ -5575,7 +5619,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame.pack(fill="both", expand=True)
 
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
         content.bind(
@@ -6378,7 +6422,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame.pack(fill="both", expand=True)
 
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
         content.bind(
@@ -6522,7 +6566,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame.pack(fill="both", expand=True)
 
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
         content.bind(
@@ -6561,15 +6605,6 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             cb.grid(row=idx // 3, column=idx % 3, padx=8, pady=4, sticky="w")
             self.section2_1_fields[field_id] = var
 
-        time_options = []
-        for hour in range(24):
-            for minute in (0, 30):
-                period = "am" if hour < 12 else "pm"
-                hour12 = hour % 12
-                if hour12 == 0:
-                    hour12 = 12
-                time_options.append(f"{hour12}:{minute:02d} {period}")
-
         for field in condiciones_vacante.SECTION_2_1["fields"]:
             row = tk.Frame(content, bg="white", bd=1, relief="solid")
             row.pack(fill="x", pady=6)
@@ -6595,12 +6630,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
                 )
                 widget.grid(row=0, column=1, sticky="w", padx=8, pady=8)
             elif field["type"] == "hora":
-                widget = ttk.Combobox(
-                    row,
-                    values=time_options,
-                    state="readonly",
-                    width=20,
-                )
+                widget = tk.Entry(row, width=22)
                 widget.grid(row=0, column=1, sticky="w", padx=8, pady=8)
             elif field["type"] == "texto_largo":
                 widget = tk.Text(row, height=3, wrap="word")
@@ -6660,7 +6690,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame.pack(fill="both", expand=True)
 
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
         content.bind(
@@ -6842,7 +6872,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame.pack(fill="both", expand=True)
 
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
         content.bind(
@@ -6963,7 +6993,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame.pack(fill="both", expand=True)
 
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
         content.bind(
@@ -7582,7 +7612,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         self._load_cedula_options()
 
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
         content.bind(
@@ -8465,7 +8495,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         self._load_cedula_options()
 
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
         content.bind(
@@ -9440,7 +9470,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
         self._load_cedula_options()
 
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
         content.bind(
@@ -9607,7 +9637,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame.pack(fill="both", expand=True)
 
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
         content.bind(
@@ -10408,7 +10438,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         self._load_cedula_options()
 
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
         content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -10540,7 +10570,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame.pack(fill="both", expand=True)
 
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
         content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -10613,7 +10643,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame.pack(fill="both", expand=True)
 
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
         content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -11286,7 +11316,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame.pack(fill="both", expand=True)
 
         canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(section_frame, orient="vertical", command=canvas.yview)
+        scrollbar = _create_vscroll(section_frame, canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
         content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -11896,7 +11926,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         outer = tk.Frame(self, bg=COLOR_LIGHT_BG)
         outer.pack(fill="both", expand=True, padx=FORM_PADX, pady=(0, FORM_PADY))
         self.canvas = tk.Canvas(outer, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        self.v_scroll = tk.Scrollbar(outer, orient="vertical", command=self.canvas.yview)
+        self.v_scroll = _create_vscroll(outer, self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.v_scroll.set)
         self.canvas.pack(side="left", fill="both", expand=True)
         self.v_scroll.pack(side="right", fill="y")
@@ -12606,6 +12636,7 @@ if __name__ == "__main__":
             app.destroy()
         except Exception:
             pass
+
 
 
 

@@ -1149,3 +1149,70 @@ def _sanitize_filename(value):
     safe = re.sub(r"[\\/:*?\"<>|]+", " ", str(value or ""))
     safe = re.sub(r"\s+", " ", safe).strip()
     return safe or "Empresa"
+
+
+def format_checkbox_symbol(value):
+    return "☑" if bool(value) else "☐"
+
+
+def sanitize_logo_error_cells(workbook_or_sheet):
+    """
+    Limpia celdas A1 con error literal #VALUE! en hojas de salida para evitar
+    que el usuario vea el error en encabezados cuando el logo es una capa visual.
+    """
+    if workbook_or_sheet is None:
+        return
+
+    try:
+        sheets = workbook_or_sheet.Worksheets
+        is_com = True
+    except Exception:
+        sheets = None
+        is_com = False
+
+    if is_com:
+        try:
+            total = int(sheets.Count)
+        except Exception:
+            total = 0
+        for idx in range(1, total + 1):
+            try:
+                ws = sheets(idx)
+                cell = ws.Range("A1")
+                value = cell.Value
+                formula = ""
+                try:
+                    formula = str(cell.Formula or "").strip()
+                except Exception:
+                    formula = ""
+                if formula:
+                    continue
+                try:
+                    text_value = str(cell.Text or "").strip().upper()
+                except Exception:
+                    text_value = ""
+                value_str = str(value or "").strip().upper()
+                if value_str == "#VALUE!" or text_value == "#VALUE!" or value == 2015:
+                    cell.Value = ""
+            except Exception:
+                continue
+        return
+
+    sheetnames = getattr(workbook_or_sheet, "sheetnames", None)
+    if sheetnames is not None:
+        for name in list(sheetnames):
+            try:
+                ws = workbook_or_sheet[name]
+                value = ws["A1"].value
+                if str(value or "").strip().upper() == "#VALUE!":
+                    ws["A1"].value = ""
+            except Exception:
+                continue
+        return
+
+    try:
+        value = workbook_or_sheet["A1"].value
+        if str(value or "").strip().upper() == "#VALUE!":
+            workbook_or_sheet["A1"].value = ""
+    except Exception:
+        return

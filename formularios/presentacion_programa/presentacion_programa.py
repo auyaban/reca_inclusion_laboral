@@ -4,8 +4,10 @@ import re
 import shutil
 import time
 from formularios.common import (
+    format_checkbox_symbol,
     _get_desktop_dir,
     _normalize_text,
+    sanitize_logo_error_cells,
     _sanitize_filename,
     _supabase_get,
 )
@@ -670,11 +672,12 @@ def export_to_excel(cache=None):
 
         for key, cell in EXCEL_MAPPING["section_3_item_8"].items():
             value = section_3_item_8.get(key, False)
+            symbol = format_checkbox_symbol(value)
             _log_excel(
-                f"WRITE section=section_3_item_8 cell={cell} key={key} value={bool(value)!r}",
+                f"WRITE section=section_3_item_8 cell={cell} key={key} checkbox_symbol={symbol!r}",
                 output_path,
             )
-            ws.Range(cell).Value = bool(value)
+            ws.Range(cell).Value = symbol
 
         for key, cell in EXCEL_MAPPING["section_4"].items():
             if key in section_4:
@@ -719,6 +722,7 @@ def export_to_excel(cache=None):
                 ws.Range(f"A{row}").Value = "Nombre completo:"
                 ws.Range(f"L{row}").Value = "Cargo:"
 
+        sanitize_logo_error_cells(wb)
         wb.Save()
         _log_excel("SUCCESS export_all", output_path)
     except Exception as exc:

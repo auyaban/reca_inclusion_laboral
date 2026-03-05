@@ -4,7 +4,12 @@ import shutil
 import time
 
 from formularios.evaluacion_programa import evaluacion_accesibilidad
-from formularios.common import _get_desktop_dir, _normalize_text, _sanitize_filename
+from formularios.common import (
+    _get_desktop_dir,
+    _normalize_text,
+    sanitize_logo_error_cells,
+    _sanitize_filename,
+)
 
 
 FORM_ID = "sensibilizacion"
@@ -375,6 +380,7 @@ def export_to_excel(clear_cache=True):
         _write_section_1(ws, FORM_CACHE.get("section_1", {}))
         _write_section_3(ws, FORM_CACHE.get("section_3", {}))
         _write_section_5(ws, FORM_CACHE.get("section_5", []))
+        sanitize_logo_error_cells(wb)
         wb.Save()
     finally:
         if wb is not None:

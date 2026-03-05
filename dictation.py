@@ -409,7 +409,8 @@ class DictationTextHelper:
         self._tick_after_id = None
         self._worker = None
         self._is_recording = False
-        self._controls = tk.Frame(self.text, bg="#F2F2F2", bd=1, relief="solid")
+        self._controls_parent = self.text.master
+        self._controls = tk.Frame(self._controls_parent, bg="#F2F2F2", bd=1, relief="solid")
         self._button = tk.Button(
             self._controls,
             text="Dictar",
@@ -426,8 +427,11 @@ class DictationTextHelper:
             font=("Arial", 8),
         )
         self._status.pack(side="left", padx=(0, 6), pady=2)
-        self._controls.place(relx=1.0, rely=0.0, anchor="ne", x=-4, y=4)
+        self._controls.place(x=0, y=0)
+        self.text.bind("<Configure>", self._place_controls, add="+")
+        self._controls_parent.bind("<Configure>", self._place_controls, add="+")
         self.text.bind("<Destroy>", self._on_destroy, add="+")
+        self.text.after(0, self._place_controls)
         self._sync_enabled_state()
 
     def _log(self, message: str):
@@ -460,6 +464,40 @@ class DictationTextHelper:
             except Exception:
                 pass
             self._tick_after_id = None
+        try:
+            self._controls.destroy()
+        except Exception:
+            pass
+
+    def _place_controls(self, _event=None):
+        try:
+            if not self.text.winfo_exists() or not self._controls.winfo_exists():
+                return
+            parent = self._controls_parent
+            parent_w = max(1, parent.winfo_width())
+            parent_h = max(1, parent.winfo_height())
+            text_x = self.text.winfo_x()
+            text_y = self.text.winfo_y()
+            text_w = self.text.winfo_width()
+            text_h = self.text.winfo_height()
+            controls_w = max(1, self._controls.winfo_reqwidth())
+            controls_h = max(1, self._controls.winfo_reqheight())
+
+            x = text_x + text_w + 6
+            y = text_y
+
+            if x + controls_w > parent_w:
+                x_left = text_x - controls_w - 6
+                if x_left >= 0:
+                    x = x_left
+                else:
+                    x = min(max(0, text_x + text_w - controls_w), max(0, parent_w - controls_w))
+                    y = min(text_y + text_h + 2, max(0, parent_h - controls_h))
+
+            y = max(0, min(y, max(0, parent_h - controls_h)))
+            self._controls.place(x=int(x), y=int(y))
+        except Exception:
+            return
 
     def _on_toggle(self):
         self._sync_enabled_state()
@@ -588,4 +626,3 @@ def attach_dictation(
     )
     setattr(text_widget, "_dictation_helper", helper)
     return helper
-

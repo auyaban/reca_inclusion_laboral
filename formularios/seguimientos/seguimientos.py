@@ -7,6 +7,7 @@ from openpyxl import load_workbook
 from formularios.common import (
     _get_desktop_dir,
     _normalize_cedula,
+    sanitize_logo_error_cells,
     _sanitize_filename,
     _supabase_get,
 )
@@ -267,6 +268,7 @@ def ensure_case_workbook(cedula, user_row, is_compensar):
             max_seguimientos,
         )
         _apply_visibility(wb, max_seguimientos)
+        sanitize_logo_error_cells(wb)
         wb.save(existing)
         _copy_to_secondary_roots(existing)
         return {"path": existing, "created": False, "max_seguimientos": max_seguimientos}
@@ -293,6 +295,7 @@ def ensure_case_workbook(cedula, user_row, is_compensar):
         max_seguimientos,
     )
     _apply_visibility(wb, max_seguimientos)
+    sanitize_logo_error_cells(wb)
     wb.save(output_path)
     _copy_to_secondary_roots(output_path)
     return {"path": output_path, "created": True, "max_seguimientos": max_seguimientos}
@@ -556,6 +559,7 @@ def save_base_payload(workbook_path, payload):
             ws[f"C{row}"].value = s1[i]
         if i < len(s2):
             ws[f"P{row}"].value = s2[i]
+    sanitize_logo_error_cells(wb)
     wb.save(workbook_path)
 
 
@@ -622,4 +626,5 @@ def save_followup_payload(workbook_path, index, payload):
         entry = asistentes[i] if i < len(asistentes) else {}
         ws[f"D{row}"].value = entry.get("nombre", "")
         ws[f"N{row}"].value = entry.get("cargo", "")
+    sanitize_logo_error_cells(wb)
     wb.save(workbook_path)

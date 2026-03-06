@@ -32,3 +32,4 @@ Thumbs.db
 
 # Supabase local temp
 supabase/.temp/
+scripts/smoke_condiciones_vacante.py

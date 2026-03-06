@@ -128,6 +128,68 @@ SECTION_5_ANCHOR = "5. AJUSTES RAZONABLES / RECOMENDACIONES AL PROCESO DE SELECC
 SECTION_2_TEMPLATE_ANCHOR_ROW = 14
 SECTION_2_LAST_COLUMN = "U"
 
+AJUSTES_ENTREVISTA_TEMPLATES = {
+    "preparacion_proceso": """
+Ajustes razonables para entrevista.
+
+Contactar a la Agencia de Empleo para el apoyo de adaptación y organización de las pruebas psicotécnicas de la empresa.
+
+Realizar una organización de la entrevista de forma que se pueda anticipar a los oferentes el paso a paso de lo que se realizará en el proceso, permitiendo que logren organizar su tiempo y la constancia que requiere el mismo.
+
+Promover la aplicación de formatos para la hoja de vida con diseños sencillos, fáciles de diligenciar y a través de medios accesibles; estos pueden ser virtuales o físicos.
+
+Para mantener un contacto directo con los oferentes que han sido preseleccionados, se recomienda evaluar alternativas hasta identificar el mejor canal de comunicación: contacto telefónico, mensajes de texto, mensajes por chat, correo electrónico y, en algunos casos, a través de familiares que hayan sido referenciados en la hoja de vida. Los mensajes deben ser precisos y concretos, incluyendo solamente la información básica y utilizando frases simples.
+""".strip(),
+    "trato_respetuoso": """
+Evitar conductas, palabras, frases, sentimientos, preconcepciones y estigmas que impidan u obstaculicen el acceso en igualdad de condiciones de las personas con y/o en situación de discapacidad a los espacios, objetos, servicios y, en general, a las posibilidades que ofrece la sociedad.
+
+Evitar, durante el proceso de entrevista, preguntar sobre cómo fue la adquisición de la discapacidad.
+
+Informar a los candidatos que no fueron seleccionados sobre la finalización del proceso, basándose en sus habilidades residuales individuales. De esta manera no tendrán que esperar innecesariamente y se respeta su tiempo.
+
+La evaluación de desempeño debe ajustarse de acuerdo con el perfil del cargo y no enfocarse en la discapacidad de la persona.
+
+Mantener contacto visual con la persona, mirando a sus ojos y evitando enfocar su discapacidad.
+""".strip(),
+    "accesibilidad_entrevista": """
+Asegurarse de que el lugar de la entrevista sea accesible para personas con discapacidad física. Esto incluye la disponibilidad de rampas, ascensores o espacios adecuados para sillas de ruedas, si es necesario.
+
+Si el candidato tiene dificultades de comunicación, ofrecer alternativas como permitir el uso de comunicación por texto, proporcionar un intérprete de lengua de señas si es necesario o permitir que el candidato responda por escrito.
+
+Considerar la posibilidad de ofrecer tiempo adicional para completar la entrevista si la discapacidad del candidato afecta su velocidad de procesamiento o comunicación.
+
+Ser flexible en cuanto al formato de la entrevista. Algunas personas pueden necesitar entrevistas en un formato diferente, como entrevistas virtuales o en un entorno menos estimulante para quienes presentan sensibilidad sensorial.
+
+Formular preguntas claras y directas y ser paciente al esperar la respuesta del candidato. Evitar jergas o frases complicadas que puedan ser difíciles de entender.
+
+Al proporcionar retroalimentación al candidato, ser claro, conciso y constructivo. Destacar sus fortalezas y ofrecer sugerencias de mejora, si es necesario, de manera útil y respetuosa.
+
+Realizar preguntas orientadoras que permitan identificar que la información está siendo recibida correctamente por el oferente durante el proceso de selección.
+""".strip(),
+    "accesibilidad_documentos": """
+Aumentar el tamaño de letra, utilizar colores de fondo en el texto y emplear fuentes de fácil lectura como Arial o Verdana. Adicionalmente, proporcionar esos documentos de manera virtual para facilitar el uso de herramientas tiflotecnológicas.
+""".strip(),
+    "pruebas_seleccion": """
+La aplicación de pruebas de tipo visual y gráfico, como por ejemplo Test de Percepción Temática, Wartegg, Técnica de dibujo proyectivo HTP por sus siglas en inglés (Casa, Árbol, Persona) y Test de la Figura Humana, no es recomendable para personas con discapacidad visual.
+
+Para los procesos de selección en los que participen candidatos usuarios de lengua de señas, es clave contar con un servicio de interpretación profesional y no apoyarse en amigos o familiares de los candidatos que tengan conocimiento.
+
+No se recomienda hacer interpretación en lengua de señas de las pruebas psicotécnicas, dado que se puede sesgar la información que se espera recoger y, por ende, los resultados. Es preferible reemplazar este tipo de pruebas por entrevistas por competencias.
+
+En el caso de personas con discapacidad que cuentan con familias sobreprotectoras, se deben establecer límites claros con estas, restringiendo su participación durante el proceso de selección.
+
+Se recomienda minimizar el uso de pruebas psicotécnicas y reemplazarlas por otras estrategias de selección que permitan alcanzar los mismos objetivos. Solo en caso de que lo anterior no sea posible, se sugiere priorizar la aplicación de pruebas gráficas proyectivas que buscan identificar rasgos de personalidad.
+""".strip(),
+}
+
+AJUSTES_ENTREVISTA_TEMPLATE_BUTTONS = [
+    ("preparacion_proceso", "Preparación del proceso"),
+    ("trato_respetuoso", "Trato respetuoso"),
+    ("accesibilidad_entrevista", "Accesibilidad entrevista"),
+    ("accesibilidad_documentos", "Accesibilidad documentos"),
+    ("pruebas_seleccion", "Pruebas de selección"),
+]
+
 SECTION_2 = {
     "title": "2. DATOS DEL OFERENTE",
     "fields": [

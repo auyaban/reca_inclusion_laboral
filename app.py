@@ -793,7 +793,7 @@ def _hash_password(password, iterations=PASSWORD_HASH_ITERATIONS):
     return f"{PASSWORD_HASH_ALGO}${iterations}${salt_b64}${digest_b64}"
 
 
-def _verify_password_hash(password, stored_hash):
+def _verify_password_hash_native(password, stored_hash):
     if not stored_hash or "$" not in str(stored_hash):
         return False
     try:
@@ -812,6 +812,33 @@ def _verify_password_hash(password, stored_hash):
         return hmac.compare_digest(current, expected)
     except Exception:
         return False
+
+
+def _verify_password_hash_legacy(password, stored_hash):
+    if not stored_hash or "$" not in str(stored_hash):
+        return False
+    try:
+        algo, iter_s, salt_text, digest_b64 = str(stored_hash).split("$", 3)
+        if algo != PASSWORD_HASH_ALGO:
+            return False
+        iterations = int(iter_s)
+        expected = base64.b64decode(digest_b64 + "=" * (-len(digest_b64) % 4))
+        current = hashlib.pbkdf2_hmac(
+            "sha256",
+            str(password or "").encode("utf-8"),
+            str(salt_text or "").encode("utf-8"),
+            iterations,
+        )
+        return hmac.compare_digest(current, expected)
+    except Exception:
+        return False
+
+
+def _verify_password_hash(password, stored_hash):
+    return _verify_password_hash_native(password, stored_hash) or _verify_password_hash_legacy(
+        password,
+        stored_hash,
+    )
 
 
 def _normalize_login_value(value):
@@ -1988,6 +2015,16 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             bg=COLOR_LIGHT_BG,
         ).pack(anchor="w")
 
+        template_actions = tk.Frame(form_container, bg=COLOR_LIGHT_BG)
+        template_actions.pack(fill="x", pady=(8, 4))
+        for idx, (template_key, label) in enumerate(presentacion_programa.RUTA_INCLUSION_TEMPLATE_BUTTONS):
+            btn = ttk.Button(
+                template_actions,
+                text=label,
+                command=lambda key=template_key: self._insert_section4_template(key),
+            )
+            btn.grid(row=idx // 3, column=idx % 3, sticky="w", padx=(0, 8), pady=(0, 8))
+
         self.section4_text = tk.Text(
             form_container,
             height=10,
@@ -2052,6 +2089,18 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         ttk.Button(actions, text="Finalizar", command=self._confirm_section_4_5).pack(side="right")
+
+    def _insert_section4_template(self, template_key):
+        template_text = presentacion_programa.RUTA_INCLUSION_TEMPLATES.get(template_key, "").strip()
+        if not template_text:
+            return
+        current_text = self.section4_text.get("1.0", tk.END).strip()
+        if current_text:
+            self.section4_text.insert(tk.END, "\n\n")
+        self.section4_text.insert(tk.END, template_text)
+        self.section4_text.focus_set()
+        self.section4_text.see(tk.END)
+
     def _confirm_section_4_5(self):
         notes = self.section4_text.get("1.0", tk.END).strip()
         asistentes = []
@@ -8262,6 +8311,15 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             bg=COLOR_LIGHT_BG,
             anchor="w",
         ).pack(anchor="w", pady=(8, 4))
+        template_actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
+        template_actions.pack(fill="x", padx=4, pady=(0, 4))
+        for idx, (template_key, label) in enumerate(seleccion_incluyente.AJUSTES_ENTREVISTA_TEMPLATE_BUTTONS):
+            btn = ttk.Button(
+                template_actions,
+                text=label,
+                command=lambda key=template_key: self._insert_seleccion_section5_template(key),
+            )
+            btn.grid(row=idx // 3, column=idx % 3, sticky="w", padx=(0, 8), pady=(0, 8))
         ajustes = tk.Text(content, height=8, width=TEXT_WIDE, wrap="word")
         ajustes.pack(fill="x", padx=4, pady=(0, 10))
         attach_spell_checker(ajustes)
@@ -8360,6 +8418,20 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         ttk.Button(actions, text="Finalizar", command=self._confirm_section_5).pack(
             side="right"
         )
+
+    def _insert_seleccion_section5_template(self, template_key):
+        text_widget = self.section5_fields.get("ajustes_recomendaciones")
+        if not text_widget:
+            return
+        template_text = seleccion_incluyente.AJUSTES_ENTREVISTA_TEMPLATES.get(template_key, "").strip()
+        if not template_text:
+            return
+        current_text = text_widget.get("1.0", tk.END).strip()
+        if current_text:
+            text_widget.insert(tk.END, "\n\n")
+        text_widget.insert(tk.END, template_text)
+        text_widget.focus_set()
+        text_widget.see(tk.END)
 
     def _confirm_section_5(self):
         payload = {

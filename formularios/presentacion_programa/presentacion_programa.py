@@ -291,6 +291,58 @@ SECTION_4 = {
     },
 }
 
+RUTA_INCLUSION_TEMPLATES = {
+    "objetivo_y_participantes": """
+Se llevó a cabo una reunión virtual con el objetivo de dar a conocer Ruta de inclusión ante las iniciativas de inclusión laboral en la empresa bajo el cumplimiento Normativo.
+
+En el encuentro participó representante clave del área de Gestión Humana, Asesora desde Agencia de Empleo y Fomento Empresarial Compensar, y desde RECA Coordinación de Empleo Inclusivo.
+
+El espacio inicia con presentación de representante de la empresa, el cual dialoga sobre el interés de conocer la ruta y acompañamiento ante iniciativas de vinculación de personas con discapacidad.
+""".strip(),
+    "roles_proceso_seleccion": """
+Seguidamente la Asesora de la Agencia clarificó que la Agencia es la entidad encargada de la selección y envío de candidatos que se ajusten a los perfiles requeridos y el proceso de envío de hojas de vida y la evaluación por competencias será ejecutado por la analista de la Agencia, y se informa el rol de RECA como operador del programa de inclusión siendo este brindar acompañamiento técnico y especializado durante todo el proceso de inclusión, sin costo alguno para la empresa.
+
+Se informa tiempo de respuesta en el envío de candidatos siendo de 4 días hábiles a partir de la publicación de la vacante y la importancia de la flexibilización del perfil, y la no creación de un cargo en específico para población con discapacidad.
+""".strip(),
+    "certificado_discapacidad": """
+Se reitera que la Agencia no realiza el envío del Certificado de Discapacidad, no obstante, desde Compensar, la psicóloga encargada verifica durante el contacto con el candidato si este cuenta con dicho documento siendo este proceso de preselección, posteriormente, en el proceso de firma de contrato, corresponde a la empresa validar el certificado emitido por la Secretaría de Salud.
+""".strip(),
+    "acompanamiento_reca": """
+Seguidamente desde RECA se comunica los procesos a ejecutar, los cuales no tienen costo al estar con la caja Compensar:
+* Evaluación accesibilidad
+* Revisión de la vacante
+* Acompañamiento en procesos de entrevistas
+* Acompañamiento a firma de contrato
+* Inducción organizacional
+* Inducción operativa
+* Sensibilización
+* Seguimiento a cada vinculado se realizarán seis (6) de manera individual tanto con el nuevo colaborador como con su jefe directo para asegurar una adaptación exitosa, se reitera el acompañamiento al proceso a candidatos exclusivamente remitidos por la agencia, y en el caso de la empresa tener candidatos estos deberán ser remitido al asesor de la Agencia vía correo electrónico para asi ingresar a la ruta de la Agencia y ejecutar el acompañamiento desde RECA.
+""".strip(),
+    "seguimiento_y_normativa": """
+Se reitera la importancia de contar con la retroalimentación vía correo electrónico a la Agencia con copia a RECA, ante procesos de entrevista en el caso de no pasar candidatos filtros de selección y solicitar nuevos candidatos; y firma de contrato.
+
+Se dialoga de la nueva ley 2446 del 2025, en donde se orienta ante totalidad de colaboradores la vinculación de 2 personas con discapacidad, se informa beneficios tangibles y no tangibles bajo la ley 361 art. 31 deducción en la renta por vinculación de personas con discapacidad y el apoyo que está entregando la secretaria de desarrollo.
+""".strip(),
+    "casos_alcance_cierre": """
+Durante la reunión, se socializaron casos exitosos de inclusión y el apoyo de interprete lengua de señas en el caso de vincular personas con discapacidad auditiva.
+
+Se reitera que el alcance operativo de la ruta de inclusión abarca Bogotá y Cundinamarca.
+
+Se agradece espacio, se informa envío de presentación y se estará a la espera de contacto para dar continuidad a la ruta.
+
+Se finaliza reunión sin novedad
+""".strip(),
+}
+
+RUTA_INCLUSION_TEMPLATE_BUTTONS = [
+    ("objetivo_y_participantes", "Objetivo y participantes"),
+    ("roles_proceso_seleccion", "Roles y selección"),
+    ("certificado_discapacidad", "Certificado"),
+    ("acompanamiento_reca", "Acompañamiento RECA"),
+    ("seguimiento_y_normativa", "Seguimiento y normativa"),
+    ("casos_alcance_cierre", "Casos, alcance y cierre"),
+]
+
 SECTION_5 = {
     "title": "5. ASISTENTES",
     "max_items": 10,

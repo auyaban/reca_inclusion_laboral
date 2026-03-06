@@ -50,6 +50,7 @@ from formularios.common import (
     _clear_supabase_session,
     _get_desktop_dir,
     _load_env_file,
+    _next_available_file_path,
 )
 from version_info import get_version
 from updater import (
@@ -779,7 +780,8 @@ def _build_shared_drive_excel_path(excel_path, company_name=None):
         company_folder = "Empresa"
     target_dir = os.path.join(SHARED_DRIVE_EXPORT_DIR, company_folder)
     os.makedirs(target_dir, exist_ok=True)
-    return os.path.join(target_dir, os.path.basename(excel_path))
+    target_path = os.path.join(target_dir, os.path.basename(excel_path))
+    return _next_available_file_path(target_path)
 
 
 def _hash_password(password, iterations=PASSWORD_HASH_ITERATIONS):
@@ -1455,6 +1457,133 @@ def _attach_dictation_for_section(window, form_id, section_name):
             )
 
 
+_ASISTENTES_PROF_CACHE = {
+    "loaded_at": 0.0,
+    "nombres": [],
+    "cargos": [],
+    "name_to_cargo": {},
+}
+_ASISTENTES_PROF_CACHE_TTL = 300
+
+
+def _asistentes_norm(value):
+    text = _normalize_ascii_text(value)
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def _dedupe_keep_order(values):
+    seen = set()
+    result = []
+    for raw in values or []:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+    return result
+
+
+def _get_asistentes_profesionales_catalog(force=False):
+    global _ASISTENTES_PROF_CACHE
+    now = time.time()
+    cached = _ASISTENTES_PROF_CACHE
+    if (
+        not force
+        and cached.get("nombres")
+        and (now - float(cached.get("loaded_at") or 0.0)) < _ASISTENTES_PROF_CACHE_TTL
+    ):
+        return cached
+
+    try:
+        rows = _supabase_get_paged(
+            "profesionales",
+            {
+                "select": "nombre_profesional,cargo_profesional",
+                "order": "nombre_profesional.asc",
+            },
+            env_path=".env",
+            page_size=500,
+            max_pages=20,
+        )
+    except Exception as exc:
+        _log_capture(f"[ASISTENTES] no se pudo leer profesionales: {exc}")
+        return cached
+
+    nombres = []
+    cargos = []
+    name_to_cargo = {}
+    for row in rows or []:
+        nombre = str((row or {}).get("nombre_profesional") or "").strip()
+        cargo = str((row or {}).get("cargo_profesional") or "").strip()
+        if nombre:
+            nombres.append(nombre)
+            norm_name = _asistentes_norm(nombre)
+            if norm_name and cargo and norm_name not in name_to_cargo:
+                name_to_cargo[norm_name] = cargo
+        if cargo:
+            cargos.append(cargo)
+
+    _ASISTENTES_PROF_CACHE = {
+        "loaded_at": now,
+        "nombres": _dedupe_keep_order(nombres),
+        "cargos": _dedupe_keep_order(cargos),
+        "name_to_cargo": name_to_cargo,
+    }
+    return _ASISTENTES_PROF_CACHE
+
+
+def _create_asistente_inputs(parent, width, use_catalog=False, catalog=None):
+    if use_catalog:
+        nombre_widget = ttk.Combobox(parent, width=width, state="normal")
+        cargo_widget = ttk.Combobox(parent, width=width, state="normal")
+        _configure_asistente_widgets(nombre_widget, cargo_widget, catalog=catalog)
+        return nombre_widget, cargo_widget
+    return tk.Entry(parent, width=width), tk.Entry(parent, width=width)
+
+
+def _bind_editable_combobox_filter(widget, values):
+    options = list(values or [])
+    if not options:
+        return
+
+    def _refresh(_event=None):
+        typed = widget.get().strip()
+        if not typed:
+            widget.configure(values=options)
+            return
+        needle = _asistentes_norm(typed)
+        filtered = [item for item in options if needle in _asistentes_norm(item)]
+        widget.configure(values=filtered or options)
+
+    widget.configure(values=options)
+    widget.bind("<KeyRelease>", _refresh, add="+")
+    widget.bind("<Button-1>", lambda _e: widget.configure(values=options), add="+")
+
+
+def _configure_asistente_widgets(nombre_widget, cargo_widget, catalog=None):
+    catalog = catalog or _get_asistentes_profesionales_catalog()
+    nombres = list(catalog.get("nombres") or [])
+    cargos = list(catalog.get("cargos") or [])
+    name_to_cargo = dict(catalog.get("name_to_cargo") or {})
+
+    nombre_widget.configure(values=nombres, state="normal")
+    cargo_widget.configure(values=cargos, state="normal")
+    _bind_editable_combobox_filter(nombre_widget, nombres)
+    _bind_editable_combobox_filter(cargo_widget, cargos)
+
+    def _sync_cargo(_event=None):
+        selected_name = _asistentes_norm(nombre_widget.get())
+        suggested = name_to_cargo.get(selected_name)
+        if suggested:
+            cargo_widget.set(suggested)
+
+    nombre_widget.bind("<<ComboboxSelected>>", _sync_cargo, add="+")
+    nombre_widget.bind("<FocusOut>", _sync_cargo, add="+")
+
+
 class FormMousewheelMixin:
     def _bind_mousewheel(self, canvas, target):
         def _is_descendant(widget, ancestor):
@@ -1897,6 +2026,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             command=self._add_asistente_row,
         )
 
+        self._asistentes_catalog = _get_asistentes_profesionales_catalog()
         self.section5_entries = []
         self.section5_frame = asistentes_frame
         for idx in range(3):
@@ -1972,8 +2102,12 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             messagebox.showinfo("Asistentes", f"Máximo {max_items} asistentes.")
             return
         row = 2 + len(self.section5_entries)
-        nombre_entry = tk.Entry(self.section5_frame, width=40)
-        cargo_entry = tk.Entry(self.section5_frame, width=40)
+        nombre_entry, cargo_entry = _create_asistente_inputs(
+            self.section5_frame,
+            40,
+            use_catalog=(len(self.section5_entries) == 0),
+            catalog=getattr(self, "_asistentes_catalog", None),
+        )
         nombre_entry.grid(row=row, column=0, sticky="w", padx=(0, 8), pady=4)
         cargo_entry.grid(row=row, column=1, sticky="w", padx=(0, 8), pady=4)
         self.section5_entries.append((nombre_entry, cargo_entry))
@@ -5864,14 +5998,19 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         ).grid(row=0, column=1, sticky="w", padx=(0, 12))
 
         self.section8_entries = []
+        asistentes_catalog = _get_asistentes_profesionales_catalog()
 
         def add_row(is_first=False):
             if len(self.section8_entries) >= evaluacion_accesibilidad.SECTION_8["max_items"]:
                 messagebox.showinfo("Asistentes", "Máximo de asistentes alcanzado.")
                 return
             row_idx = len(self.section8_entries) + 1
-            name_widget = tk.Entry(table, width=ENTRY_W_WIDE)
-            role_widget = tk.Entry(table, width=ENTRY_W_WIDE)
+            name_widget, role_widget = _create_asistente_inputs(
+                table,
+                ENTRY_W_WIDE,
+                use_catalog=(len(self.section8_entries) == 0),
+                catalog=asistentes_catalog,
+            )
             name_widget.grid(row=row_idx, column=0, sticky="w", padx=(0, 12), pady=4)
             role_widget.grid(row=row_idx, column=1, sticky="w", padx=(0, 12), pady=4)
             self.section8_entries.append((name_widget, role_widget))
@@ -7177,19 +7316,27 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         ).grid(row=0, column=1, sticky="w")
 
         self.section8_rows = []
+        asistentes_catalog = _get_asistentes_profesionales_catalog()
         for idx in range(condiciones_vacante.SECTION_8["rows"]):
-            nombre_entry = tk.Entry(table, width=ENTRY_W_WIDE)
+            nombre_entry, cargo_entry = _create_asistente_inputs(
+                table,
+                ENTRY_W_WIDE,
+                use_catalog=(idx == 0),
+                catalog=asistentes_catalog,
+            )
             nombre_entry.grid(row=idx + 1, column=0, sticky="w", pady=4, padx=(0, 12))
-
-            cargo_entry = tk.Entry(table, width=ENTRY_W_WIDE)
             cargo_entry.grid(row=idx + 1, column=1, sticky="w", pady=4)
             self.section8_rows.append((nombre_entry, cargo_entry))
 
         def _add_asistente_row():
             row_idx = len(self.section8_rows) + 1
-            nombre_entry = tk.Entry(table, width=ENTRY_W_WIDE)
+            nombre_entry, cargo_entry = _create_asistente_inputs(
+                table,
+                ENTRY_W_WIDE,
+                use_catalog=False,
+                catalog=asistentes_catalog,
+            )
             nombre_entry.grid(row=row_idx, column=0, sticky="w", pady=4, padx=(0, 12))
-            cargo_entry = tk.Entry(table, width=ENTRY_W_WIDE)
             cargo_entry.grid(row=row_idx, column=1, sticky="w", pady=4)
             self.section8_rows.append((nombre_entry, cargo_entry))
             add_btn.grid(row=len(self.section8_rows) + 1, column=0, sticky="w", pady=(8, 0))
@@ -8163,19 +8310,27 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         ).grid(row=0, column=1, sticky="w")
 
         self.section6_rows = []
+        asistentes_catalog = _get_asistentes_profesionales_catalog()
         for idx in range(seleccion_incluyente.SECTION_6["rows"]):
-            nombre_entry = tk.Entry(table, width=ENTRY_W_WIDE)
+            nombre_entry, cargo_entry = _create_asistente_inputs(
+                table,
+                ENTRY_W_WIDE,
+                use_catalog=(idx == 0),
+                catalog=asistentes_catalog,
+            )
             nombre_entry.grid(row=idx + 1, column=0, sticky="w", pady=4, padx=(0, 12))
-
-            cargo_entry = tk.Entry(table, width=ENTRY_W_WIDE)
             cargo_entry.grid(row=idx + 1, column=1, sticky="w", pady=4)
             self.section6_rows.append((nombre_entry, cargo_entry))
 
         def _add_asistente_row():
             row_idx = len(self.section6_rows) + 1
-            nombre_entry = tk.Entry(table, width=ENTRY_W_WIDE)
+            nombre_entry, cargo_entry = _create_asistente_inputs(
+                table,
+                ENTRY_W_WIDE,
+                use_catalog=False,
+                catalog=asistentes_catalog,
+            )
             nombre_entry.grid(row=row_idx, column=0, sticky="w", pady=4, padx=(0, 12))
-            cargo_entry = tk.Entry(table, width=ENTRY_W_WIDE)
             cargo_entry.grid(row=row_idx, column=1, sticky="w", pady=4)
             self.section6_rows.append((nombre_entry, cargo_entry))
             add_btn.grid(row=len(self.section6_rows) + 1, column=0, sticky="w", pady=(8, 0))
@@ -9134,11 +9289,16 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         ).grid(row=0, column=1, sticky="w")
 
         self.section7_rows = []
+        asistentes_catalog = _get_asistentes_profesionales_catalog()
 
         def _add_asistente_row():
             row_idx = len(self.section7_rows) + 1
-            nombre_entry = tk.Entry(table, width=ENTRY_W_WIDE)
-            cargo_entry = tk.Entry(table, width=ENTRY_W_WIDE)
+            nombre_entry, cargo_entry = _create_asistente_inputs(
+                table,
+                ENTRY_W_WIDE,
+                use_catalog=(len(self.section7_rows) == 0),
+                catalog=asistentes_catalog,
+            )
             nombre_entry.grid(row=row_idx, column=0, sticky="w", pady=4, padx=(0, 12))
             cargo_entry.grid(row=row_idx, column=1, sticky="w", pady=4)
             self.section7_rows.append((nombre_entry, cargo_entry))
@@ -9828,6 +9988,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
         content.pack(fill="x", padx=FORM_PADX, pady=(8, 8))
 
         self.section6_rows = []
+        asistentes_catalog = _get_asistentes_profesionales_catalog()
 
         def _add_row(nombre="", cargo=""):
             row = tk.Frame(content, bg=COLOR_LIGHT_BG)
@@ -9835,12 +9996,16 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
             tk.Label(row, text="Nombre completo:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(
                 side="left", padx=(0, 6)
             )
-            nombre_entry = tk.Entry(row, width=50)
+            nombre_entry, cargo_entry = _create_asistente_inputs(
+                row,
+                50,
+                use_catalog=(len(self.section6_rows) == 0),
+                catalog=asistentes_catalog,
+            )
             nombre_entry.pack(side="left", padx=(0, 12))
             tk.Label(row, text="Cargo:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(
                 side="left", padx=(0, 6)
             )
-            cargo_entry = tk.Entry(row, width=50)
             cargo_entry.pack(side="left")
             if nombre:
                 nombre_entry.insert(0, nombre)
@@ -10875,6 +11040,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         content = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         content.pack(fill="x", padx=FORM_PADX, pady=(8, 8))
         self.section9_rows = []
+        asistentes_catalog = _get_asistentes_profesionales_catalog()
 
         def _add_row(nombre="", cargo=""):
             row = tk.Frame(content, bg=COLOR_LIGHT_BG)
@@ -10882,12 +11048,16 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
             tk.Label(row, text="Nombre completo:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(
                 side="left", padx=(0, 6)
             )
-            nombre_entry = tk.Entry(row, width=50)
+            nombre_entry, cargo_entry = _create_asistente_inputs(
+                row,
+                50,
+                use_catalog=(len(self.section9_rows) == 0),
+                catalog=asistentes_catalog,
+            )
             nombre_entry.pack(side="left", padx=(0, 12))
             tk.Label(row, text="Cargo:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(
                 side="left", padx=(0, 6)
             )
-            cargo_entry = tk.Entry(row, width=50)
             cargo_entry.pack(side="left")
             if nombre:
                 nombre_entry.insert(0, nombre)
@@ -11388,6 +11558,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         content = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         content.pack(fill="x", padx=FORM_PADX, pady=(8, 8))
         self.section5_rows = []
+        asistentes_catalog = _get_asistentes_profesionales_catalog()
 
         def _add_row(nombre="", cargo=""):
             row = tk.Frame(content, bg=COLOR_LIGHT_BG)
@@ -11395,12 +11566,16 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
             tk.Label(row, text="Nombre completo:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(
                 side="left", padx=(0, 6)
             )
-            nombre_entry = tk.Entry(row, width=50)
+            nombre_entry, cargo_entry = _create_asistente_inputs(
+                row,
+                50,
+                use_catalog=(len(self.section5_rows) == 0),
+                catalog=asistentes_catalog,
+            )
             nombre_entry.pack(side="left", padx=(0, 12))
             tk.Label(row, text="Cargo:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(
                 side="left", padx=(0, 6)
             )
-            cargo_entry = tk.Entry(row, width=50)
             cargo_entry.pack(side="left")
             if nombre:
                 nombre_entry.insert(0, nombre)
@@ -12457,15 +12632,20 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         )
         asist.pack(fill="x", pady=(0, 10))
         self.follow_asistentes = []
+        asistentes_catalog = _get_asistentes_profesionales_catalog()
         asistentes = payload.get("asistentes") or []
         for i in range(4):
             row = tk.Frame(asist, bg=COLOR_LIGHT_BG)
             row.pack(fill="x", pady=3)
             tk.Label(row, text="Nombre:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(side="left")
-            e_name = tk.Entry(row, width=45)
+            e_name, e_cargo = _create_asistente_inputs(
+                row,
+                45,
+                use_catalog=(i == 0),
+                catalog=asistentes_catalog,
+            )
             e_name.pack(side="left", padx=(6, 12))
             tk.Label(row, text="Cargo:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(side="left")
-            e_cargo = tk.Entry(row, width=45)
             e_cargo.pack(side="left", padx=(6, 0))
             if i < len(asistentes):
                 e_name.insert(0, str(asistentes[i].get("nombre") or ""))

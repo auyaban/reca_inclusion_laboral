@@ -6,10 +6,13 @@ import time
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
     _get_desktop_dir,
+    _next_available_file_path,
     _normalize_cedula,
     _normalize_text,
     sanitize_logo_error_cells,
     autofit_rows,
+    clear_written_rows,
+    ws_write,
     _sanitize_filename,
     _supabase_get,
 )
@@ -741,7 +744,7 @@ def _ensure_output_path():
     os.makedirs(output_dir, exist_ok=True)
     process_name = "Proceso de Induccion Operativa"
     output_name = f"{process_name} - {safe_company}.xlsx"
-    output_path = os.path.join(output_dir, output_name)
+    output_path = _next_available_file_path(os.path.join(output_dir, output_name))
     shutil.copy2(template_path, output_path)
     FORM_CACHE["_output_path"] = output_path
     return output_path
@@ -791,7 +794,7 @@ def _write_section_1(ws, payload):
     mapping = EXCEL_MAPPING.get("section_1", {})
     for key, cell in mapping.items():
         if key in payload:
-            ws.Range(cell).Value = payload.get(key)
+            ws_write(ws, cell, payload.get(key))
 
 
 def _write_section_2(ws, payload):
@@ -808,7 +811,7 @@ def _write_section_2(ws, payload):
             value = row_data.get(field_id, "")
             if value in (None, ""):
                 continue
-            ws.Range(f"{col}{target_row}").Value = value
+            ws_write(ws, f"{col}{target_row}", value)
 
 
 def _write_section_3(ws, payload):
@@ -823,9 +826,9 @@ def _write_section_3(ws, payload):
         ejecucion = (row_payload.get("ejecucion") or "").strip()
         observaciones = (row_payload.get("observaciones") or "").strip()
         if ejecucion:
-            ws.Range(f"H{target_row}").Value = ejecucion
+            ws_write(ws, f"H{target_row}", ejecucion)
         if observaciones:
-            ws.Range(f"K{target_row}").Value = observaciones
+            ws_write(ws, f"K{target_row}", observaciones)
 
 
 def _write_section_4(ws, payload):
@@ -844,13 +847,13 @@ def _write_section_4(ws, payload):
             nivel = (values.get("nivel_apoyo") or "").strip()
             observaciones = (values.get("observaciones") or "").strip()
             if nivel:
-                ws.Range(f"J{row}").Value = nivel
+                ws_write(ws, f"J{row}", nivel)
             if observaciones:
-                ws.Range(f"N{row}").Value = observaciones
+                ws_write(ws, f"N{row}", observaciones)
         note_row = block["note_row"] + base_offset
         note_value = (note_payload.get(block["id"]) or "").strip()
         if note_value:
-            ws.Range(f"B{note_row}").Value = note_value
+            ws_write(ws, f"B{note_row}", note_value)
 
 
 def _write_section_5(ws, payload):
@@ -864,9 +867,9 @@ def _write_section_5(ws, payload):
         nivel = (values.get("nivel_apoyo_requerido") or "").strip()
         observaciones = (values.get("observaciones") or "").strip()
         if nivel:
-            ws.Range(f"H{row}").Value = nivel
+            ws_write(ws, f"H{row}", nivel)
         if observaciones:
-            ws.Range(f"M{row}").Value = observaciones
+            ws_write(ws, f"M{row}", observaciones)
 
 
 def _write_section_6(ws, payload):
@@ -875,7 +878,7 @@ def _write_section_6(ws, payload):
     anchor = _find_row_by_text(ws, "6. AJUSTES RAZONABLES REQUERIDOS")
     value = (payload.get("ajustes_requeridos") or "").strip()
     if value:
-        ws.Range(f"A{anchor + 1}").Value = value
+        ws_write(ws, f"A{anchor + 1}", value)
 
 
 def _write_section_7(ws, payload):
@@ -884,7 +887,7 @@ def _write_section_7(ws, payload):
     anchor = _find_row_by_text(ws, "7. PRIMER SEGUIMIENTO ESTABLECIDO PARA EL VINCULADO")
     fecha = (payload.get("fecha_primer_seguimiento") or "").strip()
     if fecha:
-        ws.Range(f"G{anchor + 1}").Value = fecha
+        ws_write(ws, f"G{anchor + 1}", fecha)
 
 
 def _write_section_8(ws, payload):
@@ -893,7 +896,7 @@ def _write_section_8(ws, payload):
     anchor = _find_row_by_text(ws, "8. OBSERVACIONES /RECOMENDACIONES")
     texto = (payload.get("observaciones_recomendaciones") or "").strip()
     if texto:
-        ws.Range(f"A{anchor + 1}").Value = texto
+        ws_write(ws, f"A{anchor + 1}", texto)
 
 
 def _write_section_9(ws, payload):
@@ -918,12 +921,13 @@ def _write_section_9(ws, payload):
         nombre = (entry.get("nombre") or "").strip()
         cargo = (entry.get("cargo") or "").strip()
         if nombre:
-            ws.Range(f"C{row}").Value = nombre
+            ws_write(ws, f"C{row}", nombre)
         if cargo:
-            ws.Range(f"L{row}").Value = cargo
+            ws_write(ws, f"L{row}", cargo)
 
 
 def export_to_excel(clear_cache=True):
+    clear_written_rows()
     output_path = _ensure_output_path()
     if not FORM_CACHE.get("section_1") and cache_file_exists():
         load_cache_from_file()
@@ -958,4 +962,3 @@ def export_to_excel(clear_cache=True):
         clear_cache_file()
         clear_form_cache()
     return output_path
-

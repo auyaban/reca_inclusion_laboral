@@ -6,6 +6,7 @@ import time
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
     _get_desktop_dir,
+    _next_available_file_path,
     _normalize_text,
     _sanitize_filename,
     _supabase_get,
@@ -268,7 +269,7 @@ def _ensure_output_path(template_keyword):
     output_dir = os.path.join(desktop, "Formatos Inclusion Laboral", safe_company)
     os.makedirs(output_dir, exist_ok=True)
     output_name = f"{FORM_NAME} - {safe_company}.xlsx"
-    output_path = os.path.join(output_dir, output_name)
+    output_path = _next_available_file_path(os.path.join(output_dir, output_name))
     if not os.path.exists(output_path):
         shutil.copy2(template_path, output_path)
     FORM_CACHE["_output_path"] = output_path

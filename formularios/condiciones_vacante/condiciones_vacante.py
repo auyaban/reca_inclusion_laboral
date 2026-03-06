@@ -10,7 +10,10 @@ from formularios.common import (
     format_checkbox_symbol,
     sanitize_logo_error_cells,
     autofit_rows,
+    clear_written_rows,
+    ws_write,
     _get_desktop_dir,
+    _next_available_file_path,
     _normalize_text,
     _sanitize_filename,
 )
@@ -397,7 +400,7 @@ def _ensure_output_path():
     os.makedirs(output_dir, exist_ok=True)
     process_name = "Revision de las Condiciones de la Vacante"
     output_name = f"{process_name} - {safe_company}.xlsx"
-    output_path = os.path.join(output_dir, output_name)
+    output_path = _next_available_file_path(os.path.join(output_dir, output_name))
     if not os.path.exists(output_path):
         shutil.copy2(template_path, output_path)
     FORM_CACHE["_output_path"] = output_path
@@ -1117,7 +1120,7 @@ def _write_section_with_ws(ws, section_id, payload):
             _log_excel(
                 f"WRITE section=section_6 cell={mapping['discapacidad_col']}{row} key=discapacidad value={discapacidad!r}"
             )
-            ws.Range(f"{mapping['discapacidad_col']}{row}").Value = discapacidad
+            ws_write(ws, f"{mapping['discapacidad_col']}{row}", discapacidad)
         return
 
     if section_id == "section_7":
@@ -1128,7 +1131,7 @@ def _write_section_with_ws(ws, section_id, payload):
         _log_excel(
             f"WRITE section=section_7 cell=A{row + 1} key=observaciones_recomendaciones value={value!r}"
         )
-        ws.Range(f"A{row + 1}").Value = value
+        ws_write(ws, f"A{row + 1}", value)
         return
 
     if section_id == "section_8":
@@ -1155,8 +1158,8 @@ def _write_section_with_ws(ws, section_id, payload):
             _log_excel(
                 f"WRITE section=section_8 cell=L{row} key=cargo value={cargo!r}"
             )
-            ws.Range(f"E{row}").Value = nombre
-            ws.Range(f"L{row}").Value = cargo
+            ws_write(ws, f"E{row}", nombre)
+            ws_write(ws, f"L{row}", cargo)
         return
 
     mapping = EXCEL_MAPPING.get(section_id)
@@ -1172,12 +1175,12 @@ def _write_section_with_ws(ws, section_id, payload):
                     _log_excel(
                         f"WRITE section={section_id} cell={cell} key={key} checkbox_symbol={symbol!r}"
                     )
-                    ws.Range(cell).Value = symbol
+                    ws_write(ws, cell, symbol)
                 else:
                     _log_excel(
                         f"WRITE section={section_id} cell={cell} key={key} value={value!r}"
                     )
-                    ws.Range(cell).Value = value
+                    ws_write(ws, cell, value)
         return
     for key, cell in mapping.items():
         if key in payload:
@@ -1185,10 +1188,11 @@ def _write_section_with_ws(ws, section_id, payload):
             _log_excel(
                 f"WRITE section={section_id} cell={cell} key={key} value={value!r}"
             )
-            ws.Range(cell).Value = value
+            ws_write(ws, cell, value)
 
 
 def export_to_excel(progress_callback=None):
+    clear_written_rows()
     output_path = _ensure_output_path()
     _log_excel(f"START export_all output={output_path}")
     try:

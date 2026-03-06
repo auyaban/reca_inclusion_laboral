@@ -6,11 +6,14 @@ import shutil
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
     _get_desktop_dir,
+    _next_available_file_path,
     _normalize_cedula,
     _normalize_text,
     _parse_date_value,
     sanitize_logo_error_cells,
     autofit_rows,
+    clear_written_rows,
+    ws_write,
     _sanitize_filename,
     _supabase_get,
     _supabase_upsert_with_queue,
@@ -575,7 +578,7 @@ def _ensure_output_path():
     os.makedirs(output_dir, exist_ok=True)
     process_name = "Proceso de Contratacion Incluyente"
     output_name = f"{process_name} - {safe_company}.xlsx"
-    output_path = os.path.join(output_dir, output_name)
+    output_path = _next_available_file_path(os.path.join(output_dir, output_name))
     shutil.copy2(template_path, output_path)
     FORM_CACHE["_output_path"] = output_path
     return output_path
@@ -759,11 +762,11 @@ def _write_section_2(ws, oferentes):
         return
     total_oferentes = len(oferentes)
     if 2 <= total_oferentes <= 4:
-        ws.Range("F1").Value = "PROCESO CONTRATACION INCLUYENTE GRUPAL - 2 A 4 OFERENTES"
+        ws_write(ws, "F1", "PROCESO CONTRATACION INCLUYENTE GRUPAL - 2 A 4 OFERENTES")
     elif 5 <= total_oferentes <= 7:
-        ws.Range("F1").Value = "PROCESO CONTRATACION INCLUYENTE GRUPAL - 5 A 7 VINCULADOS"
+        ws_write(ws, "F1", "PROCESO CONTRATACION INCLUYENTE GRUPAL - 5 A 7 VINCULADOS")
     elif total_oferentes >= 8:
-        ws.Range("F1").Value = "PROCESO CONTRATACION INCLUYENTE GRUPAL - MAS DE 8 VINCULADOS"
+        ws_write(ws, "F1", "PROCESO CONTRATACION INCLUYENTE GRUPAL - MAS DE 8 VINCULADOS")
     start_row = _find_row_by_text(ws, SECTION_2_ANCHOR)
     next_row = _find_row_by_text(ws, SECTION_6_ANCHOR)
     block_height = next_row - start_row
@@ -788,7 +791,7 @@ def _write_section_2(ws, oferentes):
             _log_excel(
                 f"WRITE section=section_2 cell={col}{target_row} key={field_id} value={value!r}"
             )
-            ws.Range(f"{col}{target_row}").Value = value
+            ws_write(ws, f"{col}{target_row}", value)
 
 
 def _write_section_6(ws, payload):
@@ -800,7 +803,7 @@ def _write_section_6(ws, payload):
     _log_excel(
         f"WRITE section=section_6 cell=A{ajustes_row} key=ajustes_recomendaciones value={ajustes_value!r}"
     )
-    ws.Range(f"A{ajustes_row}").Value = ajustes_value
+    ws_write(ws, f"A{ajustes_row}", ajustes_value)
 
 
 def _write_section_7(ws, payload):
@@ -833,8 +836,8 @@ def _write_section_7(ws, payload):
         _log_excel(
             f"WRITE section=section_7 cell={cargo_col}{row} key=cargo value={cargo!r}"
         )
-        ws.Range(f"{nombre_col}{row}").Value = nombre
-        ws.Range(f"{cargo_col}{row}").Value = cargo
+        ws_write(ws, f"{nombre_col}{row}", nombre)
+        ws_write(ws, f"{cargo_col}{row}", cargo)
 
 
 def _write_section_1(ws, payload):
@@ -850,13 +853,14 @@ def _write_section_1(ws, payload):
     for key, cell in mapping.items():
         if key in payload:
             value = payload.get(key)
-            ws.Range(cell).Value = value
+            ws_write(ws, cell, value)
             _log_excel(
                 f"WRITE section=section_1 cell={cell} key={key} value={value!r}"
             )
 
 
 def export_to_excel(clear_cache=True):
+    clear_written_rows()
     output_path = _ensure_output_path()
     if not FORM_CACHE.get("section_1") and cache_file_exists():
         load_cache_from_file()

@@ -6,9 +6,12 @@ import time
 from formularios.common import (
     format_checkbox_symbol,
     _get_desktop_dir,
+    _next_available_file_path,
     _normalize_text,
     sanitize_logo_error_cells,
     autofit_rows,
+    clear_written_rows,
+    ws_write,
     _sanitize_filename,
     _supabase_get,
 )
@@ -309,13 +312,23 @@ SECTION_1_SUPABASE_MAP = {
     "ciudad_empresa": "ciudad_empresa",
     "telefono_empresa": "telefono_empresa",
     "cargo": "cargo",
-    "sede_empresa": "sede_empresa",
+    "sede_empresa": "zona_empresa",
     "correo_profesional": "correo_profesional",
     "correo_asesor": "correo_asesor",
 }
 
 FORM_CACHE = {}
 SECTION_1_CACHE = {}
+
+
+def _map_company_row(row):
+    if not isinstance(row, dict):
+        return row
+    mapped = dict(row)
+    for field_id, source_key in SECTION_1_SUPABASE_MAP.items():
+        if source_key in row:
+            mapped[field_id] = row.get(source_key)
+    return mapped
 
 
 def _get_cache_dir():
@@ -429,7 +442,7 @@ def get_empresa_by_nit(nit, env_path=".env"):
         "limit": 1,
     }
     data = _supabase_get("empresas", params, env_path=env_path)
-    return data[0] if data else None
+    return _map_company_row(data[0]) if data else None
 
 
 def get_empresa_by_nombre(nombre, env_path=".env"):
@@ -451,7 +464,7 @@ def get_empresa_by_nombre(nombre, env_path=".env"):
         return None
     if len(data) > 1:
         raise ValueError("Hay más de una empresa con ese nombre. Usa el NIT.")
-    return data[0]
+    return _map_company_row(data[0])
 
 
 def get_empresas_by_nombre_prefix(prefix, env_path=".env", limit=10):
@@ -623,6 +636,7 @@ def _find_template_path(tipo_visita=None):
 
 
 def export_to_excel(cache=None):
+    clear_written_rows()
     if cache is None:
         cache = FORM_CACHE
     section_1 = cache.get("section_1") or {}
@@ -645,7 +659,7 @@ def export_to_excel(cache=None):
     prefix = "Reactivacion" if tipo_visita == "reactivacion" else "Presentacion"
     process_name = f"{prefix} del Programa de Inclusion Laboral"
     output_name = f"{process_name} - {safe_company}.xlsx"
-    output_path = os.path.join(output_dir, output_name)
+    output_path = _next_available_file_path(os.path.join(output_dir, output_name))
     shutil.copy2(template_path, output_path)
     _log_excel(f"START export_all output={output_path}", output_path)
 
@@ -669,7 +683,7 @@ def export_to_excel(cache=None):
                     f"WRITE section=section_1 cell={cell} key={key} value={value!r}",
                     output_path,
                 )
-                ws.Range(cell).Value = value
+                ws_write(ws, cell, value)
 
         for key, cell in EXCEL_MAPPING["section_3_item_8"].items():
             value = section_3_item_8.get(key, False)
@@ -678,7 +692,7 @@ def export_to_excel(cache=None):
                 f"WRITE section=section_3_item_8 cell={cell} key={key} checkbox_symbol={symbol!r}",
                 output_path,
             )
-            ws.Range(cell).Value = symbol
+            ws_write(ws, cell, symbol)
 
         for key, cell in EXCEL_MAPPING["section_4"].items():
             if key in section_4:
@@ -687,7 +701,7 @@ def export_to_excel(cache=None):
                     f"WRITE section=section_4 cell={cell} key={key} value={value!r}",
                     output_path,
                 )
-                ws.Range(cell).Value = value
+                ws_write(ws, cell, value)
 
         section_5_cfg = EXCEL_MAPPING["section_5"]
         start_row = section_5_cfg["start_row"]
@@ -717,11 +731,11 @@ def export_to_excel(cache=None):
                 f"WRITE section=section_5 cell={cargo_col}{row} key=cargo value={cargo!r}",
                 output_path,
             )
-            ws.Range(f"{name_col}{row}").Value = nombre
-            ws.Range(f"{cargo_col}{row}").Value = cargo
+            ws_write(ws, f"{name_col}{row}", nombre)
+            ws_write(ws, f"{cargo_col}{row}", cargo)
             if idx >= 3:
-                ws.Range(f"A{row}").Value = "Nombre completo:"
-                ws.Range(f"L{row}").Value = "Cargo:"
+                ws_write(ws, f"A{row}", "Nombre completo:")
+                ws_write(ws, f"L{row}", "Cargo:")
 
         sanitize_logo_error_cells(wb)
         autofit_rows(ws)

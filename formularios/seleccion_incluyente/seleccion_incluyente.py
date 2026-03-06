@@ -6,11 +6,14 @@ import time
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
     _get_desktop_dir,
+    _next_available_file_path,
     _normalize_cedula,
     _normalize_text,
     _parse_date_value,
     sanitize_logo_error_cells,
     autofit_rows,
+    clear_written_rows,
+    ws_write,
     _sanitize_filename,
     _supabase_get,
     _supabase_upsert_with_queue,
@@ -1151,7 +1154,7 @@ def _ensure_output_path():
     os.makedirs(output_dir, exist_ok=True)
     process_name = "Proceso de Seleccion Incluyente"
     output_name = f"{process_name} - {safe_company}.xlsx"
-    output_path = os.path.join(output_dir, output_name)
+    output_path = _next_available_file_path(os.path.join(output_dir, output_name))
     shutil.copy2(template_path, output_path)
     FORM_CACHE["_output_path"] = output_path
     return output_path
@@ -1361,7 +1364,7 @@ def _write_section_1(ws, payload):
             payload = payload or {}
     for key, cell in EXCEL_MAPPING.get("section_1", {}).items():
         if key in payload:
-            ws.Range(cell).Value = payload.get(key)
+            ws_write(ws, cell, payload.get(key))
             _log_excel(
                 f"WRITE section=section_1 cell={cell} key={key} value={payload.get(key)!r}"
             )
@@ -1392,11 +1395,11 @@ def _write_section_2(ws, oferentes):
     )
     total_oferentes = len(oferentes)
     if 2 <= total_oferentes <= 4:
-        ws.Range("G1").Value = "PROCESO DE SELECCION INCLUYENTE GRUPAL - 2 A 4 OFERENTES"
+        ws_write(ws, "G1", "PROCESO DE SELECCION INCLUYENTE GRUPAL - 2 A 4 OFERENTES")
     elif 5 <= total_oferentes <= 7:
-        ws.Range("G1").Value = "PROCESO DE SELECCION INCLUYENTE GRUPAL - 5 A 7 OFERENTES"
+        ws_write(ws, "G1", "PROCESO DE SELECCION INCLUYENTE GRUPAL - 5 A 7 OFERENTES")
     elif 8 <= total_oferentes <= 10:
-        ws.Range("G1").Value = "PROCESO DE SELECCION INCLUYENTE GRUPAL - 8 A 10 OFERENTES"
+        ws_write(ws, "G1", "PROCESO DE SELECCION INCLUYENTE GRUPAL - 8 A 10 OFERENTES")
     for idx in range(1, len(oferentes)):
         insert_at = start_row + (block_height * idx)
         _insert_person_block(ws, start_row, block_height, insert_at)
@@ -1415,7 +1418,7 @@ def _write_section_2(ws, oferentes):
             _log_excel(
                 f"WRITE section=section_2 cell={col}{target_row} key={field_id} value={value!r}"
             )
-            ws.Range(f"{col}{target_row}").Value = value
+            ws_write(ws, f"{col}{target_row}", value)
 
 
 def _write_section_5(ws, payload):
@@ -1433,8 +1436,8 @@ def _write_section_5(ws, payload):
     _log_excel(
         f"WRITE section=section_5 cell=A{nota_row} key=nota value={nota_value!r}"
     )
-    ws.Range(f"A{ajustes_row}").Value = ajustes_value
-    ws.Range(f"A{nota_row}").Value = nota_value
+    ws_write(ws, f"A{ajustes_row}", ajustes_value)
+    ws_write(ws, f"A{nota_row}", nota_value)
 
 
 def _write_section_6(ws, payload):
@@ -1464,11 +1467,12 @@ def _write_section_6(ws, payload):
         _log_excel(
             f"WRITE section=section_6 cell={cargo_col}{row} key=cargo value={cargo!r}"
         )
-        ws.Range(f"{nombre_col}{row}").Value = nombre
-        ws.Range(f"{cargo_col}{row}").Value = cargo
+        ws_write(ws, f"{nombre_col}{row}", nombre)
+        ws_write(ws, f"{cargo_col}{row}", cargo)
 
 
 def export_to_excel(clear_cache=True):
+    clear_written_rows()
     output_path = _ensure_output_path()
     _log_excel(f"START export_all output={output_path}")
     try:

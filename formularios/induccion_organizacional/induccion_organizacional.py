@@ -6,10 +6,13 @@ import time
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
     _get_desktop_dir,
+    _next_available_file_path,
     _normalize_cedula,
     _normalize_text,
     sanitize_logo_error_cells,
     autofit_rows,
+    clear_written_rows,
+    ws_write,
     _sanitize_filename,
     _supabase_get,
 )
@@ -578,7 +581,7 @@ def _ensure_output_path():
     os.makedirs(output_dir, exist_ok=True)
     process_name = "Proceso de Induccion Organizacional"
     output_name = f"{process_name} - {safe_company}.xlsx"
-    output_path = os.path.join(output_dir, output_name)
+    output_path = _next_available_file_path(os.path.join(output_dir, output_name))
     shutil.copy2(template_path, output_path)
     FORM_CACHE["_output_path"] = output_path
     return output_path
@@ -628,7 +631,7 @@ def _write_section_1(ws, payload):
     mapping = EXCEL_MAPPING.get("section_1", {})
     for key, cell in mapping.items():
         if key in payload:
-            ws.Range(cell).Value = payload.get(key)
+            ws_write(ws, cell, payload.get(key))
 
 
 def _write_section_2(ws, payload):
@@ -648,7 +651,7 @@ def _write_section_2(ws, payload):
             value = row_data.get(field_id, "")
             if value in (None, ""):
                 continue
-            ws.Range(f"{col}{target_row}").Value = value
+            ws_write(ws, f"{col}{target_row}", value)
 
 
 def _write_section_3(ws, payload):
@@ -666,13 +669,13 @@ def _write_section_3(ws, payload):
             medio = row_payload.get("medio_socializacion", "")
             descripcion = row_payload.get("descripcion", "")
             if visto not in (None, ""):
-                ws.Range(f"H{target_row}").Value = visto
+                ws_write(ws, f"H{target_row}", visto)
             if responsable not in (None, ""):
-                ws.Range(f"K{target_row}").Value = responsable
+                ws_write(ws, f"K{target_row}", responsable)
             if medio not in (None, ""):
-                ws.Range(f"M{target_row}").Value = medio
+                ws_write(ws, f"M{target_row}", medio)
             if descripcion not in (None, ""):
-                ws.Range(f"P{target_row}").Value = descripcion
+                ws_write(ws, f"P{target_row}", descripcion)
 
 
 def _write_section_4(ws, payload):
@@ -684,12 +687,12 @@ def _write_section_4(ws, payload):
         entry = payload[idx] if idx < len(payload) else {}
         medio = (entry.get("medio") or "").strip()
         if medio:
-            ws.Range(f"A{row}").Value = medio
+            ws_write(ws, f"A{row}", medio)
         texto = (entry.get("recomendacion") or "").strip()
         if not texto and medio in SECTION_4_RECOMMENDATIONS:
             texto = SECTION_4_RECOMMENDATIONS.get(medio, "")
         if texto:
-            ws.Range(f"G{row}").Value = texto
+            ws_write(ws, f"G{row}", texto)
 
 
 def _write_section_5(ws, payload):
@@ -698,7 +701,7 @@ def _write_section_5(ws, payload):
     observaciones = (payload.get("observaciones") or "").strip()
     if observaciones:
         section_5_row = _find_row_by_text(ws, "5. OBSERVACIONES")
-        ws.Range(f"A{section_5_row + 1}").Value = observaciones
+        ws_write(ws, f"A{section_5_row + 1}", observaciones)
 
 
 def _write_section_6(ws, payload):
@@ -723,12 +726,13 @@ def _write_section_6(ws, payload):
         nombre = (entry.get("nombre") or "").strip()
         cargo = (entry.get("cargo") or "").strip()
         if nombre:
-            ws.Range(f"C{row}").Value = nombre
+            ws_write(ws, f"C{row}", nombre)
         if cargo:
-            ws.Range(f"L{row}").Value = cargo
+            ws_write(ws, f"L{row}", cargo)
 
 
 def export_to_excel(clear_cache=True):
+    clear_written_rows()
     output_path = _ensure_output_path()
     if not FORM_CACHE.get("section_1") and cache_file_exists():
         load_cache_from_file()
@@ -760,4 +764,3 @@ def export_to_excel(clear_cache=True):
         clear_cache_file()
         clear_form_cache()
     return output_path
-

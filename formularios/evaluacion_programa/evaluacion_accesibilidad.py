@@ -13,9 +13,12 @@ from . import seccion_6_7
 from . import seccion_8
 from formularios.common import (
     _get_desktop_dir,
+    _next_available_file_path,
     _normalize_text,
     sanitize_logo_error_cells,
     autofit_rows,
+    clear_written_rows,
+    ws_write,
     _sanitize_filename,
     _supabase_get,
 )
@@ -142,7 +145,7 @@ SECTION_1_SUPABASE_MAP = {
     "ciudad_empresa": "ciudad_empresa",
     "telefono_empresa": "telefono_empresa",
     "cargo": "cargo",
-    "sede_empresa": "sede_empresa",
+    "sede_empresa": "zona_empresa",
     "profesional_asignado": "profesional_asignado",
 }
 
@@ -237,7 +240,7 @@ def _ensure_output_path():
     os.makedirs(output_dir, exist_ok=True)
     process_name = "Evaluacion de Accesibilidad"
     output_name = f"{process_name} - {safe_company}.xlsx"
-    output_path = os.path.join(output_dir, output_name)
+    output_path = _next_available_file_path(os.path.join(output_dir, output_name))
     if not os.path.exists(output_path):
         shutil.copy2(template_path, output_path)
     FORM_CACHE["_output_path"] = output_path
@@ -315,11 +318,11 @@ def _write_section_with_ws(ws, section_id, payload):
             _log_excel(
                 f"WRITE section=section_8 cell={cargo_col}{row} key=cargo value={cargo!r}"
             )
-            ws.Range(f"{name_col}{row}").Value = nombre
-            ws.Range(f"{cargo_col}{row}").Value = cargo
+            ws_write(ws, f"{name_col}{row}", nombre)
+            ws_write(ws, f"{cargo_col}{row}", cargo)
             if idx >= base_rows:
-                ws.Range(f"{label_name_col}{row}").Value = "Nombre completo:"
-                ws.Range(f"{label_cargo_col}{row}").Value = "Cargo:"
+                ws_write(ws, f"{label_name_col}{row}", "Nombre completo:")
+                ws_write(ws, f"{label_cargo_col}{row}", "Cargo:")
     else:
         for key, cell in mapping.items():
             if key in payload:
@@ -327,12 +330,13 @@ def _write_section_with_ws(ws, section_id, payload):
                 _log_excel(
                     f"WRITE section={section_id} cell={cell} key={key} value={value!r}"
                 )
-                ws.Range(cell).Value = value
+                ws_write(ws, cell, value)
 
 
 
 
 def export_to_excel(progress_callback=None):
+    clear_written_rows()
     output_path = _ensure_output_path()
     _log_excel(f"START export_all output={output_path}")
     try:
@@ -1407,6 +1411,16 @@ SECTION_6 = seccion_6_7.SECTION_6
 SECTION_7 = seccion_6_7.SECTION_7
 SECTION_8 = seccion_8.SECTION_8
 
+
+def _map_company_row(row):
+    if not isinstance(row, dict):
+        return row
+    mapped = dict(row)
+    for field_id, source_key in SECTION_1_SUPABASE_MAP.items():
+        if source_key in row:
+            mapped[field_id] = row.get(source_key)
+    return mapped
+
 def get_empresa_by_nit(nit, env_path=".env"):
     if not nit:
         return None
@@ -1438,7 +1452,7 @@ def get_empresa_by_nit(nit, env_path=".env"):
         }
         data = _supabase_get("empresas", params, env_path=env_path)
         if data:
-            return data[0]
+            return _map_company_row(data[0])
 
     # 2) Fallback por coincidencia normalizada (con/sin guion/simbolos).
     normalized_target = _normalize_nit(nit)
@@ -1454,9 +1468,9 @@ def get_empresa_by_nit(nit, env_path=".env"):
         return None
     exact = [row for row in rows if _normalize_nit(row.get("nit_empresa")) == normalized_target]
     if len(exact) == 1:
-        return exact[0]
+        return _map_company_row(exact[0])
     if len(rows) == 1:
-        return rows[0]
+        return _map_company_row(rows[0])
     return None
 
 
@@ -1472,7 +1486,7 @@ def get_empresa_by_nombre(nombre, env_path=".env"):
     }
     data = _supabase_get("empresas", params, env_path=env_path)
     if len(data) == 1:
-        return data[0]
+        return _map_company_row(data[0])
 
     def _normalize_name(value):
         return re.sub(r"\s+", " ", str(value or "")).strip().lower()
@@ -1489,11 +1503,11 @@ def get_empresa_by_nombre(nombre, env_path=".env"):
         return None
     exact = [row for row in candidates if _normalize_name(row.get("nombre_empresa")) == target]
     if len(exact) == 1:
-        return exact[0]
+        return _map_company_row(exact[0])
     if len(exact) > 1:
         raise ValueError("Hay más de una empresa con ese nombre. Usa el NIT.")
     if len(candidates) == 1:
-        return candidates[0]
+        return _map_company_row(candidates[0])
     raise ValueError("Hay más de una empresa con ese nombre. Usa el NIT.")
 
 

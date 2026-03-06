@@ -6,9 +6,12 @@ import time
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
     _get_desktop_dir,
+    _next_available_file_path,
     _normalize_text,
     sanitize_logo_error_cells,
     autofit_rows,
+    clear_written_rows,
+    ws_write,
     _sanitize_filename,
 )
 
@@ -280,7 +283,7 @@ def _ensure_output_path():
     os.makedirs(output_dir, exist_ok=True)
     process_name = "Sensibilizacion"
     output_name = f"{process_name} - {safe_company}.xlsx"
-    output_path = os.path.join(output_dir, output_name)
+    output_path = _next_available_file_path(os.path.join(output_dir, output_name))
     shutil.copy2(template_path, output_path)
     FORM_CACHE["_output_path"] = output_path
     return output_path
@@ -324,7 +327,7 @@ def _write_section_1(ws, payload):
     mapping = EXCEL_MAPPING.get("section_1", {})
     for key, cell in mapping.items():
         if key in payload:
-            ws.Range(cell).Value = payload.get(key)
+            ws_write(ws, cell, payload.get(key))
 
 
 def _write_section_3(ws, payload):
@@ -333,7 +336,7 @@ def _write_section_3(ws, payload):
     anchor = _find_row_by_text(ws, "3. OBSERVACIONES")
     texto = (payload.get("observaciones") or "").strip()
     if texto:
-        ws.Range(f"A{anchor + 1}").Value = texto
+        ws_write(ws, f"A{anchor + 1}", texto)
 
 
 def _write_section_5(ws, payload):
@@ -358,12 +361,13 @@ def _write_section_5(ws, payload):
         nombre = (entry.get("nombre") or "").strip()
         cargo = (entry.get("cargo") or "").strip()
         if nombre:
-            ws.Range(f"C{row}").Value = nombre
+            ws_write(ws, f"C{row}", nombre)
         if cargo:
-            ws.Range(f"K{row}").Value = cargo
+            ws_write(ws, f"K{row}", cargo)
 
 
 def export_to_excel(clear_cache=True):
+    clear_written_rows()
     output_path = _ensure_output_path()
     if not FORM_CACHE.get("section_1") and cache_file_exists():
         load_cache_from_file()
@@ -392,5 +396,4 @@ def export_to_excel(clear_cache=True):
         clear_cache_file()
         clear_form_cache()
     return output_path
-
 

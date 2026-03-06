@@ -42,12 +42,22 @@ SECTION_1_SUPABASE_MAP = {
     "contacto_empresa": "contacto_empresa",
     "cargo": "cargo",
     "asesor": "asesor",
-    "sede_empresa": "sede_empresa",
+    "sede_empresa": "zona_empresa",
     "caja_compensacion": "caja_compensacion",
 }
 
 def register_form():
     return {"id": FORM_ID, "name": FORM_NAME, "module": __name__}
+
+
+def _map_company_row(row):
+    if not isinstance(row, dict):
+        return row
+    mapped = dict(row)
+    for field_id, source_key in SECTION_1_SUPABASE_MAP.items():
+        if source_key in row:
+            mapped[field_id] = row.get(source_key)
+    return mapped
 
 
 def _ensure_dir(path):
@@ -407,7 +417,7 @@ def get_empresa_by_nit(nit, env_path=".env"):
         "limit": 1,
     }
     data = _supabase_get("empresas", params, env_path=env_path)
-    return data[0] if data else None
+    return _map_company_row(data[0]) if data else None
 
 
 def get_empresa_by_nombre(nombre, env_path=".env"):
@@ -425,7 +435,7 @@ def get_empresa_by_nombre(nombre, env_path=".env"):
         return None
     if len(data) > 1:
         raise ValueError("Hay más de una empresa con ese nombre. Usa el NIT.")
-    return data[0]
+    return _map_company_row(data[0])
 
 
 def get_empresas_by_nombre_prefix(prefix, env_path=".env", limit=10):

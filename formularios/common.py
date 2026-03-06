@@ -1151,6 +1151,16 @@ def _sanitize_filename(value):
     return safe or "Empresa"
 
 
+def _next_available_file_path(path):
+    base, ext = os.path.splitext(str(path or ""))
+    candidate = path
+    index = 2
+    while candidate and os.path.exists(candidate):
+        candidate = f"{base} ({index}){ext}"
+        index += 1
+    return candidate
+
+
 def format_checkbox_symbol(value):
     return "☑" if bool(value) else "☐"
 
@@ -1266,30 +1276,66 @@ def _expand_row_with_extra_rows(ws, row_num, needed, start_col, end_col):
     return extra
 
 
-def autofit_rows(ws):
-    import math
+# ---------------------------------------------------------------------------
+# Row-write tracker — forms register which rows they wrote so autofit only
+# touches those rows and leaves template-designed heights untouched.
+# ---------------------------------------------------------------------------
+_written_rows: set = set()
 
-    # Pass 1: AutoFit estándar (funciona bien para celdas simples con wrap)
-    ws.UsedRange.Rows.AutoFit()
+
+def clear_written_rows():
+    """Call at the start of each export to reset the tracker."""
+    _written_rows.clear()
+
+
+def track_row_written(*rows):
+    """Register one or more row numbers as having been written to."""
+    _written_rows.update(r for r in rows if isinstance(r, int) and r > 0)
+
+
+def ws_write(ws, cell_ref, value):
+    """Write value to a cell and automatically track the row for autofit."""
+    import re
+    m = re.search(r"(\d+)", str(cell_ref))
+    if m:
+        _written_rows.add(int(m.group(1)))
+    ws.Range(cell_ref).Value = value
+
+
+def autofit_rows(ws):
+    # Determine which rows to process.
+    # If the form registered written rows, only process those;
+    # otherwise fall back to scanning all used rows (backward-compatible).
+    rows_to_process = sorted(_written_rows) if _written_rows else None
+
+    used = ws.UsedRange
+    start_col = used.Column
+    end_col = used.Column + used.Columns.Count - 1
+
+    # Pass 1: AutoFit — targeted when written rows are known, full scan otherwise
+    if rows_to_process:
+        for row_num in rows_to_process:
+            try:
+                ws.Rows(row_num).AutoFit()
+            except Exception:
+                pass
+    else:
+        ws.UsedRange.Rows.AutoFit()
 
     # Pass 2: corregir celdas combinadas de una sola fila.
     # AutoFit las ignora porque solo mide el ancho de la primera columna.
     # Si la altura necesaria supera el límite de Excel (409pt), se insertan
     # filas extra debajo y se extienden las celdas combinadas para cubrirlas.
-    used = ws.UsedRange
-    start_row = used.Row
-    end_row = used.Row + used.Rows.Count - 1
-    start_col = used.Column
-    end_col = used.Column + used.Columns.Count - 1
+    if rows_to_process:
+        scan_rows = rows_to_process
+    else:
+        scan_rows = range(used.Row, used.Row + used.Rows.Count)
 
     # Collect rows that need adjustment (scan first, modify after)
     overflow = []   # (row_num, needed) where needed > _EXCEL_MAX_ROW_HEIGHT
     normal = []     # (row_num, needed) where needed <= _EXCEL_MAX_ROW_HEIGHT
 
-    seen_rows = set()
-    for row_num in range(start_row, end_row + 1):
-        if row_num in seen_rows:
-            continue
+    for row_num in scan_rows:
         needed = _calc_needed_height(ws, row_num, start_col, end_col)
         if needed <= 0:
             continue

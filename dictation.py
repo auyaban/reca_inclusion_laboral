@@ -399,39 +399,47 @@ class DictationTextHelper:
         field_id: str,
         session_provider: Callable[[], str],
         log_fn: Optional[Callable[[str], None]] = None,
+        show_controls: bool = True,
     ):
         self.text = text_widget
         self.form_id = str(form_id or "")
         self.field_id = str(field_id or "")
         self.session_provider = session_provider
         self.log_fn = log_fn
+        self.show_controls = bool(show_controls)
         self._handle: Optional[RecordingHandle] = None
         self._tick_after_id = None
         self._worker = None
         self._is_recording = False
+        self._is_processing = False
         self._controls_parent = self.text.master
-        self._controls = tk.Frame(self._controls_parent, bg="#F2F2F2", bd=1, relief="solid")
-        self._button = tk.Button(
-            self._controls,
-            text="Dictar",
-            width=8,
-            command=self._on_toggle,
-            cursor="hand2",
-        )
-        self._button.pack(side="left", padx=(4, 2), pady=2)
-        self._status = tk.Label(
-            self._controls,
-            text="Listo",
-            bg="#F2F2F2",
-            fg="#333333",
-            font=("Arial", 8),
-        )
-        self._status.pack(side="left", padx=(0, 6), pady=2)
-        self._controls.place(x=0, y=0)
-        self.text.bind("<Configure>", self._place_controls, add="+")
-        self._controls_parent.bind("<Configure>", self._place_controls, add="+")
+        self._controls = None
+        self._button = None
+        self._status = None
+        if self.show_controls:
+            self._controls = tk.Frame(self._controls_parent, bg="#F2F2F2", bd=1, relief="solid")
+            self._button = tk.Button(
+                self._controls,
+                text="Dictar",
+                width=8,
+                command=self._on_toggle,
+                cursor="hand2",
+            )
+            self._button.pack(side="left", padx=(4, 2), pady=2)
+            self._status = tk.Label(
+                self._controls,
+                text="Listo",
+                bg="#F2F2F2",
+                fg="#333333",
+                font=("Arial", 8),
+            )
+            self._status.pack(side="left", padx=(0, 6), pady=2)
+            self._controls.place(x=0, y=0)
+            self.text.bind("<Configure>", self._place_controls, add="+")
+            self._controls_parent.bind("<Configure>", self._place_controls, add="+")
         self.text.bind("<Destroy>", self._on_destroy, add="+")
-        self.text.after(0, self._place_controls)
+        if self.show_controls:
+            self.text.after(0, self._place_controls)
         self._sync_enabled_state()
 
     def _log(self, message: str):
@@ -442,15 +450,20 @@ class DictationTextHelper:
                 pass
 
     def _set_status(self, text: str, fg: str = "#333333"):
-        self._status.config(text=text, fg=fg)
+        if self._status is not None:
+            self._status.config(text=text, fg=fg)
 
-    def _sync_enabled_state(self):
+    def _can_dictate(self) -> bool:
         try:
             state = str(self.text.cget("state"))
         except Exception:
             state = "normal"
-        enabled = (state != "disabled") and (sd is not None)
-        self._button.config(state="normal" if enabled else "disabled")
+        return (state != "disabled") and (sd is not None)
+
+    def _sync_enabled_state(self):
+        enabled = self._can_dictate()
+        if self._button is not None:
+            self._button.config(state="normal" if enabled else "disabled")
         if not enabled and sd is None:
             self._set_status("Audio no disponible", "#A40000")
 
@@ -464,12 +477,15 @@ class DictationTextHelper:
             except Exception:
                 pass
             self._tick_after_id = None
-        try:
-            self._controls.destroy()
-        except Exception:
-            pass
+        if self._controls is not None:
+            try:
+                self._controls.destroy()
+            except Exception:
+                pass
 
     def _place_controls(self, _event=None):
+        if not self.show_controls or self._controls is None:
+            return
         try:
             if not self.text.winfo_exists() or not self._controls.winfo_exists():
                 return
@@ -501,6 +517,8 @@ class DictationTextHelper:
 
     def _on_toggle(self):
         self._sync_enabled_state()
+        if not self._can_dictate():
+            return
         if self._is_recording:
             self._stop_and_transcribe_async()
         else:
@@ -541,13 +559,15 @@ class DictationTextHelper:
             self._reset_controls()
             return
         self._is_recording = False
+        self._is_processing = True
         if self._tick_after_id:
             try:
                 self.text.after_cancel(self._tick_after_id)
             except Exception:
                 pass
             self._tick_after_id = None
-        self._button.config(state="disabled", text="Procesando")
+        if self._button is not None:
+            self._button.config(state="disabled", text="Procesando")
         self._set_status("Procesando...", "#005A9C")
         handle = self._handle
         self._handle = None
@@ -594,9 +614,11 @@ class DictationTextHelper:
 
     def _reset_controls(self):
         self._is_recording = False
-        self._button.config(text="Dictar", state="normal")
+        self._is_processing = False
+        if self._button is not None:
+            self._button.config(text="Dictar", state="normal")
         self._sync_enabled_state()
-        if self._status.cget("text") == "Procesando...":
+        if self._status is not None and self._status.cget("text") == "Procesando...":
             self._set_status("Listo", "#333333")
 
 
@@ -607,6 +629,7 @@ def attach_dictation(
     field_id: str,
     session_provider: Callable[[], str],
     log_fn: Optional[Callable[[str], None]] = None,
+    show_controls: bool = True,
 ):
     try:
         if str(text_widget.cget("state")) == "disabled":
@@ -623,6 +646,7 @@ def attach_dictation(
         field_id=field_id,
         session_provider=session_provider,
         log_fn=log_fn,
+        show_controls=show_controls,
     )
     setattr(text_widget, "_dictation_helper", helper)
     return helper

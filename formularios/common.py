@@ -1162,7 +1162,7 @@ def _next_available_file_path(path):
 
 
 def format_checkbox_symbol(value):
-    return "☑" if bool(value) else "☐"
+    return "\u2611" if bool(value) else "\u2610"
 
 
 _EXCEL_MAX_ROW_HEIGHT = 409.0
@@ -1170,47 +1170,77 @@ _EXCEL_MAX_ROW_HEIGHT = 409.0
 
 def _calc_needed_height(ws, row_num, start_col, end_col):
     """
-    Returns the total height (pts) needed to display all single-row merged cells
-    in row_num, considering full merge width.  Returns 0 if nothing needs expanding.
+    Returns a list of (top_row, num_rows, needed_total) for every cell in
+    row_num that has content and needs manual height calculation:
+
+    - Merged cells (both single-row and multi-row): AutoFit ignores them
+      entirely, so we always compute manually.
+    - Non-merged cells with WrapText=True: Excel's Row.AutoFit() adjusts for
+      font size but not for the actual line-wrap count, so we compute manually
+      here too.
+
+    Multiple entries for the same (top_row, num_rows) block may be returned;
+    autofit_rows tracks the MAXIMUM needed across all of them.
     """
     import math
 
     seen = set()
-    max_needed = 0
+    results = []
     for col_num in range(start_col, end_col + 1):
         cell = ws.Cells(row_num, col_num)
-        if not cell.MergeCells:
-            continue
-        ma = cell.MergeArea
-        key = (ma.Row, ma.Column, ma.Rows.Count, ma.Columns.Count)
-        if key in seen:
-            continue
-        seen.add(key)
-        if ma.Rows.Count > 1:
-            continue
-        value = ma.Cells(1, 1).Value
-        if not value:
-            continue
-        text = str(value)
-        total_width = sum(
-            ws.Columns(ma.Column + i).ColumnWidth
-            for i in range(ma.Columns.Count)
-        )
-        chars_per_line = max(1, total_width * 0.85)
+
+        if cell.MergeCells:
+            ma = cell.MergeArea
+            key = (ma.Row, ma.Column, ma.Rows.Count, ma.Columns.Count)
+            if key in seen:
+                continue
+            seen.add(key)
+            value = ma.Cells(1, 1).Value
+            if not value:
+                continue
+            text = str(value)
+            total_width = sum(
+                ws.Columns(ma.Column + i).ColumnWidth
+                for i in range(ma.Columns.Count)
+            )
+            font_size = ma.Cells(1, 1).Font.Size or 10
+            top_row = ma.Row
+            num_rows = ma.Rows.Count
+        else:
+            # Non-merged cells: only process if the form actually wrote to this
+            # specific cell (not just any cell in the row).  Template label cells
+            # are often narrow-columned and should NOT trigger overflow insertion.
+            if (row_num, col_num) not in _written_cells:
+                continue
+            if not cell.WrapText:
+                continue
+            value = cell.Value
+            if not value:
+                continue
+            key = (row_num, col_num, 1, 1)
+            if key in seen:
+                continue
+            seen.add(key)
+            text = str(value)
+            total_width = ws.Columns(col_num).ColumnWidth
+            font_size = cell.Font.Size or 10
+            top_row = row_num
+            num_rows = 1
+
+        chars_per_line = max(1, total_width * 0.85 * (11.0 / font_size))
         line_count = sum(
             max(1, math.ceil(len(p) / chars_per_line))
             for p in text.replace("\r\n", "\n").split("\n")
         )
-        font_size = ma.Cells(1, 1).Font.Size or 10
         needed = line_count * (font_size + 3) + 2
-        if needed > max_needed:
-            max_needed = needed
-    return max_needed
+        if needed > 0:
+            results.append((top_row, num_rows, needed))
+    return results
 
 
-def _get_single_row_merges(ws, row_num, start_col, end_col):
+def _get_top_row_merges(ws, row_num, start_col, end_col):
     """
-    Returns list of (col_start, col_count) for every single-row merge
+    Returns list of (col_start, col_count, num_rows) for every merge
     whose top-left cell is in row_num.
     """
     seen = set()
@@ -1224,52 +1254,53 @@ def _get_single_row_merges(ws, row_num, start_col, end_col):
         if key in seen:
             continue
         seen.add(key)
-        if ma.Row == row_num and ma.Rows.Count == 1:
-            merges.append((ma.Column, ma.Columns.Count))
+        if ma.Row == row_num:
+            merges.append((ma.Column, ma.Columns.Count, ma.Rows.Count))
     return merges
 
 
-def _expand_row_with_extra_rows(ws, row_num, needed, start_col, end_col):
+def _expand_row_with_extra_rows(ws, top_row, existing_rows, needed, start_col, end_col):
     """
-    Splits a row that needs more height than _EXCEL_MAX_ROW_HEIGHT into
-    multiple physical rows by:
-      1. Inserting (extra) blank rows immediately below row_num.
-      2. Copying format from row_num to each new row.
-      3. Extending all single-row merges in row_num to cover the new rows.
-      4. Distributing the total needed height evenly across all rows.
+    Expands a merged-cell block that needs more height than
+    existing_rows * _EXCEL_MAX_ROW_HEIGHT by inserting additional rows.
+
+      1. Inserts (extra) blank rows immediately below the existing block.
+      2. Copies format from top_row to each new row.
+      3. Extends all merges in the block to cover the new rows.
+      4. Distributes the total needed height evenly across all rows.
+
     Returns the number of extra rows inserted.
     """
     import math
 
     total_rows = math.ceil(needed / _EXCEL_MAX_ROW_HEIGHT)
-    extra = total_rows - 1
+    extra = total_rows - existing_rows          # additional rows to insert
     row_height = math.ceil(needed / total_rows)
 
-    merges = _get_single_row_merges(ws, row_num, start_col, end_col)
+    merges = _get_top_row_merges(ws, top_row, start_col, end_col)
 
-    # Insert extra rows below row_num (insert in reverse so each new row
-    # lands just below row_num, pushing previous inserts further down).
+    # Insert extra rows just below the existing block.
+    insert_after = top_row + existing_rows - 1  # last row currently in block
     for i in range(extra):
-        insert_at = row_num + 1 + i
+        insert_at = insert_after + 1 + i
         ws.Rows(insert_at).Insert()
-        # Copy format (borders, fill, font, wrap) from original row
-        ws.Rows(row_num).Copy()
+        # Copy format (borders, fill, font, wrap) from the top row of the block.
+        ws.Rows(top_row).Copy()
         ws.Rows(insert_at).PasteSpecial(Paste=-4122)  # xlPasteFormats
         ws.Application.CutCopyMode = False
 
-    # Extend each merge to span all total_rows rows
-    for col_start, col_count in merges:
-        # Build the range string for the full extended merge area
-        from_cell = ws.Cells(row_num, col_start)
-        to_cell = ws.Cells(row_num + total_rows - 1, col_start + col_count - 1)
+    # Extend each merge to span all total_rows rows.
+    for col_start, col_count, _ in merges:
+        from_cell = ws.Cells(top_row, col_start)
+        to_cell = ws.Cells(top_row + total_rows - 1, col_start + col_count - 1)
         merge_range = ws.Range(from_cell, to_cell)
         merge_range.Merge()
         merge_range.WrapText = True
 
-    # Set height for each row in the group
+    # Set height for every row in the (now-extended) block.
     for i in range(total_rows):
         try:
-            ws.Rows(row_num + i).RowHeight = row_height
+            ws.Rows(top_row + i).RowHeight = row_height
         except Exception:
             pass
 
@@ -1277,15 +1308,25 @@ def _expand_row_with_extra_rows(ws, row_num, needed, start_col, end_col):
 
 
 # ---------------------------------------------------------------------------
-# Row-write tracker — forms register which rows they wrote so autofit only
-# touches those rows and leaves template-designed heights untouched.
+# Write tracker — records which rows AND cells the form wrote to so autofit
+# can distinguish form-written cells from template-only cells.
 # ---------------------------------------------------------------------------
 _written_rows: set = set()
+_written_cells: set = set()   # (row_num, col_num) tuples
+
+
+def _col_letter_to_num(letters: str) -> int:
+    """Convert an Excel column letter to a 1-based column number (A→1, Z→26, AA→27)."""
+    n = 0
+    for ch in letters.upper():
+        n = n * 26 + (ord(ch) - ord("A") + 1)
+    return n
 
 
 def clear_written_rows():
     """Call at the start of each export to reset the tracker."""
     _written_rows.clear()
+    _written_cells.clear()
 
 
 def track_row_written(*rows):
@@ -1294,15 +1335,21 @@ def track_row_written(*rows):
 
 
 def ws_write(ws, cell_ref, value):
-    """Write value to a cell and automatically track the row for autofit."""
+    """Write value to a cell and automatically track the row/cell for autofit."""
     import re
-    m = re.search(r"(\d+)", str(cell_ref))
+    ref = str(cell_ref)
+    m = re.match(r"([A-Za-z]+)(\d+)", ref)
     if m:
-        _written_rows.add(int(m.group(1)))
+        row_num = int(m.group(2))
+        col_num = _col_letter_to_num(m.group(1))
+        _written_rows.add(row_num)
+        _written_cells.add((row_num, col_num))
     ws.Range(cell_ref).Value = value
 
 
 def autofit_rows(ws):
+    import math
+
     # Determine which rows to process.
     # If the form registered written rows, only process those;
     # otherwise fall back to scanning all used rows (backward-compatible).
@@ -1312,7 +1359,7 @@ def autofit_rows(ws):
     start_col = used.Column
     end_col = used.Column + used.Columns.Count - 1
 
-    # Pass 1: AutoFit — targeted when written rows are known, full scan otherwise
+    # Pass 1: AutoFit — quick baseline pass for non-wrapped / non-merged cells.
     if rows_to_process:
         for row_num in rows_to_process:
             try:
@@ -1322,42 +1369,52 @@ def autofit_rows(ws):
     else:
         ws.UsedRange.Rows.AutoFit()
 
-    # Pass 2: corregir celdas combinadas de una sola fila.
-    # AutoFit las ignora porque solo mide el ancho de la primera columna.
-    # Si la altura necesaria supera el límite de Excel (409pt), se insertan
-    # filas extra debajo y se extienden las celdas combinadas para cubrirlas.
-    if rows_to_process:
-        scan_rows = rows_to_process
-    else:
-        scan_rows = range(used.Row, used.Row + used.Rows.Count)
+    # Pass 2: Manual height calculation.
+    # _calc_needed_height now covers BOTH merged cells (AutoFit ignores them)
+    # AND non-merged WrapText cells (AutoFit only adjusts for font size, not
+    # actual line-wrap count).
+    #
+    # For every written row we scan ALL cells in that row.  A row may contain
+    # several cells each needing a different height, so we keep the MAXIMUM
+    # needed height per (top_row, num_rows) block rather than stopping at the
+    # first cell seen (old `seen_merges` approach which could discard taller
+    # sibling cells in the same row).
+    scan_rows = rows_to_process if rows_to_process else range(used.Row, used.Row + used.Rows.Count)
 
-    # Collect rows that need adjustment (scan first, modify after)
-    overflow = []   # (row_num, needed) where needed > _EXCEL_MAX_ROW_HEIGHT
-    normal = []     # (row_num, needed) where needed <= _EXCEL_MAX_ROW_HEIGHT
+    # max_needed: (top_row, num_rows) → maximum needed_total seen so far
+    max_needed: dict = {}
 
     for row_num in scan_rows:
-        needed = _calc_needed_height(ws, row_num, start_col, end_col)
-        if needed <= 0:
-            continue
-        current = ws.Rows(row_num).RowHeight
-        if needed <= current:
-            continue
-        if needed > _EXCEL_MAX_ROW_HEIGHT:
-            overflow.append((row_num, needed))
-        else:
-            normal.append((row_num, needed))
+        for top_row, num_rows, needed in _calc_needed_height(ws, row_num, start_col, end_col):
+            key = (top_row, num_rows)
+            if needed > max_needed.get(key, 0):
+                max_needed[key] = needed
 
-    # Apply normal height adjustments
-    for row_num, needed in normal:
-        try:
-            ws.Rows(row_num).RowHeight = needed
-        except Exception:
-            pass
+    # Separate into normal (fits in existing rows) vs overflow (must grow).
+    overflow = []
+    normal = []
+    for (top_row, num_rows), needed in max_needed.items():
+        current_total = sum(ws.Rows(top_row + i).RowHeight for i in range(num_rows))
+        if needed <= current_total:
+            continue
+        if needed > num_rows * _EXCEL_MAX_ROW_HEIGHT:
+            overflow.append((top_row, num_rows, needed))
+        else:
+            normal.append((top_row, num_rows, needed))
+
+    # Apply normal adjustments: distribute needed height evenly.
+    for top_row, num_rows, needed in normal:
+        per_row = math.ceil(needed / num_rows)
+        for i in range(num_rows):
+            try:
+                ws.Rows(top_row + i).RowHeight = per_row
+            except Exception:
+                pass
 
     # Apply overflow adjustments from bottom to top so inserted rows
-    # don't shift the row numbers of rows we haven't processed yet.
-    for row_num, needed in sorted(overflow, key=lambda x: x[0], reverse=True):
-        _expand_row_with_extra_rows(ws, row_num, needed, start_col, end_col)
+    # don't shift the row numbers of entries we haven't processed yet.
+    for top_row, num_rows, needed in sorted(overflow, key=lambda x: x[0], reverse=True):
+        _expand_row_with_extra_rows(ws, top_row, num_rows, needed, start_col, end_col)
 
 
 def sanitize_logo_error_cells(workbook_or_sheet):

@@ -737,11 +737,19 @@ def export_to_excel(cache=None):
                 )
                 ws_write(ws, cell, value)
 
+        normalized_section_3_item_8 = {
+            _normalize_text(key): bool(value)
+            for key, value in section_3_item_8.items()
+        }
         for key, cell in EXCEL_MAPPING["section_3_item_8"].items():
-            value = section_3_item_8.get(key, False)
+            value = normalized_section_3_item_8.get(
+                _normalize_text(key),
+                bool(section_3_item_8.get(key, False)),
+            )
             symbol = format_checkbox_symbol(value)
             _log_excel(
-                f"WRITE section=section_3_item_8 cell={cell} key={key} checkbox_symbol={symbol!r}",
+                f"WRITE section=section_3_item_8 cell={cell} key={key} "
+                f"checkbox_value={value!r} checkbox_symbol={symbol!r}",
                 output_path,
             )
             ws_write(ws, cell, symbol)

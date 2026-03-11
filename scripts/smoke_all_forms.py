@@ -146,12 +146,15 @@ def run_smoke(only=None, strict=False, with_drive=False, professional="Smoke Tes
 
             drive_result = None
             if with_drive:
-                file_id, file_name = drive_upload.upload_excel_to_drive(
+                upload_result = drive_upload.upload_excel_to_drive(
                     output_path,
                     base_name=os.path.basename(output_path),
-                    professional_name=professional,
+                    folder_name=professional,
                 )
-                drive_result = f"OK id={file_id} name={file_name}"
+                drive_result = (
+                    f"OK id={upload_result.get('file_id')} "
+                    f"name={upload_result.get('file_name')}"
+                )
 
             results.append(
                 {

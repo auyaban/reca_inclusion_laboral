@@ -43,6 +43,10 @@
    - `_supabase_upsert` (si aplica)
 2. Drive:
    - JSON de respaldo + Excel final en carpetas definidas.
+3. Google Sheets:
+   - Usar `google_sheets_client.py` para lectura, escritura o export a Excel.
+   - Configurar `GOOGLE_SERVICE_ACCOUNT_FILE` y `GOOGLE_SHEETS_DEFAULT_SPREADSHEET_ID`
+     o sus equivalentes en `config.json`.
 
 ## 6) Estandar de UX
 1. Seccion 1 con busqueda NIT + nombre.

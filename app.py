@@ -30,6 +30,7 @@ from formularios.induccion_organizacional import induccion_organizacional
 from formularios.induccion_operativa import induccion_operativa
 from formularios.sensibilizacion import sensibilizacion
 from formularios.seguimientos import seguimientos
+import drive_upload
 from spell_check import attach_spell_checker
 from dictation import attach_dictation, cleanup_stale_audio
 from formularios.common import (
@@ -85,7 +86,6 @@ TEXT_WIDE = 120
 SCROLLBAR_WIDTH = 18
 PASSWORD_HASH_ALGO = "pbkdf2_sha256"
 PASSWORD_HASH_ITERATIONS = 260000
-SHARED_DRIVE_EXPORT_DIR = r"G:\Unidades compartidas\RECA BDs"
 DEFAULT_EMPRESA_ESTADOS = [
     "Activa",
     "Inactiva",
@@ -772,18 +772,6 @@ def _bind_birthdate_entry(
     date_entry.bind("<FocusOut>", _format_and_validate)
 
 
-def _build_shared_drive_excel_path(excel_path, company_name=None):
-    company_folder = _normalize_ascii_text(company_name) if company_name else ""
-    if not company_folder:
-        company_folder = _normalize_ascii_text(os.path.basename(os.path.dirname(excel_path)))
-    if not company_folder:
-        company_folder = "Empresa"
-    target_dir = os.path.join(SHARED_DRIVE_EXPORT_DIR, company_folder)
-    os.makedirs(target_dir, exist_ok=True)
-    target_path = os.path.join(target_dir, os.path.basename(excel_path))
-    return _next_available_file_path(target_path)
-
-
 def _hash_password(password, iterations=PASSWORD_HASH_ITERATIONS):
     pwd = str(password or "")
     salt = secrets.token_bytes(16)
@@ -1076,13 +1064,12 @@ def _finalize_export_flow(window, loading, output_path, form_name, company_name,
     if hub and output_path and os.path.exists(output_path):
         if form_id:
             hub.track_form_finished(form_id)
-        target_path = _build_shared_drive_excel_path(output_path, company_name=company_name)
-        hub.track_form_completed(
-            form_name,
-            company_name,
-            path_formato=os.path.dirname(target_path),
+        hub.start_drive_upload(
+            output_path,
+            cleanup_local=False,
+            company_name=company_name,
+            form_name=form_name,
         )
-        hub.start_drive_upload(output_path, cleanup_local=False, company_name=company_name)
 
 
 def _clear_sticky_actions(window):
@@ -1452,6 +1439,7 @@ def _iter_widget_tree(root):
 def _attach_dictation_for_section(window, form_id, section_name):
     if not window or not form_id:
         return
+    _clear_section_dictation_button(window)
     container = getattr(window, "section_container", None) or window
     text_widgets = []
     for widget in _iter_widget_tree(container):
@@ -1476,12 +1464,161 @@ def _attach_dictation_for_section(window, form_id, section_name):
                 field_id=field_id,
                 session_provider=lambda: _supabase_get_access_token(".env"),
                 log_fn=_log_capture,
+                show_controls=False,
             )
         except Exception as exc:
             _log_capture(
                 f"[DICTATION] attach_failed form={form_id} section={section_name} "
                 f"field={field_id} err={exc}"
             )
+    if text_widgets:
+        _install_section_dictation_button(window, text_widgets)
+
+
+def _clear_section_dictation_button(window):
+    after_id = getattr(window, "_section_dictation_after_id", None)
+    if after_id:
+        try:
+            window.after_cancel(after_id)
+        except Exception:
+            pass
+        try:
+            window._section_dictation_after_id = None
+        except Exception:
+            pass
+    btn = getattr(window, "_section_dictation_button", None)
+    if btn and btn.winfo_exists():
+        try:
+            btn.destroy()
+        except Exception:
+            pass
+    try:
+        window._section_dictation_button = None
+    except Exception:
+        pass
+    try:
+        window._section_dictation_widgets = []
+    except Exception:
+        pass
+
+
+def _resolve_section_dictation_helper(window):
+    widgets = []
+    for widget in list(getattr(window, "_section_dictation_widgets", []) or []):
+        try:
+            if widget.winfo_exists():
+                widgets.append(widget)
+        except Exception:
+            continue
+    window._section_dictation_widgets = widgets
+    if not widgets:
+        return None
+
+    active_helper = None
+    processing_helper = None
+    for widget in widgets:
+        helper = getattr(widget, "_dictation_helper", None)
+        if helper is None:
+            continue
+        if getattr(helper, "_is_processing", False):
+            processing_helper = helper
+            break
+        if getattr(helper, "_is_recording", False):
+            active_helper = helper
+
+    if processing_helper is not None:
+        return processing_helper
+    if active_helper is not None:
+        return active_helper
+
+    focused = None
+    try:
+        focused = window.focus_get()
+    except Exception:
+        focused = None
+    if isinstance(focused, tk.Text) and focused in widgets:
+        return getattr(focused, "_dictation_helper", None)
+    return getattr(widgets[0], "_dictation_helper", None)
+
+
+def _refresh_section_dictation_button(window):
+    button = getattr(window, "_section_dictation_button", None)
+    title = getattr(window, "header_title", None)
+    if not button or not title:
+        return
+    try:
+        if not button.winfo_exists() or not title.winfo_exists():
+            return
+    except Exception:
+        return
+
+    helper = _resolve_section_dictation_helper(window)
+    if helper is None:
+        try:
+            button.place_forget()
+        except Exception:
+            pass
+        return
+
+    try:
+        title.update_idletasks()
+        parent = title.master
+        parent.update_idletasks()
+        x = title.winfo_x() + title.winfo_width() + 12
+        y = title.winfo_y() - 2
+        button.place(x=x, y=max(0, y))
+    except Exception:
+        pass
+
+    if getattr(helper, "_is_processing", False):
+        button.configure(text="🎤 Procesando...", state="disabled")
+    elif getattr(helper, "_is_recording", False):
+        button.configure(text="🎤 Detener", state="normal")
+    else:
+        button.configure(text="🎤 Dictar", state="normal" if helper._can_dictate() else "disabled")
+
+    try:
+        window._section_dictation_after_id = window.after(
+            250,
+            lambda w=window: _refresh_section_dictation_button(w),
+        )
+    except Exception:
+        window._section_dictation_after_id = None
+
+
+def _install_section_dictation_button(window, text_widgets):
+    title = getattr(window, "header_title", None)
+    if not title or not title.winfo_exists():
+        return
+    parent = title.master
+    button = tk.Button(
+        parent,
+        text="🎤 Dictar",
+        font=("Segoe UI Emoji", 10, "bold"),
+        cursor="hand2",
+        padx=8,
+        pady=2,
+        command=lambda w=window: _on_section_dictation_click(w),
+    )
+    window._section_dictation_button = button
+    window._section_dictation_widgets = list(text_widgets)
+    if not getattr(window, "_section_dictation_bound", False):
+        title.bind("<Configure>", lambda _e, w=window: _refresh_section_dictation_button(w), add="+")
+        parent.bind("<Configure>", lambda _e, w=window: _refresh_section_dictation_button(w), add="+")
+        window._section_dictation_bound = True
+    _refresh_section_dictation_button(window)
+
+
+def _on_section_dictation_click(window):
+    helper = _resolve_section_dictation_helper(window)
+    if helper is None:
+        return
+    try:
+        helper.text.focus_set()
+    except Exception:
+        pass
+    helper._on_toggle()
+    _refresh_section_dictation_button(window)
 
 
 _ASISTENTES_PROF_CACHE = {
@@ -1489,6 +1626,10 @@ _ASISTENTES_PROF_CACHE = {
     "nombres": [],
     "cargos": [],
     "name_to_cargo": {},
+}
+_ASESORES_AGENCIA_CACHE = {
+    "loaded_at": 0.0,
+    "nombres": [],
 }
 _ASISTENTES_PROF_CACHE_TTL = 300
 
@@ -1562,6 +1703,45 @@ def _get_asistentes_profesionales_catalog(force=False):
     return _ASISTENTES_PROF_CACHE
 
 
+def _get_asesores_agencia_catalog(force=False):
+    global _ASESORES_AGENCIA_CACHE
+    now = time.time()
+    cached = _ASESORES_AGENCIA_CACHE
+    if (
+        not force
+        and cached.get("nombres")
+        and (now - float(cached.get("loaded_at") or 0.0)) < _ASISTENTES_PROF_CACHE_TTL
+    ):
+        return cached
+
+    try:
+        rows = _supabase_get_paged(
+            "asesores",
+            {
+                "select": "nombre",
+                "order": "nombre.asc",
+            },
+            env_path=".env",
+            page_size=500,
+            max_pages=20,
+        )
+    except Exception as exc:
+        _log_capture(f"[ASESORES] no se pudo leer asesores: {exc}")
+        return cached
+
+    nombres = []
+    for row in rows or []:
+        nombre = str((row or {}).get("nombre") or "").strip()
+        if nombre:
+            nombres.append(nombre)
+
+    _ASESORES_AGENCIA_CACHE = {
+        "loaded_at": now,
+        "nombres": _dedupe_keep_order(nombres),
+    }
+    return _ASESORES_AGENCIA_CACHE
+
+
 def _create_asistente_inputs(parent, width, use_catalog=False, catalog=None):
     if use_catalog:
         nombre_widget = ttk.Combobox(parent, width=width, state="normal")
@@ -1569,6 +1749,42 @@ def _create_asistente_inputs(parent, width, use_catalog=False, catalog=None):
         _configure_asistente_widgets(nombre_widget, cargo_widget, catalog=catalog)
         return nombre_widget, cargo_widget
     return tk.Entry(parent, width=width), tk.Entry(parent, width=width)
+
+
+def _create_asesor_agencia_inputs(parent, width, catalog=None, default_cargo="Asesor Agencia"):
+    nombre_widget = ttk.Combobox(parent, width=width, state="normal")
+    nombres = list((catalog or {}).get("nombres") or [])
+    nombre_widget.configure(values=nombres)
+    _bind_editable_combobox_filter(nombre_widget, nombres)
+
+    cargo_widget = tk.Entry(parent, width=width)
+    cargo_widget.insert(0, default_cargo)
+
+    def _ensure_default_cargo(_event=None):
+        if not cargo_widget.get().strip():
+            cargo_widget.delete(0, tk.END)
+            cargo_widget.insert(0, default_cargo)
+
+    nombre_widget.bind("<<ComboboxSelected>>", _ensure_default_cargo, add="+")
+    nombre_widget.bind("<FocusOut>", _ensure_default_cargo, add="+")
+    return nombre_widget, cargo_widget
+
+
+def _set_input_value(widget, value):
+    text = str(value or "")
+    if isinstance(widget, ttk.Combobox):
+        widget.set(text)
+        return
+    widget.delete(0, tk.END)
+    if text:
+        widget.insert(0, text)
+
+
+def _get_input_value(widget):
+    try:
+        return widget.get().strip()
+    except Exception:
+        return ""
 
 
 def _bind_editable_combobox_filter(widget, values):
@@ -1706,16 +1922,182 @@ class LoadingDialog:
         y = (self.window.winfo_screenheight() // 2) - (height // 2)
         self.window.geometry(f"{width}x{height}+{x}+{y}")
 
+    def exists(self):
+        try:
+            return bool(self.window and self.window.winfo_exists())
+        except tk.TclError:
+            return False
+
     def set_status(self, text):
+        if not self.exists():
+            return
         self.status_label.config(text=text)
         self.window.update_idletasks()
 
     def set_progress(self, value):
+        if not self.exists():
+            return
         self.progress["value"] = value
         self.window.update_idletasks()
 
     def close(self):
-        self.window.destroy()
+        if not self.exists():
+            return
+        try:
+            self.window.destroy()
+        except tk.TclError:
+            return
+
+
+class FinalizeProcessError(RuntimeError):
+    def __init__(self, stage, cause):
+        self.stage = str(stage or "").strip() or "finalizando el formulario"
+        self.cause = cause
+        message = str(cause).strip() if cause is not None else ""
+        super().__init__(message or self.stage)
+
+
+def _safe_widget_after(widget, callback):
+    try:
+        if widget and widget.winfo_exists():
+            widget.after(0, callback)
+    except tk.TclError:
+        return
+
+
+def _update_loading_async(loading, *, status=None, progress=None):
+    if loading is None:
+        return
+
+    def _apply():
+        if not loading.exists():
+            return
+        if status is not None:
+            loading.set_status(status)
+        if progress is not None:
+            loading.set_progress(progress)
+
+    _safe_widget_after(getattr(loading, "window", None), _apply)
+
+
+def _close_loading_async(loading):
+    if loading is None:
+        return
+    _safe_widget_after(getattr(loading, "window", None), loading.close)
+
+
+def _build_finalize_error_message(form_name, stage, exc):
+    label = str(form_name or "el formulario").strip()
+    step = str(stage or "finalizando el formulario").strip()
+    detail = str(exc).strip() or repr(exc)
+    return f"No se pudo finalizar {label}.\n\nEtapa: {step}.\nDetalle: {detail}"
+
+
+def _raise_finalize_stage(stage, func):
+    try:
+        return func()
+    except FinalizeProcessError:
+        raise
+    except Exception as exc:
+        raise FinalizeProcessError(stage, exc) from exc
+
+
+def _clear_form_cache_safe(module):
+    if hasattr(module, "clear_cache_file"):
+        module.clear_cache_file()
+    if hasattr(module, "clear_form_cache"):
+        module.clear_form_cache()
+
+
+def _start_background_finalization(
+    window,
+    loading,
+    *,
+    form_name,
+    company_name,
+    form_id,
+    worker_fn,
+):
+    if getattr(window, "_finalize_in_progress", False):
+        messagebox.showinfo(
+            "Finalización",
+            "Ya hay una finalización en curso para este formulario.",
+            parent=window,
+        )
+        return
+
+    window._finalize_in_progress = True
+
+    def _finish_success(output_path):
+        try:
+            _finalize_export_flow(
+                window,
+                loading,
+                output_path,
+                form_name,
+                company_name,
+                form_id,
+            )
+            _return_to_hub(window)
+            try:
+                window.destroy()
+            except tk.TclError:
+                pass
+        finally:
+            try:
+                window._finalize_in_progress = False
+            except Exception:
+                pass
+
+    def _finish_error(exc):
+        try:
+            stage = exc.stage if isinstance(exc, FinalizeProcessError) else "finalizando el formulario"
+            detail = exc.cause if isinstance(exc, FinalizeProcessError) else exc
+            message = _build_finalize_error_message(form_name, stage, detail)
+            loading.close()
+            messagebox.showerror("Finalización", message, parent=window)
+        finally:
+            try:
+                window._finalize_in_progress = False
+            except Exception:
+                pass
+
+    def _worker():
+        pythoncom = None
+        com_initialized = False
+        try:
+            try:
+                import pythoncom as _pythoncom  # pyright: ignore[reportMissingImports]
+
+                pythoncom = _pythoncom
+                pythoncom.CoInitialize()
+                com_initialized = True
+            except ImportError:
+                pythoncom = None
+
+            output_path = worker_fn()
+            if not output_path:
+                raise FinalizeProcessError(
+                    "generando el Excel",
+                    RuntimeError("No se encontró el archivo de Excel generado."),
+                )
+            if not os.path.exists(output_path):
+                raise FinalizeProcessError(
+                    "verificando el archivo generado",
+                    RuntimeError(f"No se encontró el archivo generado:\n{output_path}"),
+                )
+        except Exception as exc:
+            _safe_widget_after(window, lambda exc=exc: _finish_error(exc))
+        else:
+            _safe_widget_after(window, lambda path=output_path: _finish_success(path))
+        finally:
+            if com_initialized and pythoncom is not None:
+                try:
+                    pythoncom.CoUninitialize()
+                except Exception:
+                    pass
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 def get_forms():
@@ -2063,11 +2445,11 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             command=self._add_asistente_row,
         )
 
-        self._asistentes_catalog = _get_asistentes_profesionales_catalog()
+        self._asesores_agencia_catalog = _get_asesores_agencia_catalog()
         self.section5_entries = []
         self.section5_frame = asistentes_frame
-        for idx in range(3):
-            self._add_asistente_row()
+        cached_asistentes = presentacion_programa.get_form_cache().get("section_5", [])
+        self._render_section5_asistentes(cached_asistentes)
 
         cached_notes = presentacion_programa.get_form_cache().get("section_4", {}).get(
             "acuerdos_observaciones"
@@ -2075,16 +2457,6 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         if cached_notes:
             self.section4_text.delete("1.0", tk.END)
             self.section4_text.insert("1.0", cached_notes)
-
-        cached_asistentes = presentacion_programa.get_form_cache().get("section_5", [])
-        for idx, entry in enumerate(cached_asistentes):
-            if idx >= len(self.section5_entries):
-                self._add_asistente_row()
-            nombre_entry, cargo_entry = self.section5_entries[idx]
-            nombre_entry.delete(0, tk.END)
-            nombre_entry.insert(0, entry.get("nombre", ""))
-            cargo_entry.delete(0, tk.END)
-            cargo_entry.insert(0, entry.get("cargo", ""))
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
@@ -2121,12 +2493,6 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         loading.set_status("Guardando Excel...")
         loading.set_progress(30)
         cache_snapshot = presentacion_programa.get_form_cache()
-        try:
-            output_path = presentacion_programa.export_to_excel()
-        except Exception as exc:
-            loading.close()
-            messagebox.showerror("Error", str(exc))
-            return
         cache = cache_snapshot
         section_1 = cache.get("section_1", {})
         visit_type = (section_1.get("tipo_visita") or "Presentacion").strip()
@@ -2134,33 +2500,92 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             "Reactivacion Programa" if visit_type.lower() == "reactivacion" else "Presentacion Programa"
         )
         company_name = section_1.get("nombre_empresa")
-        _finalize_export_flow(
+        _start_background_finalization(
             self,
             loading,
-            output_path,
-            form_name,
-            company_name,
-            "presentacion_programa",
+            form_name=form_name,
+            company_name=company_name,
+            form_id="presentacion_programa",
+            worker_fn=lambda: _raise_finalize_stage(
+                "guardando el Excel",
+                presentacion_programa.export_to_excel,
+            ),
         )
-        _return_to_hub(self)
-        self.destroy()
 
     def _add_asistente_row(self):
         max_items = presentacion_programa.SECTION_5.get("max_items", 10)
         if len(self.section5_entries) >= max_items:
             messagebox.showinfo("Asistentes", f"Máximo {max_items} asistentes.")
             return
-        row = 2 + len(self.section5_entries)
-        nombre_entry, cargo_entry = _create_asistente_inputs(
-            self.section5_frame,
-            40,
-            use_catalog=(len(self.section5_entries) == 0),
-            catalog=getattr(self, "_asistentes_catalog", None),
+        rows = self._get_section5_asistentes_values()
+        if rows:
+            # Insert new empty row before the last (asesor agencia) row,
+            # preserving the asesor agencia's entered values.
+            rows.insert(len(rows) - 1, {"nombre": "", "cargo": ""})
+        else:
+            rows = [{"nombre": "", "cargo": ""}]
+        self._render_section5_asistentes(rows)
+
+    def _get_section5_asistentes_values(self):
+        values = []
+        for nombre_entry, cargo_entry in self.section5_entries:
+            values.append(
+                {
+                    "nombre": _get_input_value(nombre_entry),
+                    "cargo": _get_input_value(cargo_entry),
+                }
+            )
+        return values
+
+    def _render_section5_asistentes(self, values=None):
+        rows = list(values or [])
+        while len(rows) < 3:
+            rows.append({"nombre": "", "cargo": ""})
+
+        for nombre_entry, cargo_entry in self.section5_entries:
+            nombre_entry.destroy()
+            cargo_entry.destroy()
+        self.section5_entries = []
+
+        for idx, entry in enumerate(rows):
+            row = 2 + idx
+            is_first = idx == 0
+            is_last = idx == len(rows) - 1
+            if is_first and not is_last:
+                nombre_entry, cargo_entry = _create_asistente_inputs(
+                    self.section5_frame,
+                    40,
+                    use_catalog=True,
+                    catalog=_get_asistentes_profesionales_catalog(),
+                )
+            elif is_last:
+                nombre_entry, cargo_entry = _create_asesor_agencia_inputs(
+                    self.section5_frame,
+                    40,
+                    catalog=getattr(self, "_asesores_agencia_catalog", None),
+                )
+            else:
+                nombre_entry, cargo_entry = _create_asistente_inputs(
+                    self.section5_frame,
+                    40,
+                    use_catalog=False,
+                )
+            nombre_entry.grid(row=row, column=0, sticky="w", padx=(0, 8), pady=4)
+            cargo_entry.grid(row=row, column=1, sticky="w", padx=(0, 8), pady=4)
+            _set_input_value(nombre_entry, entry.get("nombre", ""))
+            cargo_value = entry.get("cargo", "")
+            if is_last and not cargo_value:
+                cargo_value = "Asesor Agencia"
+            _set_input_value(cargo_entry, cargo_value)
+            self.section5_entries.append((nombre_entry, cargo_entry))
+
+        self.add_asistente_btn.grid(
+            row=2 + len(self.section5_entries) + 1,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(8, 0),
         )
-        nombre_entry.grid(row=row, column=0, sticky="w", padx=(0, 8), pady=4)
-        cargo_entry.grid(row=row, column=1, sticky="w", padx=(0, 8), pady=4)
-        self.section5_entries.append((nombre_entry, cargo_entry))
-        self.add_asistente_btn.grid(row=2 + len(self.section5_entries) + 1, column=0, columnspan=2, sticky="w", pady=(8, 0))
     def _build_search(self, parent):
         _section1_build_search(self, parent, include_tipo_visita=True)
 
@@ -2896,7 +3321,7 @@ class HubWindow(tk.Tk):
         self._form_event_ids.pop(form_id, None)
         self._form_event_payloads.pop(form_id, None)
 
-    def track_form_completed(self, form_name, company_name, path_formato=None):
+    def track_form_completed(self, form_name, company_name, path_formato=None, drive_file_id=None):
         if not self._should_track_usage():
             return
         usuario_login = (self.current_user_profile.get("usuario_login") or self.current_user or "").strip()
@@ -2910,10 +3335,22 @@ class HubWindow(tk.Tk):
             "nombre_formato": (form_name or "").strip(),
             "nombre_empresa": (company_name or "").strip(),
             "path_formato": (path_formato or "").strip(),
+            "drive_file_id": (drive_file_id or "").strip(),
             "finalizado_at_colombia": now_col.strftime("%Y-%m-%d %H:%M:%S"),
             "finalizado_at_iso": now_col.isoformat(),
         }
         self._usage_upsert_async("formatos_finalizados_il", row, on_conflict="registro_id")
+
+    def _track_form_completed_async(self, form_name, company_name, path_formato=None, drive_file_id=None):
+        self.after(
+            0,
+            lambda: self.track_form_completed(
+                form_name,
+                company_name,
+                path_formato=path_formato,
+                drive_file_id=drive_file_id,
+            ),
+        )
 
     def _on_app_close(self):
         _log_capture("_on_app_close: cerrando app")
@@ -4365,20 +4802,39 @@ class HubWindow(tk.Tk):
     def _toast_async(self, text, duration_ms=5000):
         self.after(0, lambda: self.show_toast(text, duration_ms))
 
-    def start_drive_upload(self, excel_path, cleanup_local=False, company_name=None):
+    def start_drive_upload(self, excel_path, cleanup_local=False, company_name=None, form_name=None):
         def _run():
-            self._toast_async("Copiando Excel a carpeta compartida...", None)
+            path_formato = ""
+            drive_file_id = ""
+            self._toast_async("Subiendo Excel a Google Drive...", None)
             try:
-                target_path = _build_shared_drive_excel_path(excel_path, company_name=company_name)
-                shutil.copy2(excel_path, target_path)
-                self._toast_async("Excel copiado a RECA BDs", 5000)
+                upload_result = drive_upload.upload_excel_to_drive(
+                    excel_path,
+                    base_name=os.path.basename(excel_path),
+                    folder_name=company_name,
+                )
+                path_formato = str(upload_result.get("webViewLink") or "").strip()
+                drive_file_id = str(upload_result.get("file_id") or "").strip()
+                self._track_form_completed_async(
+                    form_name,
+                    company_name,
+                    path_formato=path_formato,
+                    drive_file_id=drive_file_id,
+                )
+                self._toast_async("Excel subido a Google Drive", 5000)
             except Exception as exc:
-                self._toast_async("Error al copiar Excel", 5000)
+                self._track_form_completed_async(
+                    form_name,
+                    company_name,
+                    path_formato="",
+                    drive_file_id="",
+                )
+                self._toast_async("Error al subir Excel a Google Drive", 5000)
                 self.after(
                     0,
-                    lambda: messagebox.showwarning(
-                        "Carpeta compartida",
-                        f"No se pudo copiar el Excel a:\n{SHARED_DRIVE_EXPORT_DIR}\n\n{exc}",
+                    lambda exc=exc: messagebox.showwarning(
+                        "Google Drive",
+                        f"No se pudo subir el Excel a Google Drive.\n\n{exc}",
                     ),
                 )
             finally:
@@ -6047,51 +6503,87 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         ).grid(row=0, column=1, sticky="w", padx=(0, 12))
 
         self.section8_entries = []
-        asistentes_catalog = _get_asistentes_profesionales_catalog()
-
-        def add_row(is_first=False):
-            if len(self.section8_entries) >= evaluacion_accesibilidad.SECTION_8["max_items"]:
-                messagebox.showinfo("Asistentes", "Máximo de asistentes alcanzado.")
-                return
-            row_idx = len(self.section8_entries) + 1
-            name_widget, role_widget = _create_asistente_inputs(
-                table,
-                ENTRY_W_WIDE,
-                use_catalog=(len(self.section8_entries) == 0),
-                catalog=asistentes_catalog,
-            )
-            name_widget.grid(row=row_idx, column=0, sticky="w", padx=(0, 12), pady=4)
-            role_widget.grid(row=row_idx, column=1, sticky="w", padx=(0, 12), pady=4)
-            self.section8_entries.append((name_widget, role_widget))
-            self.add_asistente_btn.grid(row=len(self.section8_entries) + 1, column=0, sticky="w", pady=(8, 0))
-
+        self.section8_table = table
         self.add_asistente_btn = ttk.Button(
             table,
             text="Agregar asistente",
-            command=add_row,
+            command=self._add_section8_asistente_row,
         )
+        self._asesores_agencia_catalog = _get_asesores_agencia_catalog()
 
-        # Default rows (4)
-        for _ in range(4):
-            add_row()
-
-        # Prefill from cache
         cached = evaluacion_accesibilidad.get_form_cache().get("section_8", [])
-        for idx, entry in enumerate(cached):
-            if idx >= len(self.section8_entries):
-                add_row(is_first=False)
-            name_widget, role_widget = self.section8_entries[idx]
-            nombre = entry.get("nombre", "")
-            cargo = entry.get("cargo", "")
-            name_widget.delete(0, tk.END)
-            name_widget.insert(0, nombre)
-            role_widget.delete(0, tk.END)
-            role_widget.insert(0, cargo)
+        self._render_section8_asistentes(cached)
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         ttk.Button(actions, text="Regresar", command=self._show_section_7).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_8).pack(side="right")
+
+    def _get_section8_asistentes_values(self):
+        values = []
+        for name_widget, role_widget in self.section8_entries:
+            values.append(
+                {
+                    "nombre": _get_input_value(name_widget),
+                    "cargo": _get_input_value(role_widget),
+                }
+            )
+        return values
+
+    def _render_section8_asistentes(self, values=None):
+        rows = list(values or [])
+        min_rows = evaluacion_accesibilidad.EXCEL_MAPPING.get("section_8", {}).get("base_rows", 4)
+        while len(rows) < min_rows:
+            rows.append({"nombre": "", "cargo": ""})
+
+        for name_widget, role_widget in self.section8_entries:
+            name_widget.destroy()
+            role_widget.destroy()
+        self.section8_entries = []
+
+        for idx, entry in enumerate(rows):
+            row_idx = idx + 1
+            is_first = idx == 0
+            is_last = idx == len(rows) - 1
+            if is_first and not is_last:
+                name_widget, role_widget = _create_asistente_inputs(
+                    self.section8_table,
+                    ENTRY_W_WIDE,
+                    use_catalog=True,
+                    catalog=_get_asistentes_profesionales_catalog(),
+                )
+            elif is_last:
+                name_widget, role_widget = _create_asesor_agencia_inputs(
+                    self.section8_table,
+                    ENTRY_W_WIDE,
+                    catalog=getattr(self, "_asesores_agencia_catalog", None),
+                )
+            else:
+                name_widget, role_widget = _create_asistente_inputs(
+                    self.section8_table,
+                    ENTRY_W_WIDE,
+                    use_catalog=False,
+                )
+            name_widget.grid(row=row_idx, column=0, sticky="w", padx=(0, 12), pady=4)
+            role_widget.grid(row=row_idx, column=1, sticky="w", padx=(0, 12), pady=4)
+            _set_input_value(name_widget, entry.get("nombre", ""))
+            cargo_value = entry.get("cargo", "")
+            if is_last and not cargo_value:
+                cargo_value = "Asesor Agencia"
+            _set_input_value(role_widget, cargo_value)
+            self.section8_entries.append((name_widget, role_widget))
+
+        self.add_asistente_btn.grid(row=len(self.section8_entries) + 1, column=0, sticky="w", pady=(8, 0))
+
+    def _add_section8_asistente_row(self):
+        if len(self.section8_entries) >= evaluacion_accesibilidad.SECTION_8["max_items"]:
+            messagebox.showinfo("Asistentes", "Máximo de asistentes alcanzado.")
+            return
+        rows = self._get_section8_asistentes_values()
+        if rows:
+            rows[-1] = {"nombre": "", "cargo": ""}
+        rows.append({"nombre": "", "cargo": ""})
+        self._render_section8_asistentes(rows)
 
     def _confirm_section_8(self):
         asistentes = []
@@ -6111,44 +6603,37 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         loading.set_progress(5)
 
         cache_snapshot = evaluacion_accesibilidad.get_form_cache()
-        try:
-            section_order = list(evaluacion_accesibilidad.EXCEL_MAPPING.keys())
-            total_steps = len(section_order)
+        section_order = list(evaluacion_accesibilidad.EXCEL_MAPPING.keys())
+        total_steps = len(section_order) or 1
+        cache = cache_snapshot
+        section_1 = cache.get("section_1", {})
+        company_name = section_1.get("nombre_empresa")
 
+        def _worker():
             def _on_progress(section_id):
                 try:
                     idx = section_order.index(section_id) + 1
                 except ValueError:
                     idx = 1
-                loading.set_status(f"Guardando {section_id.replace('_', ' ')}...")
-                loading.set_progress(5 + int((idx / total_steps) * 90))
+                _update_loading_async(
+                    loading,
+                    status=f"Guardando {section_id.replace('_', ' ')}...",
+                    progress=5 + int((idx / total_steps) * 90),
+                )
 
-            output_path = evaluacion_accesibilidad.export_to_excel(progress_callback=_on_progress)
-        except Exception as exc:
-            loading.close()
-            messagebox.showerror("Error", str(exc))
-            return
+            return _raise_finalize_stage(
+                "guardando el Excel",
+                lambda: evaluacion_accesibilidad.export_to_excel(progress_callback=_on_progress),
+            )
 
-        if output_path:
-            cache = cache_snapshot
-            section_1 = cache.get("section_1", {})
-            company_name = section_1.get("nombre_empresa")
-            _finalize_export_flow(
-                self,
-                loading,
-                output_path,
-                "Evaluacion Accesibilidad",
-                company_name,
-                "evaluacion_accesibilidad",
-            )
-        else:
-            loading.close()
-            messagebox.showerror(
-                "Error",
-                "No se encontró el archivo de Excel generado.",
-            )
-        _return_to_hub(self)
-        self.destroy()
+        _start_background_finalization(
+            self,
+            loading,
+            form_name="Evaluacion Accesibilidad",
+            company_name=company_name,
+            form_id="evaluacion_accesibilidad",
+            worker_fn=_worker,
+        )
 
 
     def _set_widget_value(self, widget, value):
@@ -6892,6 +7377,24 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         self.section3_fields = {}
         options = condiciones_vacante.SECTION_3["options"]
 
+        bulk_actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
+        bulk_actions.pack(fill="x", pady=(0, 8))
+        ttk.Button(
+            bulk_actions,
+            text='Marcar Todas "Alto"',
+            command=lambda: self._set_section3_habilidades_nivel("Alto."),
+        ).pack(side="right")
+        ttk.Button(
+            bulk_actions,
+            text='Marcar Todas "Medio"',
+            command=lambda: self._set_section3_habilidades_nivel("Medio."),
+        ).pack(side="right", padx=(0, 8))
+        ttk.Button(
+            bulk_actions,
+            text='Marcar Todas "Bajo"',
+            command=lambda: self._set_section3_habilidades_nivel("Bajo."),
+        ).pack(side="right", padx=(0, 8))
+
         for category in condiciones_vacante.SECTION_3["categories"]:
             tk.Label(
                 content,
@@ -6955,6 +7458,9 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             elif isinstance(widget, tk.Text):
                 widget.delete("1.0", tk.END)
                 widget.insert("1.0", value)
+
+    def _set_section3_habilidades_nivel(self, value):
+        self._set_condiciones_habilidades_nivel(self.section3_fields, value)
 
     def _confirm_section_3(self):
         payload = {}
@@ -7074,6 +7580,24 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         self.section5_fields = {}
         options = condiciones_vacante.SECTION_5["options"]
 
+        bulk_actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
+        bulk_actions.pack(fill="x", pady=(0, 8))
+        ttk.Button(
+            bulk_actions,
+            text='Marcar Todas "Alto"',
+            command=lambda: self._set_section5_habilidades_nivel("Alto."),
+        ).pack(side="right")
+        ttk.Button(
+            bulk_actions,
+            text='Marcar Todas "Medio"',
+            command=lambda: self._set_section5_habilidades_nivel("Medio."),
+        ).pack(side="right", padx=(0, 8))
+        ttk.Button(
+            bulk_actions,
+            text='Marcar Todas "Bajo"',
+            command=lambda: self._set_section5_habilidades_nivel("Bajo."),
+        ).pack(side="right", padx=(0, 8))
+
         for category in condiciones_vacante.SECTION_5["categories"]:
             tk.Label(
                 content,
@@ -7158,6 +7682,14 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             elif isinstance(widget, tk.Text):
                 widget.delete("1.0", tk.END)
                 widget.insert("1.0", value)
+
+    def _set_section5_habilidades_nivel(self, value):
+        self._set_condiciones_habilidades_nivel(self.section5_fields, value)
+
+    def _set_condiciones_habilidades_nivel(self, fields, value):
+        for widget in fields.values():
+            if isinstance(widget, ttk.Combobox):
+                widget.set(value)
 
     def _confirm_section_5(self):
         payload = {}
@@ -7315,8 +7847,18 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
 
+        template_actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
+        template_actions.pack(fill="x", padx=24, pady=(12, 0))
+        for idx, (template_key, label) in enumerate(condiciones_vacante.SECTION_7_TEMPLATE_BUTTONS):
+            btn = ttk.Button(
+                template_actions,
+                text=label,
+                command=lambda key=template_key: self._insert_condiciones_vacante_section7_template(key),
+            )
+            btn.grid(row=idx // 3, column=idx % 3, sticky="w", padx=(0, 8), pady=(0, 8))
+
         self.section7_text = tk.Text(section_frame, height=8, wrap="word")
-        self.section7_text.pack(fill="x", padx=24, pady=(12, 12))
+        self.section7_text.pack(fill="x", padx=24, pady=(4, 12))
         attach_spell_checker(self.section7_text)
 
         cached = condiciones_vacante.get_form_cache().get("section_7", {})
@@ -7329,6 +7871,17 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         _pack_actions(actions)
         ttk.Button(actions, text="Regresar", command=self._show_section_6).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_7).pack(side="right")
+
+    def _insert_condiciones_vacante_section7_template(self, template_key):
+        template_text = condiciones_vacante.SECTION_7_TEMPLATES.get(template_key, "").strip()
+        if not template_text:
+            return
+        current_text = self.section7_text.get("1.0", tk.END).strip()
+        if current_text:
+            self.section7_text.insert(tk.END, "\n\n")
+        self.section7_text.insert(tk.END, template_text)
+        self.section7_text.focus_set()
+        self.section7_text.see(tk.END)
 
     def _confirm_section_7(self):
         payload = {
@@ -7365,52 +7918,89 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         ).grid(row=0, column=1, sticky="w")
 
         self.section8_rows = []
-        asistentes_catalog = _get_asistentes_profesionales_catalog()
-        for idx in range(condiciones_vacante.SECTION_8["rows"]):
-            nombre_entry, cargo_entry = _create_asistente_inputs(
-                table,
-                ENTRY_W_WIDE,
-                use_catalog=(idx == 0),
-                catalog=asistentes_catalog,
-            )
-            nombre_entry.grid(row=idx + 1, column=0, sticky="w", pady=4, padx=(0, 12))
-            cargo_entry.grid(row=idx + 1, column=1, sticky="w", pady=4)
-            self.section8_rows.append((nombre_entry, cargo_entry))
-
-        def _add_asistente_row():
-            row_idx = len(self.section8_rows) + 1
-            nombre_entry, cargo_entry = _create_asistente_inputs(
-                table,
-                ENTRY_W_WIDE,
-                use_catalog=False,
-                catalog=asistentes_catalog,
-            )
-            nombre_entry.grid(row=row_idx, column=0, sticky="w", pady=4, padx=(0, 12))
-            cargo_entry.grid(row=row_idx, column=1, sticky="w", pady=4)
-            self.section8_rows.append((nombre_entry, cargo_entry))
-            add_btn.grid(row=len(self.section8_rows) + 1, column=0, sticky="w", pady=(8, 0))
-
-        add_btn = ttk.Button(
+        self.section8_table = table
+        self.section8_add_btn = ttk.Button(
             table,
             text="Agregar asistente",
-            command=_add_asistente_row,
+            command=self._add_section8_asistente_row,
         )
-        add_btn.grid(row=len(self.section8_rows) + 1, column=0, sticky="w", pady=(8, 0))
+        self._asesores_agencia_catalog = _get_asesores_agencia_catalog()
 
         cached_rows = condiciones_vacante.get_form_cache().get("section_8", [])
-        for idx, entry in enumerate(cached_rows):
-            if idx >= len(self.section8_rows):
-                break
-            nombre_entry, cargo_entry = self.section8_rows[idx]
-            nombre_entry.delete(0, tk.END)
-            nombre_entry.insert(0, entry.get("nombre", ""))
-            cargo_entry.delete(0, tk.END)
-            cargo_entry.insert(0, entry.get("cargo", ""))
+        self._render_section8_asistentes(cached_rows)
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         ttk.Button(actions, text="Regresar", command=self._show_section_7).pack(side="left")
         ttk.Button(actions, text="Finalizar", command=self._confirm_section_8).pack(side="right")
+
+    def _get_section8_asistentes_values(self):
+        values = []
+        for nombre_entry, cargo_entry in self.section8_rows:
+            values.append(
+                {
+                    "nombre": _get_input_value(nombre_entry),
+                    "cargo": _get_input_value(cargo_entry),
+                }
+            )
+        return values
+
+    def _render_section8_asistentes(self, values=None):
+        rows = list(values or [])
+        min_rows = condiciones_vacante.SECTION_8.get("rows", 3)
+        while len(rows) < min_rows:
+            rows.append({"nombre": "", "cargo": ""})
+
+        for nombre_entry, cargo_entry in self.section8_rows:
+            nombre_entry.destroy()
+            cargo_entry.destroy()
+        self.section8_rows = []
+
+        for idx, entry in enumerate(rows):
+            row_idx = idx + 1
+            is_first = idx == 0
+            is_last = idx == len(rows) - 1
+            if is_first and not is_last:
+                nombre_entry, cargo_entry = _create_asistente_inputs(
+                    self.section8_table,
+                    ENTRY_W_WIDE,
+                    use_catalog=True,
+                    catalog=_get_asistentes_profesionales_catalog(),
+                )
+            elif is_last:
+                nombre_entry, cargo_entry = _create_asesor_agencia_inputs(
+                    self.section8_table,
+                    ENTRY_W_WIDE,
+                    catalog=getattr(self, "_asesores_agencia_catalog", None),
+                )
+            else:
+                nombre_entry, cargo_entry = _create_asistente_inputs(
+                    self.section8_table,
+                    ENTRY_W_WIDE,
+                    use_catalog=False,
+                )
+            nombre_entry.grid(row=row_idx, column=0, sticky="w", pady=4, padx=(0, 12))
+            cargo_entry.grid(row=row_idx, column=1, sticky="w", pady=4)
+            _set_input_value(nombre_entry, entry.get("nombre", ""))
+            cargo_value = entry.get("cargo", "")
+            if is_last and not cargo_value:
+                cargo_value = "Asesor Agencia"
+            _set_input_value(cargo_entry, cargo_value)
+            self.section8_rows.append((nombre_entry, cargo_entry))
+
+        self.section8_add_btn.grid(
+            row=len(self.section8_rows) + 1,
+            column=0,
+            sticky="w",
+            pady=(8, 0),
+        )
+
+    def _add_section8_asistente_row(self):
+        rows = self._get_section8_asistentes_values()
+        if rows:
+            rows[-1] = {"nombre": "", "cargo": ""}
+        rows.append({"nombre": "", "cargo": ""})
+        self._render_section8_asistentes(rows)
 
     def _confirm_section_8(self):
         payload = []
@@ -7430,25 +8020,20 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         loading.set_status("Guardando Excel...")
         loading.set_progress(30)
         cache_snapshot = condiciones_vacante.get_form_cache()
-        try:
-            output_path = condiciones_vacante.export_to_excel()
-        except Exception as exc:
-            loading.close()
-            messagebox.showerror("Error", str(exc))
-            return
         cache = cache_snapshot
         section_1 = cache.get("section_1", {})
         company_name = section_1.get("nombre_empresa")
-        _finalize_export_flow(
+        _start_background_finalization(
             self,
             loading,
-            output_path,
-            "Revision Condicion",
-            company_name,
-            "condiciones_vacante",
+            form_name="Revision Condicion",
+            company_name=company_name,
+            form_id="condiciones_vacante",
+            worker_fn=lambda: _raise_finalize_stage(
+                "guardando el Excel",
+                condiciones_vacante.export_to_excel,
+            ),
         )
-        _return_to_hub(self)
-        self.destroy()
 
 
 class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
@@ -8458,33 +9043,38 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         loading.set_status("Generando Excel...")
         loading.set_progress(40)
         cache_snapshot = seleccion_incluyente.get_form_cache()
-        try:
-            output_path = seleccion_incluyente.export_to_excel(clear_cache=False)
-        except Exception as exc:
-            loading.close()
-            messagebox.showerror("Error", str(exc))
-            return
-        loading.set_status("Guardando en Supabase...")
-        loading.set_progress(70)
-        try:
-            seleccion_incluyente.sync_usuarios_reca()
-        except Exception as exc:
-            loading.close()
-            messagebox.showerror("Error", f"No se pudo guardar en Supabase.\n{exc}")
-            return
         cache = cache_snapshot
         section_1 = cache.get("section_1", {})
         company_name = section_1.get("nombre_empresa")
-        _finalize_export_flow(
+
+        def _worker():
+            output_path = _raise_finalize_stage(
+                "generando el Excel",
+                lambda: seleccion_incluyente.export_to_excel(clear_cache=False),
+            )
+            _update_loading_async(
+                loading,
+                status="Guardando en Supabase...",
+                progress=70,
+            )
+            _raise_finalize_stage(
+                "guardando en Supabase",
+                seleccion_incluyente.sync_usuarios_reca,
+            )
+            _raise_finalize_stage(
+                "limpiando la cache local",
+                lambda: _clear_form_cache_safe(seleccion_incluyente),
+            )
+            return output_path
+
+        _start_background_finalization(
             self,
             loading,
-            output_path,
-            "Seleccion Incluyente",
-            company_name,
-            "seleccion_incluyente",
+            form_name="Seleccion Incluyente",
+            company_name=company_name,
+            form_id="seleccion_incluyente",
+            worker_fn=_worker,
         )
-        _return_to_hub(self)
-        self.destroy()
 
     def _format_birthdate(self, _event, fecha_widget, edad_widget):
         digits, formatted = _format_birthdate_text(fecha_widget.get())
@@ -9439,35 +10029,38 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         loading = LoadingDialog(self, title="Guardando")
         loading.set_status("Generando Excel...")
         loading.set_progress(40)
-        try:
-            output_path = contratacion_incluyente.export_to_excel(clear_cache=False)
-        except Exception as exc:
-            loading.close()
-            messagebox.showerror("Error", str(exc))
-            return
-        loading.set_status("Guardando en Supabase...")
-        loading.set_progress(70)
-        try:
-            contratacion_incluyente.sync_usuarios_reca()
-        except Exception as exc:
-            loading.close()
-            messagebox.showerror("Error", f"No se pudo guardar en Supabase.\n{exc}")
-            return
         cache = contratacion_incluyente.get_form_cache()
         section_1 = cache.get("section_1", {})
         company_name = section_1.get("nombre_empresa")
-        contratacion_incluyente.clear_cache_file()
-        contratacion_incluyente.clear_form_cache()
-        _finalize_export_flow(
+
+        def _worker():
+            output_path = _raise_finalize_stage(
+                "generando el Excel",
+                lambda: contratacion_incluyente.export_to_excel(clear_cache=False),
+            )
+            _update_loading_async(
+                loading,
+                status="Guardando en Supabase...",
+                progress=70,
+            )
+            _raise_finalize_stage(
+                "guardando en Supabase",
+                contratacion_incluyente.sync_usuarios_reca,
+            )
+            _raise_finalize_stage(
+                "limpiando la cache local",
+                lambda: _clear_form_cache_safe(contratacion_incluyente),
+            )
+            return output_path
+
+        _start_background_finalization(
             self,
             loading,
-            output_path,
-            "Contratacion Incluyente",
-            company_name,
-            "contratacion_incluyente",
+            form_name="Contratacion Incluyente",
+            company_name=company_name,
+            form_id="contratacion_incluyente",
+            worker_fn=_worker,
         )
-        _return_to_hub(self)
-        self.destroy()
 
     def _build_search(self, parent):
         _section1_build_search(self, parent)
@@ -10380,26 +10973,29 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
         loading = LoadingDialog(self, title="Guardando")
         loading.set_status("Exportando Excel...")
         loading.set_progress(35)
-        try:
-            output_path = induccion_organizacional.export_to_excel(clear_cache=False)
-        except Exception as exc:
-            loading.close()
-            messagebox.showerror("Error", str(exc))
-            return
 
         cache_snapshot = induccion_organizacional.get_form_cache()
         section_1 = cache_snapshot.get("section_1", {})
         company_name = section_1.get("nombre_empresa")
-        _finalize_export_flow(
+        def _worker():
+            output_path = _raise_finalize_stage(
+                "exportando el Excel",
+                lambda: induccion_organizacional.export_to_excel(clear_cache=False),
+            )
+            _raise_finalize_stage(
+                "limpiando la cache local",
+                lambda: _clear_form_cache_safe(induccion_organizacional),
+            )
+            return output_path
+
+        _start_background_finalization(
             self,
             loading,
-            output_path,
-            "Induccion Organizacional",
-            company_name,
-            "induccion_organizacional",
+            form_name="Induccion Organizacional",
+            company_name=company_name,
+            form_id="induccion_organizacional",
+            worker_fn=_worker,
         )
-        _return_to_hub(self)
-        self.destroy()
 
     def _close_to_hub(self):
         _return_to_hub(self)
@@ -11305,26 +11901,29 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         loading = LoadingDialog(self, title="Guardando")
         loading.set_status("Exportando Excel...")
         loading.set_progress(35)
-        try:
-            output_path = induccion_operativa.export_to_excel(clear_cache=False)
-        except Exception as exc:
-            loading.close()
-            messagebox.showerror("Error", str(exc))
-            return
 
         cache_snapshot = induccion_operativa.get_form_cache()
         section_1 = cache_snapshot.get("section_1", {})
         company_name = section_1.get("nombre_empresa")
-        _finalize_export_flow(
+        def _worker():
+            output_path = _raise_finalize_stage(
+                "exportando el Excel",
+                lambda: induccion_operativa.export_to_excel(clear_cache=False),
+            )
+            _raise_finalize_stage(
+                "limpiando la cache local",
+                lambda: _clear_form_cache_safe(induccion_operativa),
+            )
+            return output_path
+
+        _start_background_finalization(
             self,
             loading,
-            output_path,
-            "Induccion Operativa",
-            company_name,
-            "induccion_operativa",
+            form_name="Induccion Operativa",
+            company_name=company_name,
+            form_id="induccion_operativa",
+            worker_fn=_worker,
         )
-        _return_to_hub(self)
-        self.destroy()
 
     def _close_to_hub(self):
         _return_to_hub(self)
@@ -11744,26 +12343,29 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         loading = LoadingDialog(self, title="Guardando")
         loading.set_status("Exportando Excel...")
         loading.set_progress(35)
-        try:
-            output_path = sensibilizacion.export_to_excel(clear_cache=False)
-        except Exception as exc:
-            loading.close()
-            messagebox.showerror("Error", str(exc))
-            return
 
         cache_snapshot = sensibilizacion.get_form_cache()
         section_1 = cache_snapshot.get("section_1", {})
         company_name = section_1.get("nombre_empresa")
-        _finalize_export_flow(
+        def _worker():
+            output_path = _raise_finalize_stage(
+                "exportando el Excel",
+                lambda: sensibilizacion.export_to_excel(clear_cache=False),
+            )
+            _raise_finalize_stage(
+                "limpiando la cache local",
+                lambda: _clear_form_cache_safe(sensibilizacion),
+            )
+            return output_path
+
+        _start_background_finalization(
             self,
             loading,
-            output_path,
-            "Sensibilizacion",
-            company_name,
-            "sensibilizacion",
+            form_name="Sensibilizacion",
+            company_name=company_name,
+            form_id="sensibilizacion",
+            worker_fn=_worker,
         )
-        _return_to_hub(self)
-        self.destroy()
 
     def _close_to_hub(self):
         _return_to_hub(self)

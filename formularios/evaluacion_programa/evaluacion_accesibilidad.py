@@ -646,7 +646,6 @@ EXCEL_MAPPING = {
     },
     "section_4": {
         "nivel_accesibilidad": "M180",
-        "descripcion": "Q180",
     },
     "section_5": {
         "discapacidad_fisica_ajustes": "K186",

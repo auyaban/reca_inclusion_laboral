@@ -48,6 +48,44 @@ def _get_excel_folder_id():
     return config.get("google_drive_excel_folder_id") or _get_folder_id()
 
 
+def _resolve_target_root_id(service, configured_id, log_base_path=None):
+    target_id = str(configured_id or "").strip()
+    if not target_id:
+        raise RuntimeError("No se pudo resolver la carpeta raíz de Google Drive.")
+
+    # Shared drive roots are commonly referenced directly by their drive ID.
+    if target_id.startswith("0A"):
+        _log_drive(f"ROOT_SHARED_DRIVE drive_id={target_id}", log_base_path)
+        return target_id
+
+    try:
+        metadata = service.files().get(
+            fileId=target_id,
+            fields="id,name,driveId,parents,mimeType,trashed",
+            supportsAllDrives=True,
+        ).execute()
+    except Exception as exc:
+        _log_drive(f"WARN root_metadata_unavailable id={target_id} error={exc}", log_base_path)
+        return target_id
+
+    if metadata.get("trashed") and metadata.get("driveId"):
+        drive_root_id = str(metadata.get("driveId") or "").strip()
+        if drive_root_id:
+            _log_drive(
+                f"WARN root_folder_trashed id={target_id} name={metadata.get('name')!r} "
+                f"fallback_drive_root={drive_root_id}",
+                log_base_path,
+            )
+            return drive_root_id
+
+    _log_drive(
+        f"ROOT_FOLDER id={metadata.get('id')} name={metadata.get('name')!r} "
+        f"drive_id={metadata.get('driveId')} trashed={metadata.get('trashed')}",
+        log_base_path,
+    )
+    return target_id
+
+
 def _get_or_create_folder(service, parent_folder_id, folder_name):
     safe_name = _sanitize_filename(folder_name)
     safe_query_name = safe_name.replace("'", "\\'")
@@ -100,7 +138,43 @@ def _get_log_dir(base_path=None):
     return log_dir
 
 
+def _get_desktop_log_path():
+    candidates = []
+    one_drive = str(os.getenv("OneDrive") or "").strip()
+    if one_drive:
+        candidates.append(os.path.join(one_drive, "Desktop", "log"))
+    one_drive_consumer = str(os.getenv("OneDriveConsumer") or "").strip()
+    if one_drive_consumer:
+        candidates.append(os.path.join(one_drive_consumer, "Desktop", "log"))
+    userprofile = str(os.getenv("USERPROFILE") or "").strip()
+    if userprofile:
+        candidates.append(os.path.join(userprofile, "Desktop", "log"))
+    local_app_data = str(os.getenv("LOCALAPPDATA") or "").strip()
+    if local_app_data:
+        candidates.append(os.path.join(local_app_data, "RECA", "logs", "log"))
+    candidates.append(os.path.join(os.getcwd(), "log"))
+
+    for path in candidates:
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            return path
+        except OSError:
+            continue
+    return os.path.join(os.getcwd(), "log")
+
+
+def _log_drive_desktop(message):
+    try:
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        log_path = _get_desktop_log_path()
+        with open(log_path, "a", encoding="utf-8") as log_file:
+            log_file.write(f"[{timestamp}] [DRIVE] {message}\n")
+    except OSError:
+        return
+
+
 def _log_drive(message, base_path=None):
+    _log_drive_desktop(message)
     try:
         log_dir = _get_log_dir(base_path)
         log_path = os.path.join(log_dir, "drive_log.txt")
@@ -119,7 +193,12 @@ def _log_drive(message, base_path=None):
         return
 
 
-def upload_excel_to_drive(excel_path, base_name=None, professional_name=None):
+def upload_excel_to_drive(
+    excel_path,
+    base_name=None,
+    folder_name=None,
+    professional_name=None,
+):
     if not excel_path:
         raise RuntimeError("Falta excel_path para subir a Drive.")
     if not os.path.exists(excel_path):
@@ -135,27 +214,29 @@ def upload_excel_to_drive(excel_path, base_name=None, professional_name=None):
         ) from exc
 
     creds_path = _get_credentials_path()
-    root_folder_id = _get_excel_folder_id()
+    configured_root_folder_id = _get_excel_folder_id()
     filename = _sanitize_filename(base_name or os.path.basename(excel_path))
+    resolved_folder_name = folder_name if folder_name is not None else professional_name
 
     _log_drive(
-        f"START_EXCEL path={excel_path} base_name={base_name!r} professional={professional_name!r}",
+        f"START_EXCEL path={excel_path} base_name={base_name!r} folder_name={resolved_folder_name!r}",
         excel_path,
     )
 
     credentials = Credentials.from_service_account_file(creds_path, scopes=[SCOPE])
     service = build("drive", "v3", credentials=credentials)
+    root_folder_id = _resolve_target_root_id(service, configured_root_folder_id, excel_path)
     target_folder_id = root_folder_id
-    if professional_name:
+    if resolved_folder_name:
         try:
             target_folder_id = _get_or_create_folder(
                 service,
                 root_folder_id,
-                professional_name,
+                resolved_folder_name,
             )
         except Exception as exc:
             _log_drive(
-                f"WARN folder_profesional_fallback professional={professional_name!r} error={exc}",
+                f"WARN folder_fallback folder_name={resolved_folder_name!r} error={exc}",
                 excel_path,
             )
             target_folder_id = root_folder_id
@@ -180,7 +261,11 @@ def upload_excel_to_drive(excel_path, base_name=None, professional_name=None):
     file_name = result.get("name")
     web_link = result.get("webViewLink")
     _log_drive(
-        f"SUCCESS_EXCEL id={file_id} name={file_name} folder={target_folder_id} professional={professional_name!r} link={web_link}",
+        f"SUCCESS_EXCEL id={file_id} name={file_name} folder={target_folder_id} folder_name={resolved_folder_name!r} link={web_link}",
         excel_path,
     )
-    return file_id, file_name
+    return {
+        "file_id": file_id,
+        "file_name": file_name,
+        "webViewLink": web_link,
+    }

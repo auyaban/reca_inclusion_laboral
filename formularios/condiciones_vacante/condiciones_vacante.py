@@ -985,6 +985,24 @@ SECTION_7 = {
     "field_id": "observaciones_recomendaciones",
 }
 
+SECTION_7_TEMPLATES = {
+    "proceso_vacante": """
+* Ejecutar el proceso de retroalimentación a los candidatos sobre quién continúa o no en el proceso.
+
+* Acompañamiento desde RECA durante el proceso.
+
+* La empresa debe dar el visto bueno al perfil levantado junto al asesor de la Agencia y RECA, para que desde la Agencia se publique la vacante y se realice el envío de candidatos dentro de los 4 días hábiles.
+
+* Remisión del perfil para el proceso correspondiente.
+
+El presente perfil describe los tipos de discapacidad que, tras el análisis de las funciones del cargo, el entorno de trabajo, los factores de riesgo y las demandas propias del rol, se consideran compatibles para la vinculación laboral de personas con discapacidad, bajo un enfoque de inclusión social y laboral.
+""".strip(),
+}
+
+SECTION_7_TEMPLATE_BUTTONS = [
+    ("proceso_vacante", "Proceso vacante"),
+]
+
 SECTION_8 = {
     "title": "8. ASISTENTES",
     "rows": 3,

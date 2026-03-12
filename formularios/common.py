@@ -1347,74 +1347,157 @@ def ws_write(ws, cell_ref, value):
     ws.Range(cell_ref).Value = value
 
 
-def autofit_rows(ws):
+def autofit_rows(ws, log_fn=None):
     import math
+    import platform
 
-    # Determine which rows to process.
-    # If the form registered written rows, only process those;
-    # otherwise fall back to scanning all used rows (backward-compatible).
+    def _log(msg):
+        if log_fn:
+            try:
+                log_fn(msg)
+            except Exception:
+                pass
+
+    # ── System / environment diagnostics ────────────────────────────────────
+    try:
+        _log(
+            f"AUTOFIT_ENV platform={platform.platform()} "
+            f"python={platform.python_version()} "
+            f"win_ver={platform.version()}"
+        )
+    except Exception as _e:
+        _log(f"AUTOFIT_ENV unavailable error={_e}")
+
+    try:
+        dpi = ctypes.windll.user32.GetDpiForSystem()
+        _log(f"AUTOFIT_DPI system_dpi={dpi} scale={round(dpi / 96 * 100)}%")
+    except Exception as _e:
+        _log(f"AUTOFIT_DPI unavailable error={_e}")
+
+    try:
+        _log(
+            f"AUTOFIT_EXCEL version={ws.Application.Version} "
+            f"build={ws.Application.Build} "
+            f"default_font={ws.Application.StandardFont} "
+            f"default_font_size={ws.Application.StandardFontSize}"
+        )
+    except Exception as _e:
+        _log(f"AUTOFIT_EXCEL version unavailable error={_e}")
+
+    # ── Determine rows to process ────────────────────────────────────────────
     rows_to_process = sorted(_written_rows) if _written_rows else None
+    _log(
+        f"AUTOFIT_ROWS_SCOPE "
+        f"written_rows_count={len(_written_rows)} "
+        f"written_cells_count={len(_written_cells)} "
+        f"scope={'specific' if rows_to_process else 'all_used_range'} "
+        f"rows={rows_to_process[:30] if rows_to_process else 'all'}"
+    )
 
     used = ws.UsedRange
     start_col = used.Column
     end_col = used.Column + used.Columns.Count - 1
 
-    # Pass 1: AutoFit — quick baseline pass for non-wrapped / non-merged cells.
+    try:
+        col_widths = {c: round(ws.Columns(c).ColumnWidth, 2) for c in range(start_col, min(end_col + 1, start_col + 20))}
+        _log(f"AUTOFIT_COL_WIDTHS start={start_col} end={end_col} sample={col_widths}")
+    except Exception as _e:
+        _log(f"AUTOFIT_COL_WIDTHS error={_e}")
+
+    # ── Pass 1: AutoFit baseline ─────────────────────────────────────────────
+    _log("AUTOFIT_PASS1_START")
+    pass1_errors = []
     if rows_to_process:
         for row_num in rows_to_process:
             try:
                 ws.Rows(row_num).AutoFit()
-            except Exception:
-                pass
+            except Exception as _e:
+                pass1_errors.append(f"row={row_num} err={_e}")
     else:
-        ws.UsedRange.Rows.AutoFit()
+        try:
+            ws.UsedRange.Rows.AutoFit()
+        except Exception as _e:
+            pass1_errors.append(f"UsedRange.AutoFit err={_e}")
+    if pass1_errors:
+        _log(f"AUTOFIT_PASS1_ERRORS count={len(pass1_errors)} details={pass1_errors[:10]}")
+    else:
+        _log("AUTOFIT_PASS1_DONE no_errors")
 
-    # Pass 2: Manual height calculation.
-    # _calc_needed_height now covers BOTH merged cells (AutoFit ignores them)
-    # AND non-merged WrapText cells (AutoFit only adjusts for font size, not
-    # actual line-wrap count).
-    #
-    # For every written row we scan ALL cells in that row.  A row may contain
-    # several cells each needing a different height, so we keep the MAXIMUM
-    # needed height per (top_row, num_rows) block rather than stopping at the
-    # first cell seen (old `seen_merges` approach which could discard taller
-    # sibling cells in the same row).
+    # ── Pass 2: Manual height calculation ───────────────────────────────────
+    _log("AUTOFIT_PASS2_START")
     scan_rows = rows_to_process if rows_to_process else range(used.Row, used.Row + used.Rows.Count)
 
-    # max_needed: (top_row, num_rows) → maximum needed_total seen so far
     max_needed: dict = {}
+    calc_errors = []
 
     for row_num in scan_rows:
-        for top_row, num_rows, needed in _calc_needed_height(ws, row_num, start_col, end_col):
+        try:
+            entries = _calc_needed_height(ws, row_num, start_col, end_col)
+        except Exception as _e:
+            calc_errors.append(f"row={row_num} err={_e}")
+            continue
+        for top_row, num_rows, needed in entries:
             key = (top_row, num_rows)
             if needed > max_needed.get(key, 0):
                 max_needed[key] = needed
+                _log(
+                    f"AUTOFIT_CALC row={row_num} top_row={top_row} "
+                    f"num_rows={num_rows} needed={needed:.1f}"
+                )
 
-    # Separate into normal (fits in existing rows) vs overflow (must grow).
+    if calc_errors:
+        _log(f"AUTOFIT_CALC_ERRORS count={len(calc_errors)} details={calc_errors[:10]}")
+
+    # ── Separate normal vs overflow ──────────────────────────────────────────
     overflow = []
     normal = []
     for (top_row, num_rows), needed in max_needed.items():
-        current_total = sum(ws.Rows(top_row + i).RowHeight for i in range(num_rows))
+        try:
+            current_total = sum(ws.Rows(top_row + i).RowHeight for i in range(num_rows))
+        except Exception as _e:
+            _log(f"AUTOFIT_HEIGHT_READ_ERROR top_row={top_row} error={_e}")
+            continue
         if needed <= current_total:
+            _log(
+                f"AUTOFIT_ROW_SKIP top_row={top_row} num_rows={num_rows} "
+                f"needed={needed:.1f} current={current_total:.1f} reason=already_fits"
+            )
             continue
         if needed > num_rows * _EXCEL_MAX_ROW_HEIGHT:
             overflow.append((top_row, num_rows, needed))
+            _log(
+                f"AUTOFIT_OVERFLOW top_row={top_row} num_rows={num_rows} "
+                f"needed={needed:.1f} current={current_total:.1f} "
+                f"max_per_row={_EXCEL_MAX_ROW_HEIGHT}"
+            )
         else:
             normal.append((top_row, num_rows, needed))
+            _log(
+                f"AUTOFIT_NORMAL top_row={top_row} num_rows={num_rows} "
+                f"needed={needed:.1f} current={current_total:.1f}"
+            )
 
-    # Apply normal adjustments: distribute needed height evenly.
+    _log(f"AUTOFIT_SUMMARY normal_count={len(normal)} overflow_count={len(overflow)}")
+
+    # ── Apply normal adjustments ─────────────────────────────────────────────
     for top_row, num_rows, needed in normal:
         per_row = math.ceil(needed / num_rows)
         for i in range(num_rows):
             try:
                 ws.Rows(top_row + i).RowHeight = per_row
-            except Exception:
-                pass
+                _log(f"AUTOFIT_SET_HEIGHT row={top_row + i} height={per_row}")
+            except Exception as _e:
+                _log(f"AUTOFIT_SET_HEIGHT_ERROR row={top_row + i} error={_e}")
 
-    # Apply overflow adjustments from bottom to top so inserted rows
-    # don't shift the row numbers of entries we haven't processed yet.
+    # ── Apply overflow adjustments (bottom to top) ───────────────────────────
     for top_row, num_rows, needed in sorted(overflow, key=lambda x: x[0], reverse=True):
-        _expand_row_with_extra_rows(ws, top_row, num_rows, needed, start_col, end_col)
+        try:
+            extra = _expand_row_with_extra_rows(ws, top_row, num_rows, needed, start_col, end_col)
+            _log(f"AUTOFIT_OVERFLOW_EXPANDED top_row={top_row} extra_rows_inserted={extra}")
+        except Exception as _e:
+            _log(f"AUTOFIT_OVERFLOW_ERROR top_row={top_row} error={_e}")
+
+    _log("AUTOFIT_DONE")
 
 
 def sanitize_logo_error_cells(workbook_or_sheet):

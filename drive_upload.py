@@ -1,11 +1,24 @@
 import json
 import os
 import re
+import sys
 import time
 
 
 SCOPE = "https://www.googleapis.com/auth/drive.file"
 DEFAULT_CONFIG_PATH = "config.json"
+
+
+def _get_bundle_dir():
+    """Return the directory that contains bundled/sibling files.
+
+    When running as a PyInstaller frozen executable the extracted files live
+    in ``sys._MEIPASS`` (the ``_internal`` folder next to the .exe).  When
+    running from source the files live next to this module.
+    """
+    if getattr(sys, "frozen", False):
+        return sys._MEIPASS
+    return os.path.dirname(os.path.abspath(__file__))
 
 
 def _sanitize_filename(value):
@@ -23,6 +36,10 @@ def _get_credentials_path():
         raise RuntimeError(
             "Falta GOOGLE_DRIVE_SA_JSON o config.json con google_drive_sa_json."
         )
+    # Resolve relative paths against the bundle / script directory so the app
+    # works correctly whether running from source or as a PyInstaller bundle.
+    if not os.path.isabs(path):
+        path = os.path.join(_get_bundle_dir(), path)
     if not os.path.exists(path):
         raise RuntimeError(f"No existe el JSON de credenciales: {path}")
     return path
@@ -119,13 +136,19 @@ def _get_or_create_folder(service, parent_folder_id, folder_name):
 
 
 def _load_config():
-    if not os.path.exists(DEFAULT_CONFIG_PATH):
-        return {}
-    try:
-        with open(DEFAULT_CONFIG_PATH, "r", encoding="utf-8") as handle:
-            return json.load(handle) or {}
-    except (OSError, json.JSONDecodeError):
-        return {}
+    # Look for config.json next to the bundle / script first, then fall back to
+    # the current working directory so the dev workflow still works.
+    bundle_path = os.path.join(_get_bundle_dir(), DEFAULT_CONFIG_PATH)
+    cwd_path = DEFAULT_CONFIG_PATH
+
+    for candidate in (bundle_path, cwd_path):
+        if os.path.exists(candidate):
+            try:
+                with open(candidate, "r", encoding="utf-8") as handle:
+                    return json.load(handle) or {}
+            except (OSError, json.JSONDecodeError):
+                return {}
+    return {}
 
 
 def _get_log_dir(base_path=None):
@@ -203,6 +226,14 @@ def upload_excel_to_drive(
         raise RuntimeError("Falta excel_path para subir a Drive.")
     if not os.path.exists(excel_path):
         raise RuntimeError(f"No existe el archivo de Excel: {excel_path}")
+
+    # Log early so every failure path is captured in the drive log.
+    _log_drive(
+        f"START_EXCEL path={excel_path} base_name={base_name!r} folder_name={folder_name!r} "
+        f"bundle_dir={_get_bundle_dir()}",
+        excel_path,
+    )
+
     try:
         from google.oauth2.service_account import Credentials
         from googleapiclient.discovery import build
@@ -213,13 +244,24 @@ def upload_excel_to_drive(
             "Faltan dependencias para Google Drive. Instala google-api-python-client y google-auth."
         ) from exc
 
-    creds_path = _get_credentials_path()
-    configured_root_folder_id = _get_excel_folder_id()
+    try:
+        creds_path = _get_credentials_path()
+    except RuntimeError as exc:
+        _log_drive(f"ERROR credentials_path {exc}", excel_path)
+        raise
+
+    try:
+        configured_root_folder_id = _get_excel_folder_id()
+    except RuntimeError as exc:
+        _log_drive(f"ERROR folder_id {exc}", excel_path)
+        raise
+
     filename = _sanitize_filename(base_name or os.path.basename(excel_path))
     resolved_folder_name = folder_name if folder_name is not None else professional_name
 
     _log_drive(
-        f"START_EXCEL path={excel_path} base_name={base_name!r} folder_name={resolved_folder_name!r}",
+        f"RESOLVED creds={creds_path} folder_id={configured_root_folder_id} "
+        f"target_folder={resolved_folder_name!r}",
         excel_path,
     )
 

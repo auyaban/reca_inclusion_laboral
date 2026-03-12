@@ -11,6 +11,9 @@ venv/
 # Env files
 .env
 
+# Google service account credentials – never commit to version control
+t-collective-*.json
+
 # Build artifacts
 build/
 dist/

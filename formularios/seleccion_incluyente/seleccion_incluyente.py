@@ -1554,7 +1554,7 @@ def export_to_excel(clear_cache=True):
         _write_section_5(ws, FORM_CACHE.get("section_5", {}))
         _write_section_6(ws, FORM_CACHE.get("section_6", []))
         sanitize_logo_error_cells(wb)
-        autofit_rows(ws)
+        autofit_rows(ws, log_fn=_log_excel)
         wb.Save()
         _log_excel("SUCCESS export_all")
     except Exception as exc:

@@ -1370,28 +1370,40 @@ def _create_vscroll(parent, command):
     return tk.Scrollbar(parent, orient="vertical", command=command, width=SCROLLBAR_WIDTH)
 
 
-def _build_scrollable_content(parent, owner=None):
+def _build_scrollable_section_shell(parent, owner=None):
+    parent.grid_rowconfigure(0, weight=1)
+    parent.grid_columnconfigure(0, weight=1)
+
     canvas = tk.Canvas(parent, bg=COLOR_LIGHT_BG, highlightthickness=0)
     scrollbar = _create_vscroll(parent, canvas.yview)
     canvas.configure(yscrollcommand=scrollbar.set)
+
     content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
     content.bind(
         "<Configure>",
-        lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
+        lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
     )
+
     content_window = canvas.create_window((0, 0), window=content, anchor="nw")
     canvas.bind(
         "<Configure>",
-        lambda e: canvas.itemconfigure(content_window, width=e.width),
+        lambda event: canvas.itemconfigure(content_window, width=event.width),
     )
-    canvas.pack(side="left", fill="both", expand=True)
-    scrollbar.pack(side="right", fill="y")
+
+    canvas.grid(row=0, column=0, sticky="nsew")
+    scrollbar.grid(row=0, column=1, sticky="ns")
+
     if owner and hasattr(owner, "_bind_mousewheel"):
         try:
             owner._bind_mousewheel(canvas, content)
         except Exception:
             pass
+
     return content
+
+
+def _build_scrollable_content(parent, owner=None):
+    return _build_scrollable_section_shell(parent, owner)
 
 
 def _get_required_modalidad(window):
@@ -1878,17 +1890,12 @@ class FormMousewheelMixin:
                     canvas.yview_scroll(3, "units")
             return "break"
 
-        def _bind_widget_tree(widget):
-            try:
-                widget.bind("<MouseWheel>", _on_mousewheel, add="+")
-                widget.bind("<Button-4>", _on_mousewheel, add="+")
-                widget.bind("<Button-5>", _on_mousewheel, add="+")
-            except Exception:
-                pass
-            for child in widget.winfo_children():
-                _bind_widget_tree(child)
-
-        _bind_widget_tree(target)
+        try:
+            target.bind_all("<MouseWheel>", _on_mousewheel, add="+")
+            target.bind_all("<Button-4>", _on_mousewheel, add="+")
+            target.bind_all("<Button-5>", _on_mousewheel, add="+")
+        except Exception:
+            pass
 
 
 class LoadingDialog:
@@ -2202,19 +2209,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         )
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        self._bind_mousewheel(canvas, content)
+        content = _build_scrollable_content(section_frame, self)
 
         header = tk.Frame(content, bg=COLOR_LIGHT_BG)
         header.pack(fill="x", pady=(8, 12))
@@ -2258,7 +2253,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
                 justify="left",
             ).grid(row=0, column=1, sticky="w", padx=8, pady=8)
 
-        actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
+        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         ttk.Button(actions, text="Continuar", command=self._show_section_3).pack(side="right")
     def _show_section_3(self):
@@ -2267,25 +2262,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Describe los temas tratados.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.bind(
-            "<Configure>",
-            lambda e: canvas.itemconfigure("content", width=e.width),
-        )
-        canvas.itemconfigure(canvas.find_all()[0], tags=("content",))
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        self._bind_mousewheel(canvas, content)
+        content = _build_scrollable_content(section_frame, self)
 
         header = tk.Frame(content, bg=COLOR_LIGHT_BG)
         header.pack(fill="x", pady=(8, 12))
@@ -2365,7 +2342,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             if label in cached_checks:
                 var.set(bool(cached_checks.get(label)))
 
-        actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
+        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         ttk.Button(actions, text="Continuar", command=self._confirm_section_3).pack(side="right")
     def _confirm_section_3(self):
@@ -2386,6 +2363,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Registra acuerdos y asistentes.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
         form_container = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         form_container.pack(fill="both", expand=True, pady=(8, 12))
 
@@ -4544,17 +4522,27 @@ class HubWindow(tk.Tk):
         def _on_forms_wheel(event):
             try:
                 forms_canvas.xview_moveto(0.0)
-                forms_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+                if getattr(event, "delta", 0):
+                    delta = int(-1 * (event.delta / 120))
+                    if delta == 0:
+                        delta = -1 if event.delta > 0 else 1
+                    forms_canvas.yview_scroll(delta, "units")
+                else:
+                    num = getattr(event, "num", None)
+                    if num == 4:
+                        forms_canvas.yview_scroll(-3, "units")
+                    elif num == 5:
+                        forms_canvas.yview_scroll(3, "units")
             except Exception:
                 pass
             return "break"
 
         for widget in (forms_canvas, forms_content):
-            widget.bind("<MouseWheel>", _on_forms_wheel)
-            widget.bind("<Button-4>", lambda _e: forms_canvas.yview_scroll(-3, "units"))
-            widget.bind("<Button-5>", lambda _e: forms_canvas.yview_scroll(3, "units"))
-            widget.bind("<Shift-MouseWheel>", lambda _e: "break")
-            widget.bind("<Enter>", lambda _e: forms_canvas.xview_moveto(0.0))
+            widget.bind("<MouseWheel>", _on_forms_wheel, add="+")
+            widget.bind("<Button-4>", _on_forms_wheel, add="+")
+            widget.bind("<Button-5>", _on_forms_wheel, add="+")
+            widget.bind("<Shift-MouseWheel>", lambda _e: "break", add="+")
+            widget.bind("<Enter>", lambda _e: forms_canvas.xview_moveto(0.0), add="+")
 
         forms = get_forms()
         if not forms:
@@ -4587,9 +4575,10 @@ class HubWindow(tk.Tk):
                     command=lambda f=form: self._open_form(f),
                 )
                 action.grid(row=0, column=1, sticky="e", padx=12, pady=8)
-                card.bind("<MouseWheel>", _on_forms_wheel)
-                title.bind("<MouseWheel>", _on_forms_wheel)
-                action.bind("<MouseWheel>", _on_forms_wheel)
+                for _w in (card, title, action):
+                    _w.bind("<MouseWheel>", _on_forms_wheel, add="+")
+                    _w.bind("<Button-4>", _on_forms_wheel, add="+")
+                    _w.bind("<Button-5>", _on_forms_wheel, add="+")
 
         tk.Label(
             right,
@@ -4974,19 +4963,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Completa movilidad y entorno urbano.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        self._bind_mousewheel(canvas, content)
+        content = _build_scrollable_content(section_frame, self)
 
         title = tk.Label(
             content,
@@ -5091,19 +5068,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Completa accesibilidad general.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        self._bind_mousewheel(canvas, content)
+        content = _build_scrollable_content(section_frame, self)
 
         title = tk.Label(
             content,
@@ -5301,19 +5266,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Completa accesibilidad fisica.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        self._bind_mousewheel(canvas, content)
+        content = _build_scrollable_content(section_frame, self)
 
         title = tk.Label(
             content,
@@ -5527,19 +5480,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Completa accesibilidad sensorial.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        self._bind_mousewheel(canvas, content)
+        content = _build_scrollable_content(section_frame, self)
 
         title = tk.Label(
             content,
@@ -5670,19 +5611,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Completa accesibilidad intelectual - TEA.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        self._bind_mousewheel(canvas, content)
+        content = _build_scrollable_content(section_frame, self)
 
         title = tk.Label(
             content,
@@ -5813,19 +5742,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Completa accesibilidad psicosocial.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        self._bind_mousewheel(canvas, content)
+        content = _build_scrollable_content(section_frame, self)
 
         title = tk.Label(
             content,
@@ -5915,19 +5832,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Completa condiciones organizacionales.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        self._bind_mousewheel(canvas, content)
+        content = _build_scrollable_content(section_frame, self)
 
         title = tk.Label(
             content,
@@ -6077,6 +5982,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Resume el nivel de accesibilidad.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
 
         counts, percentages, suggestion = self._calculate_accessible_summary()
 
@@ -6256,19 +6162,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Marca aplicacion y registra notas.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        self._bind_mousewheel(canvas, content)
+        content = _build_scrollable_content(section_frame, self)
 
         title = tk.Label(
             content,
@@ -6378,6 +6272,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Registra observaciones generales.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
 
         tk.Label(
             section_frame,
@@ -6422,6 +6317,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Registra cargos compatibles.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
 
         tk.Label(
             section_frame,
@@ -6477,6 +6373,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Registra asistentes.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
 
         tk.Label(
             section_frame,
@@ -7093,18 +6990,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Completa caracteristicas de la vacante.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        content = _build_scrollable_content(section_frame, self)
 
         self.section2_fields = {}
         for field in condiciones_vacante.SECTION_2["fields"]:
@@ -7237,18 +7123,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Completa formacion academica.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        content = _build_scrollable_content(section_frame, self)
 
         self.section2_1_fields = {}
 
@@ -7361,18 +7236,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Selecciona nivel por habilidad.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        content = _build_scrollable_content(section_frame, self)
 
         self.section3_fields = {}
         options = condiciones_vacante.SECTION_3["options"]
@@ -7482,6 +7346,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Selecciona tiempo y frecuencia.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
 
         content = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         content.pack(fill="both", expand=True)
@@ -7564,18 +7429,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Selecciona nivel de riesgo y observaciones.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        content = _build_scrollable_content(section_frame, self)
 
         self.section5_fields = {}
         options = condiciones_vacante.SECTION_5["options"]
@@ -7711,18 +7565,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Selecciona discapacidad y descripción.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        content = _build_scrollable_content(section_frame, self)
 
         header = tk.Frame(content, bg=COLOR_LIGHT_BG)
         header.pack(fill="x", pady=(8, 6))
@@ -7846,6 +7689,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Registra observaciones y recomendaciones.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
 
         template_actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         template_actions.pack(fill="x", padx=24, pady=(12, 0))
@@ -7900,6 +7744,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Registra asistentes.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
 
         table = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         table.pack(fill="x", padx=24, pady=(12, 8))
@@ -8375,19 +8220,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
         self._load_cedula_options()
-
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        self._bind_mousewheel(canvas, content)
+        content = _build_scrollable_content(section_frame, self)
 
         self.oferente_blocks = []
         self.oferente_frames = []
@@ -8883,6 +8716,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
 
         content = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         content.pack(fill="both", expand=True)
@@ -8995,7 +8829,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             cargo_entry.delete(0, tk.END)
             cargo_entry.insert(0, entry.get("cargo", ""))
 
-        actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
+        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         ttk.Button(actions, text="Regresar", command=self._show_section_2).pack(
             side="left"
@@ -9294,19 +9128,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
         self._load_cedula_options()
-
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        self._bind_mousewheel(canvas, content)
+        content = _build_scrollable_content(section_frame, self)
 
         self.oferente_blocks = []
         self.oferente_frames = []
@@ -9903,6 +9725,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Completa ajustes y asistentes.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
 
         content = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         content.pack(fill="both", expand=True)
@@ -10277,19 +10100,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
         self._load_cedula_options()
-
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        self._bind_mousewheel(canvas, content)
+        content = _build_scrollable_content(section_frame, self)
 
         self.vinculado_blocks = []
         self.vinculado_frames = []
@@ -10426,7 +10237,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
                     widget.delete(0, tk.END)
                     widget.insert(0, value)
 
-        actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
+        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         ttk.Button(actions, text="Regresar", command=self._show_section_1).pack(side="left")
         ttk.Button(actions, text="Agregar vinculado", command=_add_vinculado).pack(side="left", padx=(8, 0))
@@ -10444,19 +10255,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
 
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        self._bind_mousewheel(canvas, content)
+        content = _build_scrollable_content(section_frame, self)
 
         self.section3_fields = {}
         cached = induccion_organizacional.get_form_cache().get("section_3", {})
@@ -10537,7 +10336,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
                     "descripcion": descripcion,
                 }
 
-        actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
+        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         ttk.Button(actions, text="Regresar", command=self._show_section_2).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_3).pack(side="right")
@@ -10551,6 +10350,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
 
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
 
         self.section4_rows = []
         cached = induccion_organizacional.get_form_cache().get("section_4", [])
@@ -10620,6 +10420,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
 
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
 
         tk.Label(
             section_frame,
@@ -10648,6 +10449,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
 
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
 
         content = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         content.pack(fill="x", padx=FORM_PADX, pady=(8, 8))
@@ -11253,16 +11055,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
         self._load_cedula_options()
-
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        self._bind_mousewheel(canvas, content)
+        content = _build_scrollable_content(section_frame, self)
 
         self.vinculado_blocks = []
         self.vinculado_frames = []
@@ -11371,7 +11164,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
                     widget.delete(0, tk.END)
                     widget.insert(0, value)
 
-        actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
+        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         ttk.Button(actions, text="Regresar", command=self._show_section_1).pack(side="left")
         ttk.Button(actions, text="Agregar vinculado", command=_add_vinculado).pack(side="left", padx=(8, 0))
@@ -11385,16 +11178,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
 
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        self._bind_mousewheel(canvas, content)
+        content = _build_scrollable_content(section_frame, self)
 
         self.section3_fields = {}
         cached = induccion_operativa.get_form_cache().get("section_3", {})
@@ -11444,7 +11228,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
                 "observaciones": observaciones,
             }
 
-        actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
+        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         ttk.Button(actions, text="Regresar", command=self._show_section_2).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_3).pack(side="right")
@@ -11458,16 +11242,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
 
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        self._bind_mousewheel(canvas, content)
+        content = _build_scrollable_content(section_frame, self)
 
         cached = induccion_operativa.get_form_cache().get("section_4", {})
         cached_items = cached.get("items", {}) if isinstance(cached, dict) else {}
@@ -11550,7 +11325,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
             note_entry.insert(0, cached_notes.get(block["id"], ""))
             self.section4_note_widgets[block["id"]] = note_entry
 
-        actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
+        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         ttk.Button(actions, text="Regresar", command=self._show_section_3).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_4).pack(side="right")
@@ -11564,6 +11339,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
 
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
 
         content = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         content.pack(fill="x", padx=FORM_PADX, pady=(12, 8))
@@ -11626,6 +11402,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
 
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
 
         tk.Label(section_frame, text="Ajustes requeridos", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(
             anchor="w", padx=FORM_PADX, pady=(8, 4)
@@ -11650,6 +11427,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
 
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
 
         row = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         row.pack(fill="x", padx=FORM_PADX, pady=(12, 8))
@@ -11677,6 +11455,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
 
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
 
         tk.Label(
             section_frame,
@@ -11704,6 +11483,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
 
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
 
         content = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         content.pack(fill="x", padx=FORM_PADX, pady=(8, 8))
@@ -12139,16 +11919,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Describe los temas tratados.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
-
-        canvas = tk.Canvas(section_frame, bg=COLOR_LIGHT_BG, highlightthickness=0)
-        scrollbar = _create_vscroll(section_frame, canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        content = tk.Frame(canvas, bg=COLOR_LIGHT_BG)
-        content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        self._bind_mousewheel(canvas, content)
+        content = _build_scrollable_content(section_frame, self)
 
         temas = [
             "Objetivo de la sensibilizacion y alcance general.",
@@ -12172,7 +11943,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
                 wraplength=860,
             ).pack(side="left", fill="x", expand=True, padx=8, pady=8)
 
-        actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
+        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         ttk.Button(actions, text="Regresar", command=self._show_section_1).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_2).pack(side="right")
@@ -12183,6 +11954,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Registra observaciones generales.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
 
         tk.Label(section_frame, text="Observaciones", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(
             anchor="w", padx=FORM_PADX, pady=(8, 4)
@@ -12205,6 +11977,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Registra acuerdos y asistentes.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
 
         tk.Label(
             section_frame,
@@ -12225,6 +11998,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         self.header_subtitle.config(text="Registra asistentes y agrega filas si aplica.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
 
         content = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         content.pack(fill="x", padx=FORM_PADX, pady=(8, 8))

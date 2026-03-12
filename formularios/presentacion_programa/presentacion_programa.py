@@ -798,7 +798,7 @@ def export_to_excel(cache=None):
                 ws_write(ws, f"L{row}", "Cargo:")
 
         sanitize_logo_error_cells(wb)
-        autofit_rows(ws)
+        autofit_rows(ws, log_fn=lambda msg: _log_excel(msg, output_path))
         wb.Save()
         _log_excel("SUCCESS export_all", output_path)
     except Exception as exc:

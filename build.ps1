@@ -43,6 +43,7 @@ $pyiArgs = @(
     "--add-data", "Diccionario.txt;.",
     "--add-data", "VERSION;.",
     "--add-data", "config.json;.",
+    "--add-data", "t-collective-440019-q6-ce8eb8c907b9.json;.",
     "--hidden-import", "win32com",
     "--hidden-import", "win32com.client",
     "--hidden-import", "pythoncom",

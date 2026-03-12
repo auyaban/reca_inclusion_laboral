@@ -386,7 +386,7 @@ def export_to_excel(clear_cache=True):
         _write_section_3(ws, FORM_CACHE.get("section_3", {}))
         _write_section_5(ws, FORM_CACHE.get("section_5", []))
         sanitize_logo_error_cells(wb)
-        autofit_rows(ws)
+        autofit_rows(ws, log_fn=_log_excel)
         wb.Save()
     finally:
         if wb is not None:

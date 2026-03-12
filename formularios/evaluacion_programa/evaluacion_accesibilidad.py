@@ -358,7 +358,7 @@ def export_to_excel(progress_callback=None):
                 progress_callback(section_id)
             _write_section_with_ws(ws, section_id, payload)
         sanitize_logo_error_cells(wb)
-        autofit_rows(ws)
+        autofit_rows(ws, log_fn=_log_excel)
         wb.Save()
         _log_excel("SUCCESS export_all")
     except Exception as exc:

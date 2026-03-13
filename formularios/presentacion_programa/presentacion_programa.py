@@ -15,6 +15,7 @@ from formularios.common import (
     _sanitize_filename,
     _supabase_get,
 )
+from logging_utils import log_excel_event
 
 FORM_NAME = "Presentacion/Reactivacion del programa de inclusion laboral"
 
@@ -654,22 +655,9 @@ def _get_log_dir(output_path=None):
 
 def _log_excel(message, output_path=None):
     try:
-        log_dir = _get_log_dir(output_path)
-        log_path = os.path.join(log_dir, "excel_log.txt")
-        reset_log = False
-        if os.path.exists(log_path):
-            try:
-                if os.path.getsize(log_path) >= 5 * 1024 * 1024:
-                    reset_log = True
-            except OSError:
-                reset_log = True
-        if reset_log:
-            with open(log_path, "w", encoding="utf-8") as log_file:
-                log_file.write("")
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        with open(log_path, "a", encoding="utf-8") as log_file:
-            log_file.write(f"[{timestamp}] {message}\n")
-    except OSError:
+        _ = output_path
+        log_excel_event(message)
+    except Exception:
         return
 
 

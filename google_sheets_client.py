@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import sys
 from functools import lru_cache
 from pathlib import Path
 
@@ -10,14 +11,24 @@ SCOPE = "https://www.googleapis.com/auth/spreadsheets"
 SPREADSHEET_ID_RE = re.compile(r"/spreadsheets/d/([a-zA-Z0-9-_]+)")
 
 
+def _get_bundle_dir():
+    if getattr(sys, "frozen", False):
+        return sys._MEIPASS
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 def _load_config():
-    if not os.path.exists(DEFAULT_CONFIG_PATH):
-        return {}
-    try:
-        with open(DEFAULT_CONFIG_PATH, "r", encoding="utf-8") as handle:
-            return json.load(handle) or {}
-    except (OSError, json.JSONDecodeError):
-        return {}
+    bundle_path = os.path.join(_get_bundle_dir(), DEFAULT_CONFIG_PATH)
+    cwd_path = DEFAULT_CONFIG_PATH
+    for candidate in (bundle_path, cwd_path):
+        if not os.path.exists(candidate):
+            continue
+        try:
+            with open(candidate, "r", encoding="utf-8") as handle:
+                return json.load(handle) or {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+    return {}
 
 
 def _get_credentials_path():
@@ -41,6 +52,8 @@ def _get_credentials_path():
             "Falta GOOGLE_SERVICE_ACCOUNT_FILE o config.json con "
             "google_service_account_file/google_sheets_sa_json/google_drive_sa_json."
         )
+    if not os.path.isabs(path):
+        path = os.path.join(_get_bundle_dir(), path)
     if not os.path.exists(path):
         raise RuntimeError(f"No existe el JSON de credenciales: {path}")
     return path
@@ -70,6 +83,26 @@ def get_default_spreadsheet_id():
     raise RuntimeError(
         "Falta GOOGLE_SHEETS_DEFAULT_SPREADSHEET_ID o config.json con "
         "google_sheets_default_spreadsheet_id."
+    )
+
+
+def get_evaluacion_accesibilidad_template_id():
+    env_value = str(
+        os.getenv("GOOGLE_SHEETS_EVALUACION_ACCESIBILIDAD_TEMPLATE_ID") or ""
+    ).strip()
+    if env_value:
+        return extract_spreadsheet_id(env_value)
+
+    config = _load_config()
+    config_value = str(
+        config.get("google_sheets_evaluacion_accesibilidad_template_id") or ""
+    ).strip()
+    if config_value:
+        return extract_spreadsheet_id(config_value)
+
+    raise RuntimeError(
+        "Falta GOOGLE_SHEETS_EVALUACION_ACCESIBILIDAD_TEMPLATE_ID o config.json con "
+        "google_sheets_evaluacion_accesibilidad_template_id."
     )
 
 
@@ -132,6 +165,64 @@ def write_sheet_values(
             range=range_name,
             valueInputOption=value_input_option,
             body=body,
+        )
+        .execute()
+    )
+
+
+def clear_sheet_ranges(spreadsheet_id_or_url, ranges):
+    spreadsheet_id = extract_spreadsheet_id(spreadsheet_id_or_url)
+    cleaned_ranges = [str(item or "").strip() for item in (ranges or []) if str(item or "").strip()]
+    if not cleaned_ranges:
+        return {"clearedRanges": []}
+    service = get_google_sheets_service()
+    return (
+        service.spreadsheets()
+        .values()
+        .batchClear(
+            spreadsheetId=spreadsheet_id,
+            body={"ranges": cleaned_ranges},
+        )
+        .execute()
+    )
+
+
+def batch_write_sheet_updates(
+    spreadsheet_id_or_url,
+    updates,
+    value_input_option="USER_ENTERED",
+):
+    spreadsheet_id = extract_spreadsheet_id(spreadsheet_id_or_url)
+    rows = []
+    for update in updates or []:
+        if not isinstance(update, dict):
+            continue
+        range_name = str(update.get("range") or "").strip()
+        if not range_name:
+            continue
+        value = update.get("value", "")
+        if value is None:
+            value = ""
+        rows.append(
+            {
+                "range": range_name,
+                "majorDimension": "ROWS",
+                "values": [[value]],
+            }
+        )
+    if not rows:
+        return {"totalUpdatedCells": 0, "totalUpdatedRows": 0, "responses": []}
+
+    service = get_google_sheets_service()
+    return (
+        service.spreadsheets()
+        .values()
+        .batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={
+                "valueInputOption": value_input_option,
+                "data": rows,
+            },
         )
         .execute()
     )

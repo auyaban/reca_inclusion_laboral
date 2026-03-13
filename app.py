@@ -15,6 +15,8 @@ import secrets
 import json
 import copy
 import urllib.error
+import urllib.request
+import webbrowser
 from zoneinfo import ZoneInfo
 from datetime import date, datetime
 import tkinter as tk
@@ -52,6 +54,7 @@ from formularios.common import (
     _get_desktop_dir,
     _load_env_file,
     _next_available_file_path,
+    probe_supabase_service,
 )
 from version_info import get_version
 from updater import (
@@ -60,6 +63,7 @@ from updater import (
     download_installer,
     run_installer,
 )
+from logging_utils import get_log_file_path, get_logs_root, log_app_event
 
 
 APP_NAME = "RECA Inclusion Laboral"
@@ -98,8 +102,16 @@ _ENCODING_CHECK_DONE = False
 DRAFTS_FILE_NAME = "form_drafts_il.json"
 OFFLINE_AUTH_FILE_NAME = "offline_auth_users.json"
 LOGIN_CREDENTIALS_FILE_NAME = "login_credentials.json"
-_LOG_CURRENT_DAY = None
+DRIVE_UPLOAD_QUEUE_FILE_NAME = "drive_upload_queue.json"
+DRIVE_UPLOAD_FAILED_FILE_NAME = "drive_upload_failed.json"
 _USAGE_EXEMPT_LOGINS_CACHE = None
+_DRIVE_UPLOAD_LOCK = threading.RLock()
+_DRIVE_UPLOAD_QUEUE = []
+_DRIVE_UPLOAD_FAILED_QUEUE = []
+_DRIVE_UPLOAD_WORKER_STARTED = False
+_DRIVE_UPLOAD_QUEUE_LOADED = False
+_DRIVE_UPLOAD_FAILED_LOADED = False
+_SINGLE_INSTANCE_MUTEX_HANDLE = None
 FORM_MODULE_MAP = {
     "presentacion_programa": presentacion_programa,
     "evaluacion_accesibilidad": evaluacion_accesibilidad,
@@ -123,64 +135,68 @@ WINDOW_CLASS_FORM_ID_MAP = {
 }
 
 
-def _desktop_log_path():
-    # Preferimos Desktop real del usuario (incluye OneDrive/GPO).
+def _acquire_single_instance_mutex():
+    if os.name != "nt":
+        return True
+    global _SINGLE_INSTANCE_MUTEX_HANDLE
+    if _SINGLE_INSTANCE_MUTEX_HANDLE:
+        return True
     try:
-        desktop = _get_desktop_dir()
-        path = os.path.join(desktop, "log")
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        return path
+        kernel32 = ctypes.windll.kernel32
+        mutex_name = "Local\\RECA_INCLUSION_LABORAL_SINGLE_INSTANCE"
+        handle = kernel32.CreateMutexW(None, False, mutex_name)
+        if not handle:
+            return True
+        error_code = kernel32.GetLastError()
+        _SINGLE_INSTANCE_MUTEX_HANDLE = handle
+        return int(error_code or 0) != 183
+    except Exception:
+        return True
+
+
+def _release_single_instance_mutex():
+    global _SINGLE_INSTANCE_MUTEX_HANDLE
+    handle = _SINGLE_INSTANCE_MUTEX_HANDLE
+    _SINGLE_INSTANCE_MUTEX_HANDLE = None
+    if not handle or os.name != "nt":
+        return
+    try:
+        ctypes.windll.kernel32.ReleaseMutex(handle)
     except Exception:
         pass
-    # Fallback estable para no perder trazas.
-    local_app_data = os.getenv("LOCALAPPDATA")
-    if local_app_data:
-        fallback_dir = os.path.join(local_app_data, "RECA", "logs")
+    try:
+        ctypes.windll.kernel32.CloseHandle(handle)
+    except Exception:
+        pass
+
+
+def _show_single_instance_warning():
+    message = (
+        "La aplicación ya está abierta.\n\n"
+        "Cierra la instancia actual antes de abrir otra."
+    )
+    if os.name == "nt":
         try:
-            os.makedirs(fallback_dir, exist_ok=True)
-            return os.path.join(fallback_dir, "log")
+            ctypes.windll.user32.MessageBoxW(
+                None,
+                message,
+                APP_NAME,
+                0x00000030,
+            )
+            return
         except Exception:
             pass
-    return os.path.join(os.getcwd(), "log")
-
-
-def _ensure_daily_log(path):
-    global _LOG_CURRENT_DAY
-    today = datetime.now().strftime("%Y-%m-%d")
-    rotate = False
-    if _LOG_CURRENT_DAY != today:
-        rotate = True
-    elif os.path.exists(path):
-        try:
-            file_day = datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d")
-            if file_day != today:
-                rotate = True
-        except Exception:
-            rotate = True
-    else:
-        rotate = True
-
-    if not rotate:
-        return
-
-    try:
-        with open(path, "w", encoding="utf-8") as handle:
-            stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            handle.write(f"[{stamp}] [SYSTEM] Inicio de log diario ({today})\n")
-    except Exception:
-        pass
-    _LOG_CURRENT_DAY = today
-
+    print(message)
 
 def _log_capture(message):
     try:
-        path = _desktop_log_path()
-        _ensure_daily_log(path)
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with open(path, "a", encoding="utf-8") as handle:
-            handle.write(f"[{timestamp}] [APP] {str(message).rstrip()}\n")
+        log_app_event(message)
     except Exception:
         pass
+
+
+def _desktop_log_path():
+    return get_log_file_path("app")
 
 
 def _get_local_cache_dir():
@@ -203,6 +219,444 @@ def _get_offline_auth_path():
 
 def _get_login_credentials_path():
     return os.path.join(_get_local_cache_dir(), LOGIN_CREDENTIALS_FILE_NAME)
+
+
+def _get_drive_upload_queue_path():
+    return os.path.join(_get_local_cache_dir(), DRIVE_UPLOAD_QUEUE_FILE_NAME)
+
+
+def _get_drive_upload_failed_queue_path():
+    return os.path.join(_get_local_cache_dir(), DRIVE_UPLOAD_FAILED_FILE_NAME)
+
+
+def _atomic_write_json_file(path, payload):
+    tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
+
+
+def _get_colombia_now():
+    try:
+        return datetime.now(ZoneInfo("America/Bogota"))
+    except Exception:
+        return datetime.now()
+
+
+def _drive_job_identity(job):
+    registro_id = str((job or {}).get("registro_id") or "").strip()
+    if registro_id:
+        return f"registro:{registro_id}"
+    local_excel_path = str((job or {}).get("local_excel_path") or "").strip().lower()
+    return f"path:{local_excel_path}"
+
+
+def _persist_drive_upload_queue_locked():
+    _atomic_write_json_file(_get_drive_upload_queue_path(), _DRIVE_UPLOAD_QUEUE)
+
+
+def _persist_drive_failed_queue_locked():
+    _atomic_write_json_file(_get_drive_upload_failed_queue_path(), _DRIVE_UPLOAD_FAILED_QUEUE)
+
+
+def _load_drive_upload_queue_once():
+    global _DRIVE_UPLOAD_QUEUE_LOADED
+    if _DRIVE_UPLOAD_QUEUE_LOADED:
+        return
+    path = _get_drive_upload_queue_path()
+    if not os.path.exists(path):
+        _DRIVE_UPLOAD_QUEUE_LOADED = True
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        _DRIVE_UPLOAD_QUEUE_LOADED = True
+        return
+    if isinstance(data, list):
+        with _DRIVE_UPLOAD_LOCK:
+            _DRIVE_UPLOAD_QUEUE[:] = [item for item in data if isinstance(item, dict)]
+    _DRIVE_UPLOAD_QUEUE_LOADED = True
+
+
+def _load_drive_failed_queue_once():
+    global _DRIVE_UPLOAD_FAILED_LOADED
+    if _DRIVE_UPLOAD_FAILED_LOADED:
+        return
+    path = _get_drive_upload_failed_queue_path()
+    if not os.path.exists(path):
+        _DRIVE_UPLOAD_FAILED_LOADED = True
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        _DRIVE_UPLOAD_FAILED_LOADED = True
+        return
+    if isinstance(data, list):
+        with _DRIVE_UPLOAD_LOCK:
+            _DRIVE_UPLOAD_FAILED_QUEUE[:] = [item for item in data if isinstance(item, dict)]
+    _DRIVE_UPLOAD_FAILED_LOADED = True
+
+
+def _get_drive_upload_queue_snapshot(limit=200):
+    path = _get_drive_upload_queue_path()
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    rows = [item for item in data if isinstance(item, dict)]
+    rows.sort(key=lambda r: float(r.get("next_try_at") or 0))
+    if limit and limit > 0:
+        rows = rows[: int(limit)]
+    return rows
+
+
+def _get_drive_failed_uploads_snapshot(limit=200):
+    path = _get_drive_upload_failed_queue_path()
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    rows = [item for item in data if isinstance(item, dict)]
+    rows.sort(key=lambda r: float(r.get("failed_at") or 0), reverse=True)
+    if limit and limit > 0:
+        rows = rows[: int(limit)]
+    return rows
+
+
+def _get_drive_upload_queue_stats():
+    pending_rows = _get_drive_upload_queue_snapshot(limit=0)
+    failed_rows = _get_drive_failed_uploads_snapshot(limit=0)
+    pending = len(pending_rows)
+    if not pending_rows:
+        return {
+            "pending": 0,
+            "failed": len(failed_rows),
+            "max_attempts": 0,
+            "oldest_next_try_at": None,
+        }
+    max_attempts = max(int(r.get("attempts") or 0) for r in pending_rows)
+    oldest_next_try_at = min(float(r.get("next_try_at") or 0) for r in pending_rows)
+    return {
+        "pending": pending,
+        "failed": len(failed_rows),
+        "max_attempts": max_attempts,
+        "oldest_next_try_at": oldest_next_try_at,
+    }
+
+
+def _remove_drive_job_locked(job):
+    identity = _drive_job_identity(job)
+    _DRIVE_UPLOAD_QUEUE[:] = [
+        item for item in _DRIVE_UPLOAD_QUEUE if _drive_job_identity(item) != identity
+    ]
+    _DRIVE_UPLOAD_FAILED_QUEUE[:] = [
+        item for item in _DRIVE_UPLOAD_FAILED_QUEUE if _drive_job_identity(item) != identity
+    ]
+
+
+def _store_failed_drive_job_locked(job, error):
+    record = dict(job or {})
+    record["error"] = str(error or "").strip()
+    record["failed_at"] = time.time()
+    record["attempts"] = int(record.get("attempts") or 0)
+    identity = _drive_job_identity(record)
+    _DRIVE_UPLOAD_FAILED_QUEUE[:] = [
+        item for item in _DRIVE_UPLOAD_FAILED_QUEUE if _drive_job_identity(item) != identity
+    ]
+    _DRIVE_UPLOAD_FAILED_QUEUE.append(record)
+    if len(_DRIVE_UPLOAD_FAILED_QUEUE) > 2000:
+        _DRIVE_UPLOAD_FAILED_QUEUE[:] = _DRIVE_UPLOAD_FAILED_QUEUE[-2000:]
+
+
+def _next_drive_retry_delay_seconds(attempts):
+    tries = max(1, int(attempts))
+    return min(300, 2 ** min(tries, 8))
+
+
+def _update_form_completion_upload_status(
+    registro_id,
+    *,
+    upload_status,
+    upload_error=None,
+    upload_attempted_at=None,
+    uploaded_at=None,
+    path_formato=None,
+    drive_file_id=None,
+):
+    registro_key = str(registro_id or "").strip()
+    if not registro_key:
+        return False
+    values = {"upload_status": str(upload_status or "").strip()}
+    if upload_error is not None:
+        values["upload_error"] = str(upload_error or "").strip()
+    if upload_attempted_at is not None:
+        values["upload_attempted_at"] = str(upload_attempted_at or "").strip()
+    if uploaded_at is not None:
+        values["uploaded_at"] = str(uploaded_at or "").strip()
+    if path_formato is not None:
+        values["path_formato"] = str(path_formato or "").strip()
+    if drive_file_id is not None:
+        values["drive_file_id"] = str(drive_file_id or "").strip()
+    try:
+        result = _supabase_patch_with_queue(
+            "formatos_finalizados_il",
+            {"registro_id": registro_key},
+            values,
+        )
+        return (result or {}).get("status") in {"synced", "queued"}
+    except Exception as exc:
+        _log_capture(
+            f"formatos_finalizados_il patch failed registro_id={registro_key} status={upload_status} err={exc}"
+        )
+        return False
+
+
+def _is_transient_drive_exception(exc):
+    if exc is None:
+        return False
+    root = exc
+    if isinstance(root, RuntimeError) and getattr(root, "__cause__", None) is not None:
+        root = root.__cause__
+
+    if isinstance(root, urllib.error.HTTPError):
+        code = int(getattr(root, "code", 0) or 0)
+        return code >= 500 or code == 429
+    if isinstance(root, urllib.error.URLError):
+        return True
+    if isinstance(root, TimeoutError):
+        return True
+    if isinstance(root, OSError):
+        return True
+
+    resp = getattr(root, "resp", None)
+    status = int(getattr(resp, "status", 0) or getattr(root, "status_code", 0) or 0)
+    if status >= 500 or status == 429:
+        return True
+    if status in {400, 401, 403, 404}:
+        return False
+
+    text = str(root).lower()
+    transient_markers = (
+        "timeout",
+        "timed out",
+        "temporarily unavailable",
+        "temporary failure",
+        "connection aborted",
+        "connection reset",
+        "network is unreachable",
+        "name resolution",
+        "failed to establish a new connection",
+        "connection refused",
+        "remote end closed connection",
+        "ssl",
+    )
+    if any(marker in text for marker in transient_markers):
+        return True
+    permanent_markers = (
+        "permission",
+        "forbidden",
+        "insufficient permissions",
+        "no existe el json",
+        "falta google_drive",
+        "invalid",
+        "not found",
+        "no existe el archivo",
+    )
+    if any(marker in text for marker in permanent_markers):
+        return False
+    return False
+
+
+def _drive_upload_operation_label(job):
+    upload_kind = str((job or {}).get("upload_kind") or "excel_upload").strip().lower()
+    if upload_kind == "evaluacion_sheet":
+        return "sheet_copy"
+    return "upload"
+
+
+def _perform_drive_upload_attempt(job):
+    attempted_at = _get_colombia_now().isoformat()
+    excel_path = str((job or {}).get("local_excel_path") or "").strip()
+    company_name = str((job or {}).get("company_name") or "").strip()
+    upload_kind = str((job or {}).get("upload_kind") or "excel_upload").strip().lower()
+    try:
+        if upload_kind == "evaluacion_sheet":
+            sheet_export = (job or {}).get("sheet_export") or {}
+            if not isinstance(sheet_export, dict):
+                raise RuntimeError("El payload de Google Sheets es inválido.")
+            remote_file_name = str((job or {}).get("remote_file_name") or "").strip()
+            if not remote_file_name:
+                remote_file_name = os.path.splitext(os.path.basename(excel_path))[0]
+            upload_result = drive_upload.publish_evaluacion_accesibilidad_sheet(
+                sheet_writes=sheet_export.get("writes") or [],
+                clear_ranges=sheet_export.get("clear_ranges") or [],
+                base_name=remote_file_name,
+                folder_name=company_name,
+            )
+        else:
+            upload_result = drive_upload.upload_excel_to_drive(
+                excel_path,
+                base_name=os.path.basename(excel_path),
+                folder_name=company_name,
+            )
+    except Exception as exc:
+        error = str(exc).strip() or repr(exc)
+        status = "pending" if _is_transient_drive_exception(exc) else "failed"
+        _update_form_completion_upload_status(
+            job.get("registro_id"),
+            upload_status=status,
+            upload_error=error,
+            upload_attempted_at=attempted_at,
+        )
+        return {
+            "status": status,
+            "error": error,
+            "attempted_at": attempted_at,
+            "output_path": excel_path,
+            "remote_url": "",
+            "drive_file_id": "",
+        }
+
+    remote_url = str(upload_result.get("webViewLink") or "").strip()
+    drive_file_id = str(upload_result.get("file_id") or "").strip()
+    uploaded_at = _get_colombia_now().isoformat()
+    _update_form_completion_upload_status(
+        job.get("registro_id"),
+        upload_status="synced",
+        upload_error="",
+        upload_attempted_at=attempted_at,
+        uploaded_at=uploaded_at,
+        path_formato=remote_url,
+        drive_file_id=drive_file_id,
+    )
+    return {
+        "status": "synced",
+        "error": "",
+        "attempted_at": attempted_at,
+        "uploaded_at": uploaded_at,
+        "output_path": excel_path,
+        "remote_url": remote_url,
+        "drive_file_id": drive_file_id,
+    }
+
+
+def _drive_upload_worker_loop():
+    while True:
+        job = None
+        with _DRIVE_UPLOAD_LOCK:
+            now = time.time()
+            for item in _DRIVE_UPLOAD_QUEUE:
+                if float(item.get("next_try_at") or 0) <= now:
+                    job = dict(item)
+                    break
+
+        if not job:
+            time.sleep(0.8)
+            continue
+
+        result = _perform_drive_upload_attempt(job)
+        _do_persist_upload = False
+        _do_persist_failed = False
+        _skip_sleep = False
+        with _DRIVE_UPLOAD_LOCK:
+            current = None
+            for item in _DRIVE_UPLOAD_QUEUE:
+                if item.get("id") == job.get("id"):
+                    current = item
+                    break
+            if current is None:
+                _skip_sleep = True
+            elif result.get("status") == "synced":
+                _remove_drive_job_locked(job)
+                _do_persist_upload = True
+                _do_persist_failed = True
+                _skip_sleep = True
+            elif result.get("status") == "failed":
+                _remove_drive_job_locked(job)
+                failed_job = dict(job)
+                failed_job["attempts"] = int(job.get("attempts") or 0) + 1
+                _store_failed_drive_job_locked(failed_job, result.get("error"))
+                _do_persist_upload = True
+                _do_persist_failed = True
+                _skip_sleep = True
+            else:
+                for idx, item in enumerate(_DRIVE_UPLOAD_QUEUE):
+                    if item.get("id") != job.get("id"):
+                        continue
+                    item["attempts"] = int(item.get("attempts") or 0) + 1
+                    item["last_error"] = str(result.get("error") or "")
+                    item["next_try_at"] = time.time() + _next_drive_retry_delay_seconds(item["attempts"])
+                    _DRIVE_UPLOAD_QUEUE[idx] = item
+                    break
+                _do_persist_upload = True
+        if _do_persist_upload:
+            _persist_drive_upload_queue_locked()
+        if _do_persist_failed:
+            _persist_drive_failed_queue_locked()
+        if _skip_sleep:
+            time.sleep(0.2)
+            continue
+        time.sleep(0.4)
+
+
+def _ensure_drive_upload_worker():
+    global _DRIVE_UPLOAD_WORKER_STARTED
+    with _DRIVE_UPLOAD_LOCK:
+        if _DRIVE_UPLOAD_WORKER_STARTED:
+            return
+        _load_drive_upload_queue_once()
+        _load_drive_failed_queue_once()
+        worker = threading.Thread(target=_drive_upload_worker_loop, daemon=True)
+        worker.start()
+        _DRIVE_UPLOAD_WORKER_STARTED = True
+
+
+def _enqueue_drive_upload_job(job):
+    _ensure_drive_upload_worker()
+    record = {
+        "id": str(uuid.uuid4()),
+        "registro_id": str((job or {}).get("registro_id") or "").strip(),
+        "form_name": str((job or {}).get("form_name") or "").strip(),
+        "company_name": str((job or {}).get("company_name") or "").strip(),
+        "local_excel_path": str((job or {}).get("local_excel_path") or "").strip(),
+        "upload_kind": str((job or {}).get("upload_kind") or "excel_upload").strip(),
+        "remote_file_name": str((job or {}).get("remote_file_name") or "").strip(),
+        "sheet_export": (job or {}).get("sheet_export") or {},
+        "attempts": int((job or {}).get("attempts") or 0),
+        "last_error": str((job or {}).get("last_error") or "").strip(),
+        "next_try_at": float((job or {}).get("next_try_at") or time.time()),
+    }
+    with _DRIVE_UPLOAD_LOCK:
+        _remove_drive_job_locked(record)
+        _DRIVE_UPLOAD_QUEUE.append(record)
+        _persist_drive_upload_queue_locked()
+        _persist_drive_failed_queue_locked()
+    return record["id"]
+
+
+def _drive_retry_all_queued_uploads():
+    _ensure_drive_upload_worker()
+    with _DRIVE_UPLOAD_LOCK:
+        if not _DRIVE_UPLOAD_QUEUE:
+            return 0
+        now = time.time()
+        for idx, item in enumerate(_DRIVE_UPLOAD_QUEUE):
+            item["next_try_at"] = now
+            _DRIVE_UPLOAD_QUEUE[idx] = item
+        _persist_drive_upload_queue_locked()
+        return len(_DRIVE_UPLOAD_QUEUE)
 
 
 def _dpapi_encrypt_text(plain_text):
@@ -637,15 +1091,10 @@ def _run_encoding_health_check():
     issues = _detect_mojibake_issues(root)
     if not issues:
         return
-    log_dir = os.path.join(root, "logs")
-    os.makedirs(log_dir, exist_ok=True)
-    log_path = os.path.join(log_dir, "encoding_health.log")
-    with open(log_path, "w", encoding="utf-8") as handle:
-        handle.write("Posibles problemas de encoding/mojibake:\n")
-        for path, lineno, snippet in issues:
-            rel = os.path.relpath(path, root)
-            handle.write(f"- {rel}:{lineno} -> {snippet}\n")
-    print(f"[ENCODING] Se detectaron posibles mojibake. Revisa: {log_path}")
+    _log_capture("Posibles problemas de encoding/mojibake detectados:")
+    for path, lineno, snippet in issues:
+        rel = os.path.relpath(path, root)
+        _log_capture(f"[ENCODING] {rel}:{lineno} -> {snippet}")
 
 
 def _digits_only(value, max_len=None):
@@ -884,6 +1333,70 @@ def _is_connectivity_exception(exc):
     return "supabase no esta disponible" in text or "timed out" in text
 
 
+def check_internet(timeout=3, log_enabled=False):
+    started_at = time.perf_counter()
+
+    def _result(ok, status_text, error_code="", detail=""):
+        payload = {
+            "ok": bool(ok),
+            "status_text": str(status_text or "").strip(),
+            "error_code": str(error_code or "").strip(),
+            "detail": str(detail or "").strip(),
+            "latency_ms": int((time.perf_counter() - started_at) * 1000),
+        }
+        if log_enabled:
+            level = "INFO" if ok else "ERROR"
+            log_app_event(
+                f"[INTERNET_PROBE] ok={payload['ok']} status={payload['status_text']!r} "
+                f"code={payload['error_code']!r} detail={payload['detail']!r} "
+                f"latency_ms={payload['latency_ms']}",
+                level=level,
+            )
+        return payload
+
+    request = urllib.request.Request(
+        "https://www.gstatic.com/generate_204",
+        headers={"User-Agent": f"{APP_NAME}/1.0"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = int(getattr(response, "status", 204) or 204)
+        return _result(True, "Conectado", "", f"http_status={status}")
+    except urllib.error.HTTPError as exc:
+        code = int(getattr(exc, "code", 0) or 0)
+        if 200 <= code < 500:
+            return _result(True, "Conectado", "", f"http_status={code}")
+        return _result(False, f"HTTP {code}", "http_error", exc)
+    except Exception as exc:
+        return _result(False, "Sin internet", "connectivity", exc)
+
+
+def _result_with_dependency_down(status_text):
+    return {
+        "ok": False,
+        "status_text": status_text,
+        "error_code": "dependency",
+        "detail": "Sin internet",
+        "latency_ms": 0,
+    }
+
+
+def probe_startup_services(log_enabled=False):
+    internet = check_internet(log_enabled=log_enabled)
+    if not internet.get("ok"):
+        return {
+            "internet": internet,
+            "supabase": _result_with_dependency_down("Sin internet"),
+            "drive": _result_with_dependency_down("Sin internet"),
+        }
+    return {
+        "internet": internet,
+        "supabase": probe_supabase_service(log_enabled=log_enabled),
+        "drive": drive_upload.probe_drive_service(log_enabled=log_enabled),
+    }
+
+
 def _is_seguimiento_form(form_name):
     return "seguimiento" in str(form_name or "").strip().lower()
 
@@ -1006,25 +1519,28 @@ def _maximize_window(window):
         pass
 
 
-def _finish_with_loading(loading, message, output_path=None):
+def _finish_with_loading(loading, message, open_target=None, open_prompt=None):
     loading.set_status("Listo")
     loading.set_progress(100)
     try:
         loading.window.grab_release()
     except tk.TclError:
         pass
-    if output_path:
+    if open_target:
         open_file = messagebox.askyesno(
             "Listo",
-            f"{message}\n\n¿Quieres abrir el archivo?",
+            f"{message}\n\n{open_prompt or '¿Quieres abrirlo?'}",
         )
         if open_file:
             try:
-                os.startfile(output_path)
+                if str(open_target).startswith("http"):
+                    webbrowser.open(open_target)
+                else:
+                    os.startfile(open_target)
             except Exception as exc:
                 messagebox.showerror(
                     "Error",
-                    f"No se pudo abrir el archivo.\n{exc}",
+                    f"No se pudo abrir el destino.\n{exc}",
                 )
     else:
         messagebox.showinfo("Listo", message)
@@ -1053,23 +1569,81 @@ def _return_to_hub(window):
         return
 
 
-def _finalize_export_flow(window, loading, output_path, form_name, company_name, form_id=None):
+def _finalize_export_flow(window, loading, completion_result):
+    result = dict(completion_result or {})
+    status = str(result.get("status") or "").strip()
+    output_path = str(result.get("output_path") or "").strip()
+    remote_url = str(result.get("remote_url") or "").strip()
+    error = str(result.get("error") or "").strip()
+
+    if status == "synced":
+        open_target = remote_url or output_path
+        message = "Formulario completado.\nEl archivo quedó publicado en Google Drive."
+        if remote_url:
+            message = f"{message}\nLink: {remote_url}"
+        elif output_path:
+            message = f"{message}\nCopia local: {output_path}"
+        _finish_with_loading(
+            loading,
+            message,
+            open_target=open_target,
+            open_prompt=(
+                "¿Quieres abrirlo en Google Drive?"
+                if remote_url
+                else "¿Quieres abrir la copia local?"
+            ),
+        )
+        return
+
+    if status == "pending":
+        message = (
+            "Formulario completado.\n"
+            "La copia local quedó guardada y la subida a Google Drive quedó pendiente.\n"
+            "La información del formulario se conserva para soporte o reintento manual.\n"
+            f"Archivo local: {output_path}"
+        )
+        if error:
+            message = f"{message}\nDetalle: {error}"
+        _finish_with_loading(
+            loading,
+            message,
+            open_target=output_path,
+            open_prompt="¿Quieres abrir la copia local?",
+        )
+        return
+
+    if status == "failed":
+        message = (
+            "Formulario completado.\n"
+            "No se pudo publicar el archivo en Google Drive.\n"
+            "La información del formulario se conserva para soporte o reintento manual.\n"
+            f"Archivo local: {output_path}"
+        )
+        if error:
+            message = f"{message}\nDetalle: {error}"
+        _finish_with_loading(
+            loading,
+            message,
+            open_target=output_path,
+            open_prompt="¿Quieres abrir la copia local?",
+        )
+        return
+
+    if status == "local":
+        _finish_with_loading(
+            loading,
+            "Formato completado. ¿Quieres abrir la copia local?",
+            open_target=output_path,
+            open_prompt="¿Quieres abrir la copia local?",
+        )
+        return
+
     _finish_with_loading(
         loading,
         f"Formulario completado.\nArchivo: {output_path}",
-        output_path,
+        open_target=output_path,
+        open_prompt="¿Quieres abrir el archivo?",
     )
-
-    hub = window.master if isinstance(window.master, HubWindow) else None
-    if hub and output_path and os.path.exists(output_path):
-        if form_id:
-            hub.track_form_finished(form_id)
-        hub.start_drive_upload(
-            output_path,
-            cleanup_local=False,
-            company_name=company_name,
-            form_name=form_name,
-        )
 
 
 def _clear_sticky_actions(window):
@@ -1193,6 +1767,46 @@ def _pack_actions(frame, pad_y=(8, FORM_PADY), pad_x=True):
         frame.after_idle(lambda: _install_sticky_actions(frame))
     except Exception:
         pass
+
+
+def _build_wizard_actions(
+    parent,
+    *,
+    back_command=None,
+    primary_command=None,
+    primary_text="Continuar",
+    left_buttons=None,
+    right_buttons=None,
+    pad_y=(8, FORM_PADY),
+    pad_x=True,
+):
+    actions = tk.Frame(parent, bg=COLOR_LIGHT_BG)
+    _pack_actions(actions, pad_y=pad_y, pad_x=pad_x)
+
+    left_specs = []
+    if callable(back_command):
+        left_specs.append(("Regresar", back_command))
+    left_specs.extend(list(left_buttons or []))
+
+    for idx, spec in enumerate(left_specs):
+        if not spec:
+            continue
+        text, command = spec[0], spec[1]
+        ttk.Button(actions, text=text, command=command).pack(
+            side="left",
+            padx=(8, 0) if idx else 0,
+        )
+
+    if callable(primary_command):
+        ttk.Button(actions, text=primary_text, command=primary_command).pack(side="right")
+
+    for spec in list(right_buttons or []):
+        if not spec:
+            continue
+        text, command = spec[0], spec[1]
+        ttk.Button(actions, text=text, command=command).pack(side="right", padx=(0, 8))
+
+    return actions
 
 
 def _section1_build_search(self, parent, include_tipo_visita=False):
@@ -2016,6 +2630,11 @@ def _clear_form_cache_safe(module):
         module.clear_form_cache()
 
 
+def _should_clear_form_cache_after_delivery(completion_result):
+    status = str((completion_result or {}).get("status") or "").strip().lower()
+    return status in {"synced", "local"}
+
+
 def _start_background_finalization(
     window,
     loading,
@@ -2024,6 +2643,7 @@ def _start_background_finalization(
     company_name,
     form_id,
     worker_fn,
+    post_delivery_fn=None,
 ):
     if getattr(window, "_finalize_in_progress", False):
         messagebox.showinfo(
@@ -2035,15 +2655,12 @@ def _start_background_finalization(
 
     window._finalize_in_progress = True
 
-    def _finish_success(output_path):
+    def _finish_success(completion_result):
         try:
             _finalize_export_flow(
                 window,
                 loading,
-                output_path,
-                form_name,
-                company_name,
-                form_id,
+                completion_result,
             )
             _return_to_hub(window)
             try:
@@ -2082,7 +2699,13 @@ def _start_background_finalization(
             except ImportError:
                 pythoncom = None
 
-            output_path = worker_fn()
+            export_result = worker_fn()
+            drive_job = None
+            if isinstance(export_result, dict):
+                output_path = str(export_result.get("output_path") or "").strip()
+                drive_job = export_result.get("drive_job")
+            else:
+                output_path = export_result
             if not output_path:
                 raise FinalizeProcessError(
                     "generando el Excel",
@@ -2093,10 +2716,38 @@ def _start_background_finalization(
                     "verificando el archivo generado",
                     RuntimeError(f"No se encontró el archivo generado:\n{output_path}"),
                 )
+            hub = window.master if isinstance(window.master, HubWindow) else None
+            if hub and form_id:
+                hub.track_form_finished(form_id)
+            if hub:
+                _update_loading_async(
+                    loading,
+                    status="Publicando en Google Drive...",
+                    progress=92,
+                )
+                completion_result = hub.finalize_form_delivery(
+                    output_path,
+                    form_name=form_name,
+                    company_name=company_name,
+                    drive_job=drive_job,
+                )
+            else:
+                completion_result = {
+                    "status": "local",
+                    "output_path": output_path,
+                    "remote_url": "",
+                    "drive_file_id": "",
+                    "error": "",
+                }
+            if post_delivery_fn is not None and _should_clear_form_cache_after_delivery(completion_result):
+                try:
+                    post_delivery_fn()
+                except Exception:
+                    pass
         except Exception as exc:
             _safe_widget_after(window, lambda exc=exc: _finish_error(exc))
         else:
-            _safe_widget_after(window, lambda path=output_path: _finish_success(path))
+            _safe_widget_after(window, lambda result=completion_result: _finish_success(result))
         finally:
             if com_initialized and pythoncom is not None:
                 try:
@@ -2155,8 +2806,12 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         last_section = presentacion_programa.get_form_cache().get("_last_section")
         if last_section == "section_1":
             self._show_section_2()
-        elif last_section in {"section_3_item_8", "section_4", "section_5"}:
+        elif last_section == "section_2":
+            self._show_section_3()
+        elif last_section in {"section_3", "section_3_item_8"}:
             self._show_section_4()
+        elif last_section in {"section_4", "section_5"}:
+            self._show_section_5()
         else:
             self._show_section_1()
         return True
@@ -2253,9 +2908,11 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
                 justify="left",
             ).grid(row=0, column=1, sticky="w", padx=8, pady=8)
 
-        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
-        _pack_actions(actions)
-        ttk.Button(actions, text="Continuar", command=self._show_section_3).pack(side="right")
+        _build_wizard_actions(
+            content,
+            back_command=self._show_section_1,
+            primary_command=self._show_section_3,
+        )
     def _show_section_3(self):
         self._clear_section_container()
         self.header_title.config(text="3. DESCRIPCI\u00d3N DE LOS TEMAS")
@@ -2342,9 +2999,11 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             if label in cached_checks:
                 var.set(bool(cached_checks.get(label)))
 
-        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
-        _pack_actions(actions)
-        ttk.Button(actions, text="Continuar", command=self._confirm_section_3).pack(side="right")
+        _build_wizard_actions(
+            content,
+            back_command=self._show_section_2,
+            primary_command=self._confirm_section_3,
+        )
     def _confirm_section_3(self):
         if not self.section3_check_vars:
             self._show_section_4()
@@ -2360,7 +3019,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
     def _show_section_4(self):
         self._clear_section_container()
         self.header_title.config(text="4. ACUERDOS Y OBSERVACIONES DE LA REUNI\u00d3N")
-        self.header_subtitle.config(text="Registra acuerdos y asistentes.")
+        self.header_subtitle.config(text="Registra acuerdos y observaciones.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
         section_frame = _build_scrollable_content(section_frame, self)
@@ -2392,6 +3051,30 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         )
         self.section4_text.pack(fill="x", pady=(6, 16))
         attach_spell_checker(self.section4_text)
+
+        cached_notes = presentacion_programa.get_form_cache().get("section_4", {}).get(
+            "acuerdos_observaciones"
+        )
+        if cached_notes:
+            self.section4_text.delete("1.0", tk.END)
+            self.section4_text.insert("1.0", cached_notes)
+
+        _build_wizard_actions(
+            section_frame,
+            back_command=self._show_section_3,
+            primary_command=self._confirm_section_4,
+        )
+
+    def _show_section_5(self):
+        self._clear_section_container()
+        self.header_title.config(text="5. ASISTENTES")
+        self.header_subtitle.config(text="Registra asistentes y agrega filas si aplica.")
+        section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
+        section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
+
+        form_container = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
+        form_container.pack(fill="both", expand=True, pady=(8, 12))
 
         asistentes_frame = tk.Frame(form_container, bg=COLOR_LIGHT_BG)
         asistentes_frame.pack(fill="x")
@@ -2429,16 +3112,12 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         cached_asistentes = presentacion_programa.get_form_cache().get("section_5", [])
         self._render_section5_asistentes(cached_asistentes)
 
-        cached_notes = presentacion_programa.get_form_cache().get("section_4", {}).get(
-            "acuerdos_observaciones"
+        _build_wizard_actions(
+            section_frame,
+            back_command=self._show_section_4,
+            primary_command=self._confirm_section_5,
+            primary_text="Finalizar",
         )
-        if cached_notes:
-            self.section4_text.delete("1.0", tk.END)
-            self.section4_text.insert("1.0", cached_notes)
-
-        actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
-        _pack_actions(actions)
-        ttk.Button(actions, text="Finalizar", command=self._confirm_section_4_5).pack(side="right")
 
     def _insert_section4_template(self, template_key):
         template_text = presentacion_programa.RUTA_INCLUSION_TEMPLATES.get(template_key, "").strip()
@@ -2451,8 +3130,16 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         self.section4_text.focus_set()
         self.section4_text.see(tk.END)
 
-    def _confirm_section_4_5(self):
+    def _confirm_section_4(self):
         notes = self.section4_text.get("1.0", tk.END).strip()
+        try:
+            presentacion_programa.confirm_section_4(notes)
+        except Exception as exc:
+            messagebox.showerror("Error", str(exc))
+            return
+        self._show_section_5()
+
+    def _confirm_section_5(self):
         asistentes = []
         for nombre_entry, cargo_entry in self.section5_entries:
             asistentes.append(
@@ -2462,7 +3149,6 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
                 }
             )
         try:
-            presentacion_programa.confirm_section_4(notes)
             presentacion_programa.confirm_section_5(asistentes)
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
@@ -2795,6 +3481,7 @@ class HubWindow(tk.Tk):
         super().__init__()
         _log_capture("==== Inicio de app ====")
         _log_capture(f"Python={sys.version.split()[0]} | platform={sys.platform} | cwd={os.getcwd()}")
+        _log_capture(f"log_root={get_logs_root()}")
         _log_capture(f"log_path={_desktop_log_path()}")
         _run_encoding_health_check()
         try:
@@ -2833,10 +3520,23 @@ class HubWindow(tk.Tk):
         self._net_status_after_id = None
         self._is_online = False
         self._net_check_thread = None
+        self._service_probe_cache = {
+            "internet": {"ok": False, "status_text": "Sin verificar", "error_code": "", "detail": ""},
+            "supabase": {"ok": False, "status_text": "Sin verificar", "error_code": "", "detail": ""},
+            "drive": {"ok": False, "status_text": "Sin verificar", "error_code": "", "detail": ""},
+        }
+        self._startup_precheck_rows = {}
+        self._startup_precheck_thread = None
+        self._startup_precheck_watchdog_id = None
+        self._startup_precheck_completed = False
+        self._service_probe_cache_time = 0.0
+        self._login_built = False
+        self._login_btn = None
 
+        _ensure_drive_upload_worker()
         self._configure_input_styles()
         self.protocol("WM_DELETE_WINDOW", self._on_app_close)
-        self._build_login()
+        self.after(0, self._build_login)
 
     def _configure_input_styles(self):
         self.option_add("*Entry.background", "white")
@@ -2850,7 +3550,126 @@ class HubWindow(tk.Tk):
         style.configure("TCombobox", fieldbackground="white", background="white")
         style.map("TCombobox", fieldbackground=[("readonly", "white")])
 
+    def _build_startup_precheck_toast(self, parent):
+        card = tk.Frame(parent, bg="white", bd=1, relief="solid", padx=8, pady=6)
+        card.pack(anchor="w", fill="x", pady=(0, 12))
+
+        header = tk.Frame(card, bg="white")
+        header.pack(fill="x")
+        tk.Label(
+            header,
+            text="Servicios",
+            font=("Arial", 9, "bold"),
+            fg=COLOR_PURPLE,
+            bg="white",
+        ).pack(side="left")
+        ttk.Button(
+            header,
+            text="Revisar de nuevo",
+            command=self._run_startup_precheck_async,
+        ).pack(side="right")
+
+        self._startup_precheck_status_var = tk.StringVar(value="Verificando servicios")
+        self._startup_precheck_status_label = tk.Label(
+            card,
+            textvariable=self._startup_precheck_status_var,
+            font=("Arial", 9),
+            fg="#888888",
+            bg="white",
+            anchor="w",
+        )
+        self._startup_precheck_status_label.pack(anchor="w", pady=(4, 0))
+
+    def _set_login_ready_state(self, ready, status_text=None):
+        self._startup_precheck_completed = bool(ready)
+        if self._login_btn is not None:
+            try:
+                self._login_btn.config(state=("normal" if ready else "disabled"))
+            except tk.TclError:
+                pass
+        if self.login_status is not None:
+            try:
+                if status_text is not None:
+                    self.login_status.config(text=status_text)
+            except tk.TclError:
+                pass
+
+    def _apply_startup_precheck_results(self, result):
+        self._service_probe_cache = dict(result or {})
+        self._service_probe_cache_time = time.time()
+        failed_service = ""
+        for service_key in ("internet", "supabase", "drive"):
+            payload = (result or {}).get(service_key) or {}
+            if not bool(payload.get("ok")):
+                failed_service = service_key.capitalize()
+                break
+        try:
+            if failed_service:
+                self._startup_precheck_status_var.set(failed_service)
+                self._startup_precheck_status_label.config(fg="#B00020")
+            else:
+                self._startup_precheck_status_var.set("Todo correcto")
+                self._startup_precheck_status_label.config(fg="#0A7D2E")
+        except tk.TclError:
+            pass
+        self._set_login_ready_state(True, "")
+
+    def _run_startup_precheck_async(self, log_enabled=False):
+        if self._startup_precheck_thread and self._startup_precheck_thread.is_alive():
+            return
+        self._set_login_ready_state(False, "Verificando servicios...")
+        try:
+            self._startup_precheck_status_var.set("Verificando servicios")
+            self._startup_precheck_status_label.config(fg="#888888")
+        except tk.TclError:
+            pass
+
+        result = {}
+        def _cancel_watchdog():
+            if self._startup_precheck_watchdog_id is not None:
+                try:
+                    self.after_cancel(self._startup_precheck_watchdog_id)
+                except tk.TclError:
+                    pass
+                self._startup_precheck_watchdog_id = None
+
+        def _worker():
+            result.update(probe_startup_services(log_enabled=log_enabled))
+
+        self._startup_precheck_thread = threading.Thread(target=_worker, daemon=True)
+        self._startup_precheck_thread.start()
+
+        _cancel_watchdog()
+        self._startup_precheck_watchdog_id = self.after(30000, self._startup_precheck_timeout)
+
+        def _finish():
+            if self._startup_precheck_thread and self._startup_precheck_thread.is_alive():
+                self.after(120, _finish)
+                return
+            _cancel_watchdog()
+            self._startup_precheck_thread = None
+            self._apply_startup_precheck_results(result)
+
+        self.after(120, _finish)
+
+    def _startup_precheck_timeout(self):
+        if self._startup_precheck_watchdog_id is not None:
+            try:
+                self.after_cancel(self._startup_precheck_watchdog_id)
+            except tk.TclError:
+                pass
+            self._startup_precheck_watchdog_id = None
+        try:
+            self._startup_precheck_status_var.set("Timeout")
+            self._startup_precheck_status_label.config(fg="#B00020")
+        except tk.TclError:
+            pass
+        self._set_login_ready_state(True, "")
+
     def _build_login(self):
+        if self._login_built:
+            return
+        self._login_built = True
         self.login_frame = tk.Frame(self, bg=COLOR_LIGHT_BG)
         self.login_frame.place(relx=0.5, rely=0.5, anchor="center")
         saved_login = _load_saved_login_credentials()
@@ -2863,6 +3682,8 @@ class HubWindow(tk.Tk):
             bg=COLOR_LIGHT_BG,
         )
         title.pack(anchor="w", pady=(0, 12))
+
+        self._build_startup_precheck_toast(self.login_frame)
 
         form = tk.Frame(self.login_frame, bg=COLOR_LIGHT_BG)
         form.pack(anchor="w")
@@ -2902,19 +3723,20 @@ class HubWindow(tk.Tk):
 
         self.login_status = tk.Label(
             self.login_frame,
-            text="",
+            text="Verificando servicios...",
             font=("Arial", 10),
             fg="#555555",
             bg=COLOR_LIGHT_BG,
         )
         self.login_status.pack(anchor="w", pady=(2, 12))
 
-        login_btn = ttk.Button(
+        self._login_btn = ttk.Button(
             self.login_frame,
             text="Ingresar",
             command=self._handle_login,
+            state="disabled",
         )
-        login_btn.pack(anchor="w")
+        self._login_btn.pack(anchor="w")
 
         forgot_btn = ttk.Button(
             self.login_frame,
@@ -2922,6 +3744,7 @@ class HubWindow(tk.Tk):
             command=self._show_forgot_password_info,
         )
         forgot_btn.pack(anchor="w", pady=(8, 0))
+        self._run_startup_precheck_async(log_enabled=True)
 
     def _show_forgot_password_info(self):
         messagebox.showinfo(
@@ -3299,36 +4122,81 @@ class HubWindow(tk.Tk):
         self._form_event_ids.pop(form_id, None)
         self._form_event_payloads.pop(form_id, None)
 
-    def track_form_completed(self, form_name, company_name, path_formato=None, drive_file_id=None):
+    def create_form_completion_record(self, form_name, company_name, output_path=None):
         if not self._should_track_usage():
-            return
+            return ""
         usuario_login = (self.current_user_profile.get("usuario_login") or self.current_user or "").strip()
         nombre_usuario = (self.current_user_profile.get("nombre_profesional") or self.current_user or "").strip()
         now_col = self._get_colombia_now()
+        registro_id = str(uuid.uuid4())
         row = {
-            "registro_id": str(uuid.uuid4()),
+            "registro_id": registro_id,
             "session_id": self.current_session_id,
             "usuario_login": usuario_login,
             "nombre_usuario": nombre_usuario,
             "nombre_formato": (form_name or "").strip(),
             "nombre_empresa": (company_name or "").strip(),
-            "path_formato": (path_formato or "").strip(),
-            "drive_file_id": (drive_file_id or "").strip(),
+            "path_formato": "",
+            "drive_file_id": "",
             "finalizado_at_colombia": now_col.strftime("%Y-%m-%d %H:%M:%S"),
             "finalizado_at_iso": now_col.isoformat(),
+            "upload_status": "pending",
+            "upload_error": "",
+            "upload_attempted_at": None,
+            "uploaded_at": None,
         }
-        self._usage_upsert_async("formatos_finalizados_il", row, on_conflict="registro_id")
+        if output_path:
+            _log_capture(
+                f"create_form_completion_record form={form_name} company={company_name} output={output_path}"
+            )
+        try:
+            self._usage_upsert_sync("formatos_finalizados_il", row, on_conflict="registro_id")
+        except Exception as exc:
+            _log_capture(f"create_form_completion_record failed registro_id={registro_id} err={exc}")
+        return registro_id
 
-    def _track_form_completed_async(self, form_name, company_name, path_formato=None, drive_file_id=None):
-        self.after(
-            0,
-            lambda: self.track_form_completed(
+    def finalize_form_delivery(self, output_path, *, form_name, company_name, drive_job=None):
+        job = {
+            "registro_id": self.create_form_completion_record(
                 form_name,
                 company_name,
-                path_formato=path_formato,
-                drive_file_id=drive_file_id,
+                output_path=output_path,
             ),
-        )
+            "form_name": form_name,
+            "company_name": company_name,
+            "local_excel_path": output_path,
+        }
+        if isinstance(drive_job, dict):
+            job.update(drive_job)
+        result = _perform_drive_upload_attempt(job)
+        result["output_path"] = output_path
+        result["registro_id"] = str(job.get("registro_id") or "").strip()
+        if not result["registro_id"]:
+            return result
+        if result.get("status") == "pending":
+            attempts = 1
+            _enqueue_drive_upload_job(
+                {
+                    **job,
+                    "attempts": attempts,
+                    "last_error": result.get("error") or "",
+                    "next_try_at": time.time() + _next_drive_retry_delay_seconds(attempts),
+                }
+            )
+        elif result.get("status") == "synced":
+            with _DRIVE_UPLOAD_LOCK:
+                _remove_drive_job_locked(job)
+                _persist_drive_upload_queue_locked()
+                _persist_drive_failed_queue_locked()
+        elif result.get("status") == "failed":
+            with _DRIVE_UPLOAD_LOCK:
+                _remove_drive_job_locked(job)
+                failed_job = dict(job)
+                failed_job["attempts"] = 1
+                _store_failed_drive_job_locked(failed_job, result.get("error"))
+                _persist_drive_upload_queue_locked()
+                _persist_drive_failed_queue_locked()
+        return result
 
     def _on_app_close(self):
         _log_capture("_on_app_close: cerrando app")
@@ -3666,13 +4534,27 @@ class HubWindow(tk.Tk):
             self._net_status_after_id = self.after(1500, self._start_network_status_monitor)
             return
 
-        result = {"online": False, "pending": 0, "failed": 0}
+        result = {
+            "services": {},
+            "supabase_pending": 0,
+            "supabase_failed": 0,
+            "drive_pending": 0,
+            "drive_failed": 0,
+        }
+        _cache_age = time.time() - (self._service_probe_cache_time or 0.0)
+        _use_cached = _cache_age < 15 and bool(self._service_probe_cache.get("internet"))
 
         def _worker():
-            result["online"] = bool(_supabase_ping())
-            stats = _get_supabase_write_queue_stats() or {}
-            result["pending"] = int(stats.get("pending") or 0)
-            result["failed"] = int(stats.get("failed") or 0)
+            if _use_cached:
+                result["services"] = {}
+            else:
+                result["services"] = probe_startup_services(log_enabled=False)
+            supabase_stats = _get_supabase_write_queue_stats() or {}
+            drive_stats = _get_drive_upload_queue_stats() or {}
+            result["supabase_pending"] = int(supabase_stats.get("pending") or 0)
+            result["supabase_failed"] = int(supabase_stats.get("failed") or 0)
+            result["drive_pending"] = int(drive_stats.get("pending") or 0)
+            result["drive_failed"] = int(drive_stats.get("failed") or 0)
 
         self._net_check_thread = threading.Thread(target=_worker, daemon=True)
         self._net_check_thread.start()
@@ -3681,18 +4563,35 @@ class HubWindow(tk.Tk):
             if self._net_check_thread and self._net_check_thread.is_alive():
                 self._net_status_after_id = self.after(200, _finish)
                 return
-            self._is_online = bool(result.get("online"))
-            pending = int(result.get("pending") or 0)
-            failed = int(result.get("failed") or 0)
+            services = result.get("services") or {}
+            if isinstance(services, dict) and services:
+                self._service_probe_cache = dict(services)
+                self._service_probe_cache_time = time.time()
+            internet_state = self._service_probe_cache.get("internet") or {}
+            supabase_state = self._service_probe_cache.get("supabase") or {}
+            drive_state = self._service_probe_cache.get("drive") or {}
+            self._is_online = bool(internet_state.get("ok"))
+            supabase_pending = int(result.get("supabase_pending") or 0)
+            supabase_failed = int(result.get("supabase_failed") or 0)
+            drive_pending = int(result.get("drive_pending") or 0)
+            drive_failed = int(result.get("drive_failed") or 0)
+            total_pending = supabase_pending + drive_pending
+            total_failed = supabase_failed + drive_failed
             if self._net_status_label:
                 state_text = "Online" if self._is_online else "Offline"
                 color = "#0A7D2E" if self._is_online else "#B00020"
+                supabase_text = "OK" if supabase_state.get("ok") else "Falla"
+                drive_text = "OK" if drive_state.get("ok") else "Falla"
                 self._net_status_label.config(
-                    text=f"Estado: {state_text} | Cola pendiente: {pending} | Fallidos: {failed}",
+                    text=(
+                        f"Internet: {state_text} | "
+                        f"Supabase: {supabase_text} ({supabase_pending}/{supabase_failed}) | "
+                        f"Drive: {drive_text} ({drive_pending}/{drive_failed})"
+                    ),
                     fg=color,
                 )
             if self._sync_panel_btn:
-                self._sync_panel_btn.config(text=f"Sincronización ({pending}/{failed})")
+                self._sync_panel_btn.config(text=f"Sincronización ({total_pending}/{total_failed})")
             self._net_status_after_id = self.after(9000, self._start_network_status_monitor)
 
         _finish()
@@ -3708,11 +4607,18 @@ class HubWindow(tk.Tk):
         frame = tk.Frame(modal, bg=COLOR_LIGHT_BG, padx=12, pady=10)
         frame.pack(fill="both", expand=True)
 
+        internet_state = self._service_probe_cache.get("internet") or {}
+        supabase_state = self._service_probe_cache.get("supabase") or {}
+        drive_state = self._service_probe_cache.get("drive") or {}
         status_txt = "Online" if self._is_online else "Offline"
         status_color = "#0A7D2E" if self._is_online else "#B00020"
         header = tk.Label(
             frame,
-            text=f"Conectividad: {status_txt}",
+            text=(
+                f"Internet: {status_txt} | "
+                f"Supabase: {'OK' if supabase_state.get('ok') else 'Falla'} | "
+                f"Drive: {'OK' if drive_state.get('ok') else 'Falla'}"
+            ),
             font=("Arial", 11, "bold"),
             fg=status_color,
             bg=COLOR_LIGHT_BG,
@@ -3736,7 +4642,7 @@ class HubWindow(tk.Tk):
             bg=COLOR_LIGHT_BG,
         ).pack(anchor="w", pady=(0, 4))
 
-        columns = ("op", "tabla", "intentos", "proximo", "error")
+        columns = ("origen", "op", "tabla", "intentos", "proximo", "error")
         pending_box = tk.Frame(frame, bg="white", bd=1, relief="solid")
         pending_box.pack(fill="both", expand=True)
         pending_scrollbar = tk.Scrollbar(pending_box, orient="vertical", width=SCROLLBAR_WIDTH)
@@ -3748,16 +4654,18 @@ class HubWindow(tk.Tk):
             yscrollcommand=pending_scrollbar.set,
         )
         pending_scrollbar.config(command=pending_tree.yview)
+        pending_tree.heading("origen", text="Origen")
         pending_tree.heading("op", text="Operación")
         pending_tree.heading("tabla", text="Tabla")
         pending_tree.heading("intentos", text="Intentos")
         pending_tree.heading("proximo", text="Próximo intento")
         pending_tree.heading("error", text="Último error")
+        pending_tree.column("origen", width=90, anchor="w")
         pending_tree.column("op", width=90, anchor="w")
         pending_tree.column("tabla", width=170, anchor="w")
         pending_tree.column("intentos", width=80, anchor="center")
         pending_tree.column("proximo", width=170, anchor="w")
-        pending_tree.column("error", width=420, anchor="w")
+        pending_tree.column("error", width=330, anchor="w")
         pending_tree.pack(side="left", fill="both", expand=True)
 
         tk.Label(
@@ -3774,21 +4682,23 @@ class HubWindow(tk.Tk):
         failed_scrollbar.pack(side="right", fill="y")
         failed_tree = ttk.Treeview(
             failed_box,
-            columns=("op", "tabla", "intentos", "failed_at", "error"),
+            columns=("origen", "op", "tabla", "intentos", "failed_at", "error"),
             show="headings",
             yscrollcommand=failed_scrollbar.set,
         )
         failed_scrollbar.config(command=failed_tree.yview)
+        failed_tree.heading("origen", text="Origen")
         failed_tree.heading("op", text="Operación")
         failed_tree.heading("tabla", text="Tabla")
         failed_tree.heading("intentos", text="Intentos")
         failed_tree.heading("failed_at", text="Falló en")
         failed_tree.heading("error", text="Error")
+        failed_tree.column("origen", width=90, anchor="w")
         failed_tree.column("op", width=90, anchor="w")
         failed_tree.column("tabla", width=170, anchor="w")
         failed_tree.column("intentos", width=80, anchor="center")
         failed_tree.column("failed_at", width=170, anchor="w")
-        failed_tree.column("error", width=420, anchor="w")
+        failed_tree.column("error", width=330, anchor="w")
         failed_tree.pack(side="left", fill="both", expand=True)
 
         def _fmt_epoch(value):
@@ -3806,54 +4716,105 @@ class HubWindow(tk.Tk):
             for item in failed_tree.get_children():
                 failed_tree.delete(item)
 
-            pending_rows = _get_supabase_write_queue_snapshot(limit=500)
-            failed_rows = _get_supabase_failed_writes_snapshot(limit=500)
+            internet_state = self._service_probe_cache.get("internet") or {}
+            supabase_state = self._service_probe_cache.get("supabase") or {}
+            drive_state = self._service_probe_cache.get("drive") or {}
+            header.config(
+                text=(
+                    f"Internet: {'Online' if self._is_online else 'Offline'} | "
+                    f"Supabase: {'OK' if supabase_state.get('ok') else 'Falla'} | "
+                    f"Drive: {'OK' if drive_state.get('ok') else 'Falla'}"
+                ),
+                fg="#0A7D2E" if self._is_online else "#B00020",
+            )
+
+            supabase_pending_rows = _get_supabase_write_queue_snapshot(limit=500)
+            supabase_failed_rows = _get_supabase_failed_writes_snapshot(limit=500)
+            drive_pending_rows = _get_drive_upload_queue_snapshot(limit=500)
+            drive_failed_rows = _get_drive_failed_uploads_snapshot(limit=500)
+
+            pending_rows = []
+            for row in supabase_pending_rows:
+                pending_rows.append(
+                    (
+                        "Supabase",
+                        row.get("op") or "-",
+                        row.get("table") or "-",
+                        int(row.get("attempts") or 0),
+                        _fmt_epoch(row.get("next_try_at")),
+                        (row.get("last_error") or "")[:280],
+                    )
+                )
+            for row in drive_pending_rows:
+                pending_rows.append(
+                    (
+                        "Drive",
+                        _drive_upload_operation_label(row),
+                        f"{row.get('form_name') or '-'} | {row.get('company_name') or '-'}",
+                        int(row.get("attempts") or 0),
+                        _fmt_epoch(row.get("next_try_at")),
+                        (row.get("last_error") or "")[:280],
+                    )
+                )
+
+            failed_rows = []
+            for row in supabase_failed_rows:
+                failed_rows.append(
+                    (
+                        "Supabase",
+                        row.get("op") or "-",
+                        row.get("table") or "-",
+                        int(row.get("attempts") or 0),
+                        _fmt_epoch(row.get("failed_at")),
+                        (row.get("error") or "")[:280],
+                    )
+                )
+            for row in drive_failed_rows:
+                failed_rows.append(
+                    (
+                        "Drive",
+                        _drive_upload_operation_label(row),
+                        f"{row.get('form_name') or '-'} | {row.get('company_name') or '-'}",
+                        int(row.get("attempts") or 0),
+                        _fmt_epoch(row.get("failed_at")),
+                        (row.get("error") or "")[:280],
+                    )
+                )
 
             summary_lbl.config(
-                text=f"Pendientes: {len(pending_rows)} | Fallidos: {len(failed_rows)}"
+                text=(
+                    f"Supabase pendientes/fallidos: {len(supabase_pending_rows)}/{len(supabase_failed_rows)} | "
+                    f"Drive pendientes/fallidos: {len(drive_pending_rows)}/{len(drive_failed_rows)} | "
+                    f"Último check: Internet {internet_state.get('status_text') or '-'} / "
+                    f"Supabase {supabase_state.get('status_text') or '-'} / "
+                    f"Drive {drive_state.get('status_text') or '-'}"
+                )
             )
 
             if not pending_rows:
-                pending_tree.insert("", "end", values=("-", "-", "-", "-", "Sin pendientes"))
+                pending_tree.insert("", "end", values=("-", "-", "-", "-", "-", "Sin pendientes"))
             else:
                 for row in pending_rows:
-                    pending_tree.insert(
-                        "",
-                        "end",
-                        values=(
-                            row.get("op") or "-",
-                            row.get("table") or "-",
-                            int(row.get("attempts") or 0),
-                            _fmt_epoch(row.get("next_try_at")),
-                            (row.get("last_error") or "")[:280],
-                        ),
-                    )
+                    pending_tree.insert("", "end", values=row)
 
             if not failed_rows:
-                failed_tree.insert("", "end", values=("-", "-", "-", "-", "Sin fallidos"))
+                failed_tree.insert("", "end", values=("-", "-", "-", "-", "-", "Sin fallidos"))
             else:
                 for row in failed_rows:
-                    failed_tree.insert(
-                        "",
-                        "end",
-                        values=(
-                            row.get("op") or "-",
-                            row.get("table") or "-",
-                            int(row.get("attempts") or 0),
-                            _fmt_epoch(row.get("failed_at")),
-                            (row.get("error") or "")[:280],
-                        ),
-                    )
+                    failed_tree.insert("", "end", values=row)
 
         def _retry_now():
-            count = _supabase_retry_all_queued_writes()
-            self.show_toast(f"Reintento forzado para {count} pendientes")
+            supabase_count = _supabase_retry_all_queued_writes()
+            drive_count = _drive_retry_all_queued_uploads()
+            self.show_toast(
+                f"Reintento forzado | Supabase: {supabase_count} | Drive: {drive_count}"
+            )
             _reload_rows()
             self._start_network_status_monitor()
 
         actions = tk.Frame(frame, bg=COLOR_LIGHT_BG)
         actions.pack(fill="x", pady=(10, 0))
-        ttk.Button(actions, text="Reintentar ahora", command=_retry_now).pack(side="left")
+        ttk.Button(actions, text="Reintentar pendientes", command=_retry_now).pack(side="left")
         ttk.Button(actions, text="Actualizar", command=_reload_rows).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Cerrar", command=modal.destroy).pack(side="right")
 
@@ -4790,48 +5751,6 @@ class HubWindow(tk.Tk):
 
     def _toast_async(self, text, duration_ms=5000):
         self.after(0, lambda: self.show_toast(text, duration_ms))
-
-    def start_drive_upload(self, excel_path, cleanup_local=False, company_name=None, form_name=None):
-        def _run():
-            path_formato = ""
-            drive_file_id = ""
-            self._toast_async("Subiendo Excel a Google Drive...", None)
-            try:
-                upload_result = drive_upload.upload_excel_to_drive(
-                    excel_path,
-                    base_name=os.path.basename(excel_path),
-                    folder_name=company_name,
-                )
-                path_formato = str(upload_result.get("webViewLink") or "").strip()
-                drive_file_id = str(upload_result.get("file_id") or "").strip()
-                self._track_form_completed_async(
-                    form_name,
-                    company_name,
-                    path_formato=path_formato,
-                    drive_file_id=drive_file_id,
-                )
-                self._toast_async("Excel subido a Google Drive", 5000)
-            except Exception as exc:
-                self._track_form_completed_async(
-                    form_name,
-                    company_name,
-                    path_formato="",
-                    drive_file_id="",
-                )
-                self._toast_async("Error al subir Excel a Google Drive", 5000)
-                self.after(
-                    0,
-                    lambda exc=exc: messagebox.showwarning(
-                        "Google Drive",
-                        f"No se pudo subir el Excel a Google Drive.\n\n{exc}",
-                    ),
-                )
-            finally:
-                if cleanup_local and excel_path and os.path.exists(excel_path):
-                    try:
-                        os.remove(excel_path)
-                    except OSError:
-                        pass
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -6414,7 +7333,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         ttk.Button(actions, text="Regresar", command=self._show_section_7).pack(side="left")
-        ttk.Button(actions, text="Continuar", command=self._confirm_section_8).pack(side="right")
+        ttk.Button(actions, text="Finalizar", command=self._confirm_section_8).pack(side="right")
 
     def _get_section8_asistentes_values(self):
         values = []
@@ -6505,6 +7424,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         cache = cache_snapshot
         section_1 = cache.get("section_1", {})
         company_name = section_1.get("nombre_empresa")
+        sheet_export = evaluacion_accesibilidad.build_google_sheet_export_payload(cache_snapshot)
 
         def _worker():
             def _on_progress(section_id):
@@ -6518,10 +7438,18 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     progress=5 + int((idx / total_steps) * 90),
                 )
 
-            return _raise_finalize_stage(
+            output_path = _raise_finalize_stage(
                 "guardando el Excel",
                 lambda: evaluacion_accesibilidad.export_to_excel(progress_callback=_on_progress),
             )
+            return {
+                "output_path": output_path,
+                "drive_job": {
+                    "upload_kind": "evaluacion_sheet",
+                    "remote_file_name": evaluacion_accesibilidad.build_output_base_name(cache_snapshot),
+                    "sheet_export": sheet_export,
+                },
+            }
 
         _start_background_finalization(
             self,
@@ -6855,9 +7783,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             self._show_section_6()
         elif last_section == "section_6":
             self._show_section_7()
-        elif last_section == "section_7":
-            self._show_section_8()
-        elif last_section == "section_8":
+        elif last_section in {"section_7", "section_8"}:
             self._show_section_8()
         else:
             self._show_section_1()
@@ -7066,7 +7992,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         ttk.Button(actions, text="Regresar", command=self._show_section_1).pack(side="left")
-        ttk.Button(actions, text="Finalizar", command=self._confirm_section_2).pack(side="right")
+        ttk.Button(actions, text="Continuar", command=self._confirm_section_2).pack(side="right")
 
     def _prefill_section2_fields(self):
         cache = condiciones_vacante.get_form_cache().get("section_2", {})
@@ -7195,7 +8121,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         ttk.Button(actions, text="Regresar", command=self._show_section_2).pack(side="left")
-        ttk.Button(actions, text="Finalizar", command=self._confirm_section_2_1).pack(side="right")
+        ttk.Button(actions, text="Continuar", command=self._confirm_section_2_1).pack(side="right")
 
     def _prefill_section2_1_fields(self):
         cache = condiciones_vacante.get_form_cache().get("section_2_1", {})
@@ -7525,7 +8451,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         ttk.Button(actions, text="Regresar", command=self._show_section_4).pack(side="left")
-        ttk.Button(actions, text="Finalizar", command=self._confirm_section_5).pack(side="right")
+        ttk.Button(actions, text="Continuar", command=self._confirm_section_5).pack(side="right")
 
     def _prefill_section5_fields(self):
         cache = condiciones_vacante.get_form_cache().get("section_5", {})
@@ -7917,9 +8843,11 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         if last_section == "section_1":
             self._show_section_2()
         elif last_section == "section_2":
-            self._show_section_2()
-        elif last_section in {"section_5", "section_6"}:
             self._show_section_5()
+        elif last_section == "section_5":
+            self._show_section_5()
+        elif last_section == "section_6":
+            self._show_section_6()
         else:
             self._show_section_1()
         return True
@@ -8687,7 +9615,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         ttk.Button(actions, text="Regresar", command=self._show_section_1).pack(
             side="left", padx=8
         )
-        ttk.Button(actions, text="Guardar", command=self._confirm_section_2).pack(
+        ttk.Button(actions, text="Continuar", command=self._confirm_section_2).pack(
             side="right"
         )
     def _confirm_section_2(self):
@@ -8712,7 +9640,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
     def _show_section_5(self):
         self._clear_section_container()
         self.header_title.config(text="5. AJUSTES RAZONABLES / RECOMENDACIONES")
-        self.header_subtitle.config(text="Completa ajustes y asistentes.")
+        self.header_subtitle.config(text="Completa ajustes y recomendaciones.")
 
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
@@ -8762,13 +9690,51 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             nota.delete(0, tk.END)
             nota.insert(0, cache.get("nota", ""))
 
-        tk.Label(
+        _build_wizard_actions(
             content,
-            text=seleccion_incluyente.SECTION_6["title"],
-            font=FONT_SECTION,
-            bg=COLOR_LIGHT_BG,
-            anchor="w",
-        ).pack(anchor="w", pady=(8, 4))
+            back_command=self._show_section_2,
+            primary_command=self._confirm_section_5,
+        )
+
+    def _insert_seleccion_section5_template(self, template_key):
+        text_widget = self.section5_fields.get("ajustes_recomendaciones")
+        if not text_widget:
+            return
+        template_text = seleccion_incluyente.AJUSTES_ENTREVISTA_TEMPLATES.get(template_key, "").strip()
+        if not template_text:
+            return
+        current_text = text_widget.get("1.0", tk.END).strip()
+        if current_text:
+            text_widget.insert(tk.END, "\n\n")
+        text_widget.insert(tk.END, template_text)
+        text_widget.focus_set()
+        text_widget.see(tk.END)
+
+    def _confirm_section_5(self):
+        payload = {
+            "ajustes_recomendaciones": self.section5_fields["ajustes_recomendaciones"]
+            .get("1.0", tk.END)
+            .strip(),
+            "nota": self.section5_fields["nota"].get().strip(),
+        }
+        try:
+            seleccion_incluyente.confirm_section_5(payload)
+        except Exception as exc:
+            messagebox.showerror("Error", str(exc))
+            return
+        self._show_section_6()
+
+    def _show_section_6(self):
+        self._clear_section_container()
+        self.header_title.config(text=seleccion_incluyente.SECTION_6["title"])
+        self.header_subtitle.config(text="Registra asistentes y agrega filas si aplica.")
+
+        section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
+        section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
+
+        content = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
+        content.pack(fill="both", expand=True)
 
         table = tk.Frame(content, bg=COLOR_LIGHT_BG)
         table.pack(fill="x", padx=4, pady=(0, 8))
@@ -8820,45 +9786,23 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         add_btn.grid(row=len(self.section6_rows) + 1, column=0, sticky="w", pady=(8, 0))
 
         cached_rows = seleccion_incluyente.get_form_cache().get("section_6", [])
+        while len(self.section6_rows) < len(cached_rows):
+            _add_asistente_row()
         for idx, entry in enumerate(cached_rows):
-            if idx >= len(self.section6_rows):
-                break
             nombre_entry, cargo_entry = self.section6_rows[idx]
             nombre_entry.delete(0, tk.END)
             nombre_entry.insert(0, entry.get("nombre", ""))
             cargo_entry.delete(0, tk.END)
             cargo_entry.insert(0, entry.get("cargo", ""))
 
-        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
-        _pack_actions(actions)
-        ttk.Button(actions, text="Regresar", command=self._show_section_2).pack(
-            side="left"
-        )
-        ttk.Button(actions, text="Finalizar", command=self._confirm_section_5).pack(
-            side="right"
+        _build_wizard_actions(
+            content,
+            back_command=self._show_section_5,
+            primary_command=self._confirm_section_6,
+            primary_text="Finalizar",
         )
 
-    def _insert_seleccion_section5_template(self, template_key):
-        text_widget = self.section5_fields.get("ajustes_recomendaciones")
-        if not text_widget:
-            return
-        template_text = seleccion_incluyente.AJUSTES_ENTREVISTA_TEMPLATES.get(template_key, "").strip()
-        if not template_text:
-            return
-        current_text = text_widget.get("1.0", tk.END).strip()
-        if current_text:
-            text_widget.insert(tk.END, "\n\n")
-        text_widget.insert(tk.END, template_text)
-        text_widget.focus_set()
-        text_widget.see(tk.END)
-
-    def _confirm_section_5(self):
-        payload = {
-            "ajustes_recomendaciones": self.section5_fields["ajustes_recomendaciones"]
-            .get("1.0", tk.END)
-            .strip(),
-            "nota": self.section5_fields["nota"].get().strip(),
-        }
+    def _confirm_section_6(self):
         asistentes = []
         for nombre_entry, cargo_entry in self.section6_rows:
             asistentes.append(
@@ -8868,7 +9812,6 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 }
             )
         try:
-            seleccion_incluyente.confirm_section_5(payload)
             seleccion_incluyente.confirm_section_6(asistentes)
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
@@ -8895,10 +9838,6 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 "guardando en Supabase",
                 seleccion_incluyente.sync_usuarios_reca,
             )
-            _raise_finalize_stage(
-                "limpiando la cache local",
-                lambda: _clear_form_cache_safe(seleccion_incluyente),
-            )
             return output_path
 
         _start_background_finalization(
@@ -8908,6 +9847,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             company_name=company_name,
             form_id="seleccion_incluyente",
             worker_fn=_worker,
+            post_delivery_fn=lambda: _clear_form_cache_safe(seleccion_incluyente),
         )
 
     def _format_birthdate(self, _event, fecha_widget, edad_widget):
@@ -9102,8 +10042,10 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             self._show_section_2()
         elif last_section == "section_2":
             self._show_section_6()
-        elif last_section in {"section_6", "section_7"}:
+        elif last_section == "section_6":
             self._show_section_6()
+        elif last_section == "section_7":
+            self._show_section_7()
         else:
             self._show_section_1()
         return True
@@ -9715,14 +10657,14 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         ttk.Button(actions, text="Regresar", command=self._show_section_1).pack(
             side="left", padx=8
         )
-        ttk.Button(actions, text="Guardar", command=self._confirm_section_2).pack(
+        ttk.Button(actions, text="Continuar", command=self._confirm_section_2).pack(
             side="right"
         )
 
     def _show_section_6(self):
         self._clear_section_container()
         self.header_title.config(text="6. AJUSTES RAZONABLES")
-        self.header_subtitle.config(text="Completa ajustes y asistentes.")
+        self.header_subtitle.config(text="Completa ajustes razonables.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
         section_frame = _build_scrollable_content(section_frame, self)
@@ -9749,13 +10691,55 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             ajustes.delete("1.0", tk.END)
             ajustes.insert("1.0", cache.get("ajustes_recomendaciones", ""))
 
-        tk.Label(
+        _build_wizard_actions(
             content,
-            text="7. ASISTENTES",
-            font=FONT_SECTION,
-            bg=COLOR_LIGHT_BG,
-            anchor="w",
-        ).pack(anchor="w", pady=(8, 4))
+            back_command=self._show_section_2,
+            primary_command=self._confirm_section_6,
+        )
+
+    def _confirm_section_2(self):
+        payload = []
+        for fields in self.oferente_blocks:
+            entry = {}
+            for key, widget in fields.items():
+                if isinstance(widget, ttk.Combobox):
+                    entry[key] = widget.get().strip()
+                elif isinstance(widget, tk.Text):
+                    entry[key] = widget.get("1.0", tk.END).strip()
+                else:
+                    entry[key] = widget.get().strip()
+            payload.append(entry)
+        try:
+            contratacion_incluyente.confirm_section_2(payload)
+        except Exception as exc:
+            messagebox.showerror("Error", str(exc))
+            return
+        self._show_section_6()
+
+    def _confirm_section_6(self):
+        payload = {
+            "ajustes_recomendaciones": self.section6_fields["ajustes_recomendaciones"]
+            .get("1.0", tk.END)
+            .strip(),
+        }
+        try:
+            contratacion_incluyente.confirm_section_6(payload)
+        except Exception as exc:
+            messagebox.showerror("Error", str(exc))
+            return
+        self._show_section_7()
+
+    def _show_section_7(self):
+        self._clear_section_container()
+        self.header_title.config(text="7. ASISTENTES")
+        self.header_subtitle.config(text="Registra asistentes y agrega filas si aplica.")
+
+        section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
+        section_frame.pack(fill="both", expand=True)
+        section_frame = _build_scrollable_content(section_frame, self)
+
+        content = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
+        content.pack(fill="both", expand=True)
 
         table = tk.Frame(content, bg=COLOR_LIGHT_BG)
         table.pack(fill="x", padx=4, pady=(0, 8))
@@ -9787,6 +10771,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             nombre_entry.grid(row=row_idx, column=0, sticky="w", pady=4, padx=(0, 12))
             cargo_entry.grid(row=row_idx, column=1, sticky="w", pady=4)
             self.section7_rows.append((nombre_entry, cargo_entry))
+
         _add_asistente_row()
         _add_asistente_row()
         _add_asistente_row()
@@ -9801,50 +10786,21 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             cargo_entry.delete(0, tk.END)
             cargo_entry.insert(0, entry.get("cargo", ""))
 
-        action_row = tk.Frame(content, bg=COLOR_LIGHT_BG)
-        _pack_actions(action_row)
-        ttk.Button(action_row, text="Agregar asistente", command=_add_asistente_row).pack(
-            side="left"
-        )
-        ttk.Button(action_row, text="Regresar", command=self._show_section_2).pack(
-            side="left", padx=8
-        )
-        ttk.Button(action_row, text="Finalizar", command=self._confirm_section_6).pack(
-            side="left", padx=8
+        _build_wizard_actions(
+            content,
+            back_command=self._show_section_6,
+            primary_command=self._confirm_section_7,
+            primary_text="Finalizar",
+            left_buttons=[("Agregar asistente", _add_asistente_row)],
         )
 
-    def _confirm_section_2(self):
-        payload = []
-        for fields in self.oferente_blocks:
-            entry = {}
-            for key, widget in fields.items():
-                if isinstance(widget, ttk.Combobox):
-                    entry[key] = widget.get().strip()
-                elif isinstance(widget, tk.Text):
-                    entry[key] = widget.get("1.0", tk.END).strip()
-                else:
-                    entry[key] = widget.get().strip()
-            payload.append(entry)
-        try:
-            contratacion_incluyente.confirm_section_2(payload)
-        except Exception as exc:
-            messagebox.showerror("Error", str(exc))
-            return
-        self._show_section_6()
-
-    def _confirm_section_6(self):
-        payload = {
-            "ajustes_recomendaciones": self.section6_fields["ajustes_recomendaciones"]
-            .get("1.0", tk.END)
-            .strip(),
-        }
+    def _confirm_section_7(self):
         asistentes = []
         for nombre_entry, cargo_entry in self.section7_rows:
             nombre = nombre_entry.get().strip()
             cargo = cargo_entry.get().strip()
             asistentes.append({"nombre": nombre, "cargo": cargo})
         try:
-            contratacion_incluyente.confirm_section_6(payload)
             contratacion_incluyente.confirm_section_7(asistentes)
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
@@ -9870,10 +10826,6 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 "guardando en Supabase",
                 contratacion_incluyente.sync_usuarios_reca,
             )
-            _raise_finalize_stage(
-                "limpiando la cache local",
-                lambda: _clear_form_cache_safe(contratacion_incluyente),
-            )
             return output_path
 
         _start_background_finalization(
@@ -9883,6 +10835,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             company_name=company_name,
             form_id="contratacion_incluyente",
             worker_fn=_worker,
+            post_delivery_fn=lambda: _clear_form_cache_safe(contratacion_incluyente),
         )
 
     def _build_search(self, parent):
@@ -10784,10 +11737,6 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
                 "exportando el Excel",
                 lambda: induccion_organizacional.export_to_excel(clear_cache=False),
             )
-            _raise_finalize_stage(
-                "limpiando la cache local",
-                lambda: _clear_form_cache_safe(induccion_organizacional),
-            )
             return output_path
 
         _start_background_finalization(
@@ -10797,6 +11746,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
             company_name=company_name,
             form_id="induccion_organizacional",
             worker_fn=_worker,
+            post_delivery_fn=lambda: _clear_form_cache_safe(induccion_organizacional),
         )
 
     def _close_to_hub(self):
@@ -11690,10 +12640,6 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
                 "exportando el Excel",
                 lambda: induccion_operativa.export_to_excel(clear_cache=False),
             )
-            _raise_finalize_stage(
-                "limpiando la cache local",
-                lambda: _clear_form_cache_safe(induccion_operativa),
-            )
             return output_path
 
         _start_background_finalization(
@@ -11703,6 +12649,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
             company_name=company_name,
             form_id="induccion_operativa",
             worker_fn=_worker,
+            post_delivery_fn=lambda: _clear_form_cache_safe(induccion_operativa),
         )
 
     def _close_to_hub(self):
@@ -11974,7 +12921,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
     def _show_section_4(self):
         self._clear_section_container()
         self.header_title.config(text="4. REGISTRO FOTOGRAFICO")
-        self.header_subtitle.config(text="Registra acuerdos y asistentes.")
+        self.header_subtitle.config(text="Esta seccion se conserva para registro fotografico en el acta.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
         section_frame = _build_scrollable_content(section_frame, self)
@@ -12126,10 +13073,6 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
                 "exportando el Excel",
                 lambda: sensibilizacion.export_to_excel(clear_cache=False),
             )
-            _raise_finalize_stage(
-                "limpiando la cache local",
-                lambda: _clear_form_cache_safe(sensibilizacion),
-            )
             return output_path
 
         _start_background_finalization(
@@ -12139,6 +13082,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
             company_name=company_name,
             form_id="sensibilizacion",
             worker_fn=_worker,
+            post_delivery_fn=lambda: _clear_form_cache_safe(sensibilizacion),
         )
 
     def _close_to_hub(self):
@@ -13240,6 +14184,9 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
 
 
 if __name__ == "__main__":
+    if not _acquire_single_instance_mutex():
+        _show_single_instance_warning()
+        raise SystemExit(0)
     app = HubWindow()
     try:
         app.mainloop()
@@ -13248,6 +14195,8 @@ if __name__ == "__main__":
             app.destroy()
         except Exception:
             pass
+    finally:
+        _release_single_instance_mutex()
 
 
 

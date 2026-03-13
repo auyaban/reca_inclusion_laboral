@@ -13,6 +13,7 @@ import base64
 import urllib.parse
 import urllib.request
 import urllib.error
+from logging_utils import log_supabase_event
 
 _SUPABASE_SESSION_LOCK = threading.Lock()
 _SUPABASE_SESSION = {
@@ -20,6 +21,13 @@ _SUPABASE_SESSION = {
     "refresh_token": "",
     "expires_at": 0.0,
 }
+
+
+def _log_supabase(message, level="INFO"):
+    try:
+        log_supabase_event(message, level=level)
+    except Exception:
+        pass
 
 
 def _resolve_env_candidates(env_path=".env"):
@@ -229,9 +237,11 @@ def _supabase_get_access_token(env_path=".env"):
 
 
 def _supabase_auth_password_login(email, password, env_path=".env"):
+    email_value = str(email or "").strip()
+    _log_supabase(f"AUTH password_login start email={email_value!r}")
     supabase_url, supabase_key = _load_supabase_credentials(env_path)
     url = f"{supabase_url.rstrip('/')}/auth/v1/token?grant_type=password"
-    payload = {"email": str(email or "").strip(), "password": str(password or "")}
+    payload = {"email": email_value, "password": str(password or "")}
     body = json.dumps(payload).encode("utf-8")
     headers = _supabase_headers(supabase_key)
     headers["Content-Type"] = "application/json"
@@ -243,13 +253,29 @@ def _supabase_auth_password_login(email, password, env_path=".env"):
     except urllib.error.HTTPError as exc:
         code = int(getattr(exc, "code", 0) or 0)
         if code in {400, 401}:
+            _log_supabase(
+                f"AUTH password_login invalid_credentials email={email_value!r}",
+                level="ERROR",
+            )
             raise RuntimeError("Usuario y contraseña incorrectos.") from exc
+        _log_supabase(
+            f"AUTH password_login http_error email={email_value!r} error={exc}",
+            level="ERROR",
+        )
         raise RuntimeError(_format_supabase_error("No se pudo autenticar con Supabase", exc)) from exc
     except Exception as exc:
+        _log_supabase(
+            f"AUTH password_login error email={email_value!r} error={exc}",
+            level="ERROR",
+        )
         raise RuntimeError(_format_supabase_error("No se pudo autenticar con Supabase", exc)) from exc
 
     access_token = (data.get("access_token") or "").strip()
     if not access_token:
+        _log_supabase(
+            f"AUTH password_login missing_token email={email_value!r}",
+            level="ERROR",
+        )
         raise RuntimeError("No se recibió access token de Supabase Auth.")
     _set_supabase_session(
         access_token=access_token,
@@ -257,10 +283,12 @@ def _supabase_auth_password_login(email, password, env_path=".env"):
         expires_at=data.get("expires_at"),
         expires_in=data.get("expires_in"),
     )
+    _log_supabase(f"AUTH password_login success email={email_value!r}")
     return data
 
 
 def _supabase_auth_update_password(new_password, env_path=".env"):
+    _log_supabase("AUTH update_password start")
     supabase_url, supabase_key = _load_supabase_credentials(env_path)
     token = _supabase_get_access_token(env_path=env_path)
     if not token:
@@ -277,6 +305,7 @@ def _supabase_auth_update_password(new_password, env_path=".env"):
         try:
             with urllib.request.urlopen(request, timeout=45) as response:
                 raw = response.read().decode("utf-8")
+            _log_supabase("AUTH update_password success")
             return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as exc:
             last_exc = exc
@@ -289,10 +318,12 @@ def _supabase_auth_update_password(new_password, env_path=".env"):
         except Exception as exc:
             last_exc = exc
             break
+    _log_supabase(f"AUTH update_password error={last_exc}", level="ERROR")
     raise RuntimeError(_format_supabase_error("No se pudo actualizar la contraseña en Auth", last_exc)) from last_exc
 
 
 def _supabase_rpc(function_name, params=None, env_path=".env", use_session=True):
+    _log_supabase(f"RPC start fn={function_name} use_session={bool(use_session)}")
     supabase_url, supabase_key = _load_supabase_credentials(env_path)
     url = f"{supabase_url.rstrip('/')}/rest/v1/rpc/{function_name}"
     body = json.dumps(params or {}).encode("utf-8")
@@ -306,6 +337,7 @@ def _supabase_rpc(function_name, params=None, env_path=".env", use_session=True)
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
                 raw = response.read().decode("utf-8")
+            _log_supabase(f"RPC success fn={function_name}")
             return json.loads(raw) if raw else None
         except urllib.error.HTTPError as exc:
             last_exc = exc
@@ -321,10 +353,14 @@ def _supabase_rpc(function_name, params=None, env_path=".env", use_session=True)
         except Exception as exc:
             last_exc = exc
             break
+    _log_supabase(f"RPC error fn={function_name} error={last_exc}", level="ERROR")
     raise RuntimeError(_format_supabase_error(f"No se pudo ejecutar RPC {function_name}", last_exc)) from last_exc
 
 
 def _supabase_get(table, params, env_path=".env"):
+    _log_supabase(
+        f"GET start table={table} params={json.dumps(params or {}, ensure_ascii=False, sort_keys=True)}"
+    )
     supabase_url, supabase_key = _load_supabase_credentials(env_path)
     query = urllib.parse.urlencode(params)
     url = f"{supabase_url.rstrip('/')}/rest/v1/{table}?{query}"
@@ -351,6 +387,7 @@ def _supabase_get(table, params, env_path=".env"):
                     )
             except Exception:
                 pass
+            _log_supabase(f"GET success table={table} rows={len(data) if isinstance(data, list) else 0}")
             return data
         except urllib.error.HTTPError as exc:
             last_error = exc
@@ -372,7 +409,9 @@ def _supabase_get(table, params, env_path=".env"):
     except Exception:
         cached = None
     if cached is not None:
+        _log_supabase(f"GET cache_hit table={table}")
         return cached
+    _log_supabase(f"GET error table={table} error={last_error}", level="ERROR")
     raise RuntimeError(_format_supabase_error("Supabase no esta disponible", last_error)) from last_error
 
 
@@ -769,6 +808,10 @@ def _supabase_write_worker_loop():
         except Exception as exc:
             with _WRITE_QUEUE_LOCK:
                 if not _is_transient_supabase_exception(exc):
+                    _log_supabase(
+                        f"QUEUE failed_non_retryable op={job.get('op')} table={job.get('table')} error={exc}",
+                        level="ERROR",
+                    )
                     _FAILED_WRITE_QUEUE.append(
                         {
                             "id": job.get("id"),
@@ -800,6 +843,11 @@ def _supabase_write_worker_loop():
                     item["next_try_at"] = time.time() + _next_retry_delay_seconds(item["attempts"])
                     _WRITE_QUEUE[idx] = item
                     _persist_write_queue_locked()
+                    _log_supabase(
+                        f"QUEUE retry_scheduled op={job.get('op')} table={job.get('table')} "
+                        f"attempts={item['attempts']} error={exc}",
+                        level="ERROR",
+                    )
                     break
             time.sleep(0.4)
             continue
@@ -807,6 +855,7 @@ def _supabase_write_worker_loop():
         with _WRITE_QUEUE_LOCK:
             _WRITE_QUEUE[:] = [item for item in _WRITE_QUEUE if item.get("id") != job.get("id")]
             _persist_write_queue_locked()
+        _log_supabase(f"QUEUE success op={job.get('op')} table={job.get('table')} id={job.get('id')}")
 
 
 def _ensure_write_worker():
@@ -832,6 +881,9 @@ def _enqueue_write_job(job):
     with _WRITE_QUEUE_LOCK:
         _WRITE_QUEUE.append(record)
         _persist_write_queue_locked()
+    _log_supabase(
+        f"QUEUE enqueue op={record.get('op')} table={record.get('table')} id={record.get('id')}"
+    )
     return record["id"]
 
 
@@ -888,10 +940,36 @@ def _supabase_ping(env_path=".env", timeout=4):
     Verifica conectividad básica con Supabase sin depender de una tabla específica.
     Devuelve True si hay conexión alcanzable, False en caso contrario.
     """
+    result = probe_supabase_service(env_path=env_path, timeout=timeout, log_enabled=False)
+    return bool(result.get("ok"))
+
+
+def probe_supabase_service(env_path=".env", timeout=4, log_enabled=False):
+    started_at = time.perf_counter()
+
+    def _result(ok, status_text, error_code="", detail=""):
+        payload = {
+            "ok": bool(ok),
+            "status_text": str(status_text or "").strip(),
+            "error_code": str(error_code or "").strip(),
+            "detail": str(detail or "").strip(),
+            "latency_ms": int((time.perf_counter() - started_at) * 1000),
+        }
+        if log_enabled:
+            level = "INFO" if ok else "ERROR"
+            _log_supabase(
+                f"PROBE ok={payload['ok']} status={payload['status_text']!r} "
+                f"code={payload['error_code']!r} detail={payload['detail']!r} "
+                f"latency_ms={payload['latency_ms']}",
+                level=level,
+            )
+        return payload
+
     try:
         supabase_url, supabase_key = _load_supabase_credentials(env_path)
-    except Exception:
-        return False
+    except Exception as exc:
+        return _result(False, "Configuración inválida", "config", exc)
+
     url = f"{supabase_url.rstrip('/')}/rest/v1/"
     request = urllib.request.Request(
         url,
@@ -899,14 +977,16 @@ def _supabase_ping(env_path=".env", timeout=4):
         method="GET",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout):
-            return True
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = int(getattr(response, "status", 200) or 200)
+        return _result(True, "Conectado", "", f"http_status={status}")
     except urllib.error.HTTPError as exc:
-        # 401/403 indican que el host está alcanzable.
         code = int(getattr(exc, "code", 0) or 0)
-        return code in {401, 403}
-    except Exception:
-        return False
+        if code in {401, 403}:
+            return _result(False, "Credenciales inválidas", "auth", exc)
+        return _result(False, f"HTTP {code}", "http_error", exc)
+    except Exception as exc:
+        return _result(False, "No se pudo conectar", "connectivity", exc)
 
 
 def _supabase_upsert_with_queue(table, rows, env_path=".env", on_conflict=None):
@@ -919,9 +999,11 @@ def _supabase_upsert_with_queue(table, rows, env_path=".env", on_conflict=None):
             env_path=env_path,
             on_conflict=on_conflict,
         )
+        _log_supabase(f"UPSERT_WITH_QUEUE synced table={table} rows={len(rows)}")
         return {"status": "synced", "queued": False, "rows": len(rows), "data": data}
     except Exception as exc:
         if not _is_transient_supabase_exception(exc):
+            _log_supabase(f"UPSERT_WITH_QUEUE error table={table} error={exc}", level="ERROR")
             raise
         try:
             _supabase_enqueue_upsert(
@@ -953,9 +1035,11 @@ def _supabase_patch_with_queue(table, filters, values, env_path=".env"):
             values,
             env_path=env_path,
         )
+        _log_supabase(f"PATCH_WITH_QUEUE synced table={table}")
         return {"status": "synced", "queued": False, "rows": 1, "data": data}
     except Exception as exc:
         if not _is_transient_supabase_exception(exc):
+            _log_supabase(f"PATCH_WITH_QUEUE error table={table} error={exc}", level="ERROR")
             raise
         try:
             _supabase_enqueue_patch(
@@ -978,6 +1062,7 @@ def _supabase_patch_with_queue(table, filters, values, env_path=".env"):
 
 
 def _supabase_upsert(table, rows, env_path=".env", on_conflict=None):
+    _log_supabase(f"UPSERT start table={table} rows={len(rows or [])} on_conflict={on_conflict!r}")
     supabase_url, supabase_key = _load_supabase_credentials(env_path)
     if not rows:
         return []
@@ -997,6 +1082,7 @@ def _supabase_upsert(table, rows, env_path=".env", on_conflict=None):
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
                 payload = response.read().decode("utf-8")
+            _log_supabase(f"UPSERT success table={table} rows={len(rows or [])}")
             return json.loads(payload) if payload else []
         except urllib.error.HTTPError as exc:
             last_exc = exc
@@ -1010,12 +1096,16 @@ def _supabase_upsert(table, rows, env_path=".env", on_conflict=None):
         except Exception as exc:
             last_exc = exc
             continue
+    _log_supabase(f"UPSERT error table={table} error={last_exc}", level="ERROR")
     raise RuntimeError(
         _format_supabase_error(f"No se pudo guardar en {table}", last_exc)
     ) from last_exc
 
 
 def _supabase_patch(table, filters, values, env_path=".env"):
+    _log_supabase(
+        f"PATCH start table={table} filters={json.dumps(filters or {}, ensure_ascii=False, sort_keys=True)}"
+    )
     supabase_url, supabase_key = _load_supabase_credentials(env_path)
     if not values:
         return []
@@ -1040,6 +1130,7 @@ def _supabase_patch(table, filters, values, env_path=".env"):
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
                 payload = response.read().decode("utf-8")
+            _log_supabase(f"PATCH success table={table}")
             return json.loads(payload) if payload else []
         except urllib.error.HTTPError as exc:
             last_exc = exc
@@ -1053,6 +1144,7 @@ def _supabase_patch(table, filters, values, env_path=".env"):
         except Exception as exc:
             last_exc = exc
             continue
+    _log_supabase(f"PATCH error table={table} error={last_exc}", level="ERROR")
     raise RuntimeError(
         _format_supabase_error(f"No se pudo actualizar {table}", last_exc)
     ) from last_exc

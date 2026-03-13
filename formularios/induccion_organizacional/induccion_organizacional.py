@@ -16,6 +16,7 @@ from formularios.common import (
     _sanitize_filename,
     _supabase_get,
 )
+from logging_utils import log_excel_event
 
 
 FORM_ID = "induccion_organizacional"
@@ -570,6 +571,24 @@ def _find_template_path():
         ):
             return os.path.join(templates_dir, name)
     raise FileNotFoundError("No se encontró el template de induccion organizacional.")
+
+
+def _get_log_dir():
+    output_path = FORM_CACHE.get("_output_path")
+    if output_path:
+        base_dir = os.path.dirname(output_path)
+    else:
+        base_dir = os.getcwd()
+    log_dir = os.path.join(base_dir, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    return log_dir
+
+
+def _log_excel(message):
+    try:
+        log_excel_event(message)
+    except Exception:
+        return
 
 
 def _ensure_output_path():

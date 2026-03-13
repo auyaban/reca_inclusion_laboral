@@ -22,6 +22,7 @@ from formularios.common import (
     _sanitize_filename,
     _supabase_get,
 )
+from logging_utils import log_excel_event
 
 FORM_NAME = "Evaluacion de Accesibilidad"
 SHEET_NAME = "2. EVALUACIÓN DE ACCESIBILIDAD"
@@ -226,20 +227,31 @@ def _find_template_path():
     raise FileNotFoundError("No se encontró el template de evaluacion.")
 
 
+def _get_safe_company_name(cache=None):
+    cache_data = dict(cache or FORM_CACHE)
+    section_1 = cache_data.get("section_1", {})
+    empresa_nombre = section_1.get("nombre_empresa") or SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
+    safe_company = _sanitize_filename(empresa_nombre)
+    return safe_company or "Empresa"
+
+
+def build_output_base_name(cache=None):
+    safe_company = _get_safe_company_name(cache)
+    process_name = "Evaluacion de Accesibilidad"
+    return f"{process_name} - {safe_company}"
+
+
 def _ensure_output_path():
     output_path = FORM_CACHE.get("_output_path")
     if output_path and os.path.exists(output_path):
         return output_path
     template_path = _find_template_path()
     desktop = _get_desktop_dir()
-    empresa_nombre = SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
-    safe_company = _sanitize_filename(empresa_nombre)
-    if not safe_company:
-        safe_company = "Empresa"
+    output_base_name = build_output_base_name()
+    safe_company = _get_safe_company_name()
     output_dir = os.path.join(desktop, "Formatos Inclusion Laboral", safe_company)
     os.makedirs(output_dir, exist_ok=True)
-    process_name = "Evaluacion de Accesibilidad"
-    output_name = f"{process_name} - {safe_company}.xlsx"
+    output_name = f"{output_base_name}.xlsx"
     output_path = _next_available_file_path(os.path.join(output_dir, output_name))
     if not os.path.exists(output_path):
         shutil.copy2(template_path, output_path)
@@ -267,23 +279,142 @@ def _get_log_dir():
 
 def _log_excel(message):
     try:
-        log_dir = _get_log_dir()
-        log_path = os.path.join(log_dir, "excel_log.txt")
-        reset_log = False
-        if os.path.exists(log_path):
-            try:
-                if os.path.getsize(log_path) >= 5 * 1024 * 1024:
-                    reset_log = True
-            except OSError:
-                reset_log = True
-        if reset_log:
-            with open(log_path, "w", encoding="utf-8") as log_file:
-                log_file.write("")
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        with open(log_path, "a", encoding="utf-8") as log_file:
-            log_file.write(f"[{timestamp}] {message}\n")
-    except OSError:
+        log_excel_event(message)
+    except Exception:
         return
+
+
+def _normalize_export_value(value):
+    if value is None:
+        return ""
+    if hasattr(value, "isoformat") and not isinstance(value, str):
+        try:
+            return value.isoformat()
+        except Exception:
+            return str(value)
+    return value
+
+
+def _build_cell_write(cell, value, *, key=None, sheet_name=SHEET_NAME):
+    safe_value = _normalize_export_value(value)
+    return {
+        "sheet": sheet_name,
+        "cell": str(cell or "").strip(),
+        "range": f"'{sheet_name}'!{cell}",
+        "key": str(key or "").strip(),
+        "value": safe_value,
+    }
+
+
+def _build_section_writes(
+    section_id,
+    payload,
+    *,
+    sheet_name=SHEET_NAME,
+    section8_max_rows=None,
+    include_section8_labels=False,
+):
+    mapping = EXCEL_MAPPING.get(section_id)
+    if not mapping:
+        return []
+
+    if section_id == "section_8":
+        asistentes = list(payload or [])
+        start_row = int(mapping["start_row"])
+        name_col = mapping["name_col"]
+        cargo_col = mapping["cargo_col"]
+        label_name_col = mapping["label_name_col"]
+        label_cargo_col = mapping["label_cargo_col"]
+        base_rows = int(mapping.get("base_rows", 4) or 4)
+        total_rows = section8_max_rows
+        if total_rows is None:
+            total_rows = max(base_rows, len(asistentes))
+        total_rows = max(0, int(total_rows))
+
+        writes = []
+        for idx in range(total_rows):
+            row = start_row + idx
+            entry = asistentes[idx] if idx < len(asistentes) else {}
+            writes.append(
+                _build_cell_write(
+                    f"{name_col}{row}",
+                    entry.get("nombre", ""),
+                    key="nombre",
+                    sheet_name=sheet_name,
+                )
+            )
+            writes.append(
+                _build_cell_write(
+                    f"{cargo_col}{row}",
+                    entry.get("cargo", ""),
+                    key="cargo",
+                    sheet_name=sheet_name,
+                )
+            )
+            if include_section8_labels and idx >= base_rows:
+                writes.append(
+                    _build_cell_write(
+                        f"{label_name_col}{row}",
+                        "Nombre completo:",
+                        key="label_nombre",
+                        sheet_name=sheet_name,
+                    )
+                )
+                writes.append(
+                    _build_cell_write(
+                        f"{label_cargo_col}{row}",
+                        "Cargo:",
+                        key="label_cargo",
+                        sheet_name=sheet_name,
+                    )
+                )
+        return writes
+
+    writes = []
+    for key, cell in mapping.items():
+        if key not in payload:
+            continue
+        writes.append(
+            _build_cell_write(
+                cell,
+                payload.get(key),
+                key=key,
+                sheet_name=sheet_name,
+            )
+        )
+    return writes
+
+
+def build_google_sheet_export_payload(cache=None):
+    cache_data = dict(cache or FORM_CACHE)
+    writes = []
+    for section_id in EXCEL_MAPPING.keys():
+        payload = cache_data.get(section_id, {})
+        writes.extend(
+            _build_section_writes(
+                section_id,
+                payload,
+                section8_max_rows=int(SECTION_8.get("max_items") or 0),
+                include_section8_labels=False,
+            )
+        )
+
+    section_8_cfg = EXCEL_MAPPING.get("section_8", {})
+    start_row = int(section_8_cfg.get("start_row") or 0)
+    max_items = int(SECTION_8.get("max_items") or 0)
+    clear_ranges = []
+    if start_row and max_items:
+        end_row = start_row + max_items - 1
+        clear_ranges = [
+            f"'{SHEET_NAME}'!{section_8_cfg['name_col']}{start_row}:{section_8_cfg['name_col']}{end_row}",
+            f"'{SHEET_NAME}'!{section_8_cfg['cargo_col']}{start_row}:{section_8_cfg['cargo_col']}{end_row}",
+        ]
+
+    return {
+        "sheet_name": SHEET_NAME,
+        "writes": writes,
+        "clear_ranges": clear_ranges,
+    }
 
 
 def _write_section_with_ws(ws, section_id, payload):
@@ -292,10 +423,6 @@ def _write_section_with_ws(ws, section_id, payload):
         return
     if section_id == "section_8":
         start_row = mapping["start_row"]
-        name_col = mapping["name_col"]
-        cargo_col = mapping["cargo_col"]
-        label_name_col = mapping["label_name_col"]
-        label_cargo_col = mapping["label_cargo_col"]
         base_rows = mapping.get("base_rows", 4)
         asistentes = payload or []
         total = len(asistentes)
@@ -308,29 +435,22 @@ def _write_section_with_ws(ws, section_id, payload):
                 ws.Rows(template_row).Copy()
                 ws.Rows(insert_at).PasteSpecial(-4122)
                 insert_at += 1
-        for idx, entry in enumerate(asistentes):
-            row = start_row + idx
-            nombre = entry.get("nombre", "")
-            cargo = entry.get("cargo", "")
+        for write in _build_section_writes(
+            section_id,
+            payload,
+            section8_max_rows=max(base_rows, total),
+            include_section8_labels=True,
+        ):
             _log_excel(
-                f"WRITE section=section_8 cell={name_col}{row} key=nombre value={nombre!r}"
+                f"WRITE section={section_id} cell={write['cell']} key={write['key']} value={write['value']!r}"
             )
-            _log_excel(
-                f"WRITE section=section_8 cell={cargo_col}{row} key=cargo value={cargo!r}"
-            )
-            ws_write(ws, f"{name_col}{row}", nombre)
-            ws_write(ws, f"{cargo_col}{row}", cargo)
-            if idx >= base_rows:
-                ws_write(ws, f"{label_name_col}{row}", "Nombre completo:")
-                ws_write(ws, f"{label_cargo_col}{row}", "Cargo:")
+            ws_write(ws, write["cell"], write["value"])
     else:
-        for key, cell in mapping.items():
-            if key in payload:
-                value = payload.get(key)
-                _log_excel(
-                    f"WRITE section={section_id} cell={cell} key={key} value={value!r}"
-                )
-                ws_write(ws, cell, value)
+        for write in _build_section_writes(section_id, payload):
+            _log_excel(
+                f"WRITE section={section_id} cell={write['cell']} key={write['key']} value={write['value']!r}"
+            )
+            ws_write(ws, write["cell"], write["value"])
 
 
 

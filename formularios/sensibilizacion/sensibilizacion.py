@@ -14,6 +14,7 @@ from formularios.common import (
     ws_write,
     _sanitize_filename,
 )
+from logging_utils import log_excel_event
 
 
 FORM_ID = "sensibilizacion"
@@ -274,6 +275,24 @@ def _find_template_path():
     raise FileNotFoundError("No se encontró el template de sensibilizacion.")
 
 
+def _get_log_dir():
+    output_path = FORM_CACHE.get("_output_path")
+    if output_path:
+        base_dir = os.path.dirname(output_path)
+    else:
+        base_dir = os.getcwd()
+    log_dir = os.path.join(base_dir, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    return log_dir
+
+
+def _log_excel(message):
+    try:
+        log_excel_event(message)
+    except Exception:
+        return
+
+
 def _ensure_output_path():
     template_path = _find_template_path()
     desktop = _get_desktop_dir()
@@ -396,4 +415,3 @@ def export_to_excel(clear_cache=True):
         clear_cache_file()
         clear_form_cache()
     return output_path
-

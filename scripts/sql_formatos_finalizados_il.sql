@@ -13,7 +13,11 @@ create table if not exists public.formatos_finalizados_il (
   finalizado_at_iso text null,
   created_at timestamp with time zone not null default now(),
   path_formato text null,
-  revisado boolean null
+  revisado boolean null,
+  upload_status text null,
+  upload_error text null,
+  upload_attempted_at timestamptz null,
+  uploaded_at timestamptz null
 );
 
 alter table public.formatos_finalizados_il
@@ -24,6 +28,52 @@ alter table public.formatos_finalizados_il
 
 alter table public.formatos_finalizados_il
   add column if not exists revisado boolean null;
+
+alter table public.formatos_finalizados_il
+  add column if not exists upload_status text null;
+
+alter table public.formatos_finalizados_il
+  add column if not exists upload_error text null;
+
+alter table public.formatos_finalizados_il
+  add column if not exists upload_attempted_at timestamptz null;
+
+alter table public.formatos_finalizados_il
+  add column if not exists uploaded_at timestamptz null;
+
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'formatos_finalizados_il'
+      and column_name = 'upload_attempted_at'
+      and data_type <> 'timestamp with time zone'
+  ) then
+    alter table public.formatos_finalizados_il
+      alter column upload_attempted_at type timestamptz
+      using nullif(upload_attempted_at::text, '')::timestamptz;
+  end if;
+end
+$$;
+
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'formatos_finalizados_il'
+      and column_name = 'uploaded_at'
+      and data_type <> 'timestamp with time zone'
+  ) then
+    alter table public.formatos_finalizados_il
+      alter column uploaded_at type timestamptz
+      using nullif(uploaded_at::text, '')::timestamptz;
+  end if;
+end
+$$;
 
 create index if not exists idx_formatos_finalizados_il_created_at
   on public.formatos_finalizados_il (created_at desc);

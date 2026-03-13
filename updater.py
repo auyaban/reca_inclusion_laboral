@@ -125,6 +125,63 @@ def _latest_release_via_redirect(owner: str, repo: str, timeout: int = 20) -> st
     return str(match.group(1)).lstrip("v")
 
 
+def _latest_release_via_powershell_redirect(owner: str, repo: str, timeout: int = 25) -> str | None:
+    """
+    Fallback usando la pila de red de Windows sobre github.com en vez de api.github.com.
+    """
+    script = (
+        "$ErrorActionPreference='Stop';"
+        f"$u='https://github.com/{owner}/{repo}/releases/latest';"
+        "$r=Invoke-WebRequest -Uri $u -Headers @{ 'User-Agent'='reca-inclusion-laboral-updater' } -Method Get -UseBasicParsing;"
+        "$final='';"
+        "if ($r -and $r.BaseResponse -and $r.BaseResponse.ResponseUri) { $final=$r.BaseResponse.ResponseUri.AbsoluteUri };"
+        "if (-not $final) { $final=$u };"
+        "[Console]::Out.Write($final)"
+    )
+    completed = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+    _log_update(
+        "Fallback PowerShell redirect completed: "
+        f"returncode={completed.returncode}, stdout_len={len(completed.stdout or '')}, "
+        f"stderr_len={len(completed.stderr or '')}"
+    )
+    if completed.returncode != 0:
+        stderr = (completed.stderr or "").strip()
+        if stderr:
+            _log_update(f"ERROR powershell redirect latest: {stderr}")
+        return None
+    final_url = (completed.stdout or "").strip()
+    if not final_url:
+        return None
+    _log_update(f"Fallback PowerShell redirect final url: {final_url}")
+    match = re.search(r"/releases/tag/([^/?#]+)", final_url)
+    if not match:
+        return None
+    return str(match.group(1)).lstrip("v")
+
+
+def _latest_version_via_github_raw(owner: str, repo: str, timeout: int = 20) -> str | None:
+    url = f"https://github.com/{owner}/{repo}/raw/main/VERSION"
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "reca-inclusion-laboral-updater"},
+    )
+    _log_update(f"Fallback github.com raw VERSION start: {url}")
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        status = getattr(response, "status", "?")
+        _log_update(f"Fallback github.com raw VERSION response: status={status}")
+        payload = response.read().decode("utf-8", errors="replace")
+    version = (payload or "").strip().splitlines()[0].strip().lstrip("v")
+    if not re.match(r"^\d+\.\d+\.\d+$", version):
+        return None
+    return version
+
+
 def _latest_version_via_raw(owner: str, repo: str, timeout: int = 20) -> str | None:
     url = f"https://raw.githubusercontent.com/{owner}/{repo}/main/VERSION"
     req = urllib.request.Request(
@@ -203,7 +260,23 @@ def _get_latest_release() -> tuple[str | None, dict]:
                 return version, _assets_for_version(version)
         except Exception as fallback_exc:
             _log_update(f"ERROR fallback release/latest redirect: {fallback_exc}")
-        # 2) VERSION en raw.githubusercontent.com.
+        # 2) Redirect publico usando stack de red de Windows.
+        try:
+            version = _latest_release_via_powershell_redirect(owner, repo, timeout=25)
+            if version:
+                _log_update(f"FALLBACK powershell releases/latest redirect OK: v{version}")
+                return version, _assets_for_version(version)
+        except Exception as fallback_exc:
+            _log_update(f"ERROR fallback powershell release/latest redirect: {fallback_exc}")
+        # 3) VERSION servido desde github.com.
+        try:
+            version = _latest_version_via_github_raw(owner, repo, timeout=20)
+            if version:
+                _log_update(f"FALLBACK github.com raw VERSION OK: v{version}")
+                return version, _assets_for_version(version)
+        except Exception as fallback_exc:
+            _log_update(f"ERROR fallback github.com raw VERSION: {fallback_exc}")
+        # 4) VERSION en raw.githubusercontent.com.
         try:
             version = _latest_version_via_raw(owner, repo, timeout=20)
             if version:
@@ -211,7 +284,7 @@ def _get_latest_release() -> tuple[str | None, dict]:
                 return version, _assets_for_version(version)
         except Exception as fallback_exc:
             _log_update(f"ERROR fallback raw VERSION: {fallback_exc}")
-        # 3) PowerShell API (Windows trust/proxy stack).
+        # 5) PowerShell API (Windows trust/proxy stack).
         try:
             version = _latest_release_via_powershell(owner, repo, token=token, timeout=25)
             if version:

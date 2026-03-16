@@ -1,7 +1,6 @@
 openpyxl>=3.1.5
 tkcalendar>=1.6.1
 pywin32>=306
-pyspellchecker>=0.8.0
 sounddevice>=0.4.7
 numpy>=1.26.0
 google-api-python-client>=2.0.0

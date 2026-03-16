@@ -1164,6 +1164,40 @@ def _normalize_cedula(value):
     return re.sub(r"\D+", "", str(value))
 
 
+def _normalize_decimal_value(value, decimal_separator=None, allow_trailing_separator=False):
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+
+    resolved_separator = decimal_separator if decimal_separator in {".", ","} else None
+    cleaned = []
+    has_separator = False
+    for ch in raw:
+        if ch.isdigit():
+            cleaned.append(ch)
+            continue
+        if ch in {".", ","} and not has_separator:
+            cleaned.append(resolved_separator or ch)
+            has_separator = True
+
+    normalized = "".join(cleaned)
+    if normalized.startswith((".", ",")):
+        normalized = f"0{normalized}"
+    if not allow_trailing_separator and normalized.endswith((".", ",")):
+        normalized = normalized[:-1]
+    return normalized
+
+
+def _coerce_excel_decimal_value(value):
+    normalized = _normalize_decimal_value(value, decimal_separator=".")
+    if not normalized:
+        return ""
+    try:
+        return float(normalized)
+    except (TypeError, ValueError):
+        return normalized
+
+
 def _parse_date_value(value):
     if not value:
         return None

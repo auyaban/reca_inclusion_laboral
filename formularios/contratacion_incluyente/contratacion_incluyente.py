@@ -8,8 +8,10 @@ from formularios.common import (
     _get_desktop_dir,
     _next_available_file_path,
     _normalize_cedula,
+    _normalize_decimal_value,
     _normalize_text,
     _parse_date_value,
+    _coerce_excel_decimal_value,
     sanitize_logo_error_cells,
     autofit_rows,
     clear_written_rows,
@@ -70,14 +72,9 @@ GRUPO_ETNICO_CUAL_OPTIONS = [
 ]
 CERTIFICADO_DISCAPACIDAD_OPTIONS = ["Si", "No", "No aplica"]
 TIPO_CONTRATO_OPTIONS = [
-    "Termino fijo",
-    "Termino indefinido",
-    "Obra o labor",
-    "Prestacion de servicios",
-    "Termino indefinido con clausula presuntiva",
-    "Nombramiento",
-    "Contrato de aprendizaje",
-    "Nombramiento provisional",
+    "Contrato a término indefinido.",
+    "Contrato a término fijo.",
+    "Contrato por obra o labor.",
 ]
 NIVEL_APOYO_OPTIONS = [
     "0. No requiere apoyo.",
@@ -87,69 +84,74 @@ NIVEL_APOYO_OPTIONS = [
     "No aplica.",
 ]
 OBS_LECTURA_CONTRATO_OPTIONS = [
-    "Se acompana con recordatorio sobre horarios de toma.",
-    "Se acompana con recordatorio sobre cantidades de medicamentos.",
-    "Se acompana en la administracion del medicamento.",
+    "1. Se acompaña en la lectura del contrato.",
+    "2. Se apoya en la lectura del contrato.",
+    "3. Cuando requiere un apoyo adicional al del gestor (lector de pantalla, intérprete LSC u otro).",
     "No aplica.",
+    "0. No requiere apoyo.",
 ]
 OBS_COMPRENDE_CONTRATO_OPTIONS = [
-    "Comprende los medicamentos y su manejo.",
-    "No comprende los medicamentos y su manejo.",
-    "No aplica.",
+    "1. Comprende la información, pero no se familiariza con las características del contrato.",
+    "2. Explicación de algunas cláusulas del contrato.",
+    "3. Explicación total del contrato.",
+    "0. Comprende con claridad el contrato.",
 ]
 OBS_TIPO_CONTRATO_OPTIONS = [
-    "El vinculado tiene claras las caracteristicas del tipo de contrato.",
-    "El vinculado NO tiene claras las caracteristicas del tipo de contrato.",
-    "No aplica.",
+    "1. El vinculado reconoce el tipo de contrato, pero no comprende sus condiciones.",
+    "2. El vinculado requiere aclaración de algunas de las condiciones del contrato.",
+    "3. El vinculado no conoce ninguna de las condiciones del tipo de contrato a firmar.",
+    "0. El vinculado tiene claras las condiciones del tipo de contrato a firmar.",
 ]
-JORNADA_LABORAL_OPTIONS = ["Tiempo completo", "Medio tiempo", "Otro", "No aplica"]
+JORNADA_LABORAL_OPTIONS = ["Tiempo Completo.", "Medio Tiempo.", "Por horas."]
 CLAUSULAS_CONTRATO_OPTIONS = [
-    "El contrato cuenta con clausulas de confidencialidad.",
-    "El contrato cuenta con clausulas de no competencia.",
-    "El contrato cuenta con clausulas de permanencia minima.",
-    "No aplica.",
+    "Cláusula de confidencialidad.",
+    "Cláusulas adicionales.",
 ]
 OBS_CONDICIONES_SALARIALES_OPTIONS = [
-    "Se aclaran las condiciones salariales.",
-    "No se aclaran las condiciones salariales.",
-    "No aplica.",
+    "1. Se aclaran las condiciones salariales asignadas al cargo.",
+    "2. Se explica de manera parcial las condiciones salariales asignadas al cargo.",
+    "3. Se explica de manera completa las condiciones salariales asignadas al cargo.",
+    "0. Tiene claras las condiciones salariales asignadas al cargo.",
 ]
-FRECUENCIA_PAGO_OPTIONS = ["Semanal", "Quincenal", "Mensual", "Otro", "No aplica"]
-FORMA_PAGO_OPTIONS = ["Transferencia bancaria", "Efectivo", "Cheque", "Otro", "No aplica"]
+FRECUENCIA_PAGO_OPTIONS = ["Pago Semanal.", "Pago Quincenal.", "Pago Mensual."]
+FORMA_PAGO_OPTIONS = ["Abono a cuenta bancaria.", "Nequi o Daviplata.", "Efectivo.", "Cheque."]
 OBS_PRESTACIONES_OPTIONS = [
-    "Conoce los beneficios prestacionales.",
-    "No conoce los beneficios prestacionales.",
+    "1. Conoce, pero es la primera vez que tiene estos beneficios.",
+    "2. Requiere más información.",
+    "3. Desconoce.",
+    "0. Conoce los beneficios y la aplicación.",
     "No aplica.",
 ]
 OBS_CONDUCTO_REGULAR_OPTIONS = [
-    "Comprende el conducto regular.",
-    "No comprende el conducto regular.",
-    "No aplica.",
+    "1. Conoce el conducto por experiencias anteriores.",
+    "2. Requiere más información.",
+    "3. Desconoce la información.",
+    "0. Conoce el conducto regular.",
 ]
 OBS_DESCARGOS_OPTIONS = [
-    "Comprende el proceso de descargos.",
-    "No comprende el proceso de descargos.",
-    "No aplica.",
+    "Si conoce que es una diligencia de descargos.",
+    "NO conoce que es una diligencia de descargos.",
 ]
 OBS_TRAMITES_OPTIONS = [
-    "Comprende los tramites administrativos.",
-    "No comprende los tramites administrativos.",
-    "No aplica.",
+    "Conoce cómo es el proceso para realizar trámites administrativos (certificaciones, afiliaciones, descuentos, desprendibles de nómina).",
+    "NO Conoce cómo es el proceso para realizar trámites administrativos (certificaciones, afiliaciones, descuentos, desprendibles de nómina).",
 ]
 OBS_PERMISOS_OPTIONS = [
-    "Comprende el proceso de permisos.",
-    "No comprende el proceso de permisos.",
-    "No aplica.",
+    "Conoce cómo es el proceso de solicitud de permisos.",
+    "NO Conoce cómo es el proceso de solicitud de permisos.",
 ]
 OBS_CAUSALES_OPTIONS = [
-    "Conoce las causales de terminacion de contrato.",
-    "No conoce las causales de terminacion de contrato.",
-    "No aplica.",
+    "1. Tiene claro las causales de cancelación del contrato por experiencias anteriores.",
+    "2. Requiere aclaración de algunas causales de cancelación del contrato.",
+    "3. Desconoce las causales de cancelación del contrato.",
+    "0. Tiene claro las causales de cancelación del contrato.",
 ]
 OBS_RUTAS_OPTIONS = [
-    "Conoce las rutas de atencion y denuncia.",
-    "No conoce las rutas de atencion y denuncia.",
-    "No aplica.",
+    "0. Tiene claro cuales son las rutas de atención.",
+    "1. Requiere aclaración de cuales son las rutas de atención.",
+    "2. Conoce las rutas de atención, pero no las usa",
+    "3. Desconoce las rutas de atención.",
+    "4. No aplica",
 ]
 
 EVALUADOR_NOMBRES = [
@@ -411,6 +413,21 @@ def save_cache_to_file():
         json.dump(payload, handle, ensure_ascii=False, indent=2)
 
 
+def _normalize_section_2_payload(payload):
+    if not isinstance(payload, list):
+        return payload
+    normalized = []
+    shared_desarrollo = ""
+    for entry in payload:
+        current = dict(entry or {})
+        normalized.append(current)
+        if not shared_desarrollo:
+            shared_desarrollo = (current.get("desarrollo_actividad") or "").strip()
+    for entry in normalized:
+        entry["desarrollo_actividad"] = shared_desarrollo
+    return normalized
+
+
 def load_cache_from_file():
     path = _get_cache_path()
     if not os.path.exists(path):
@@ -420,6 +437,9 @@ def load_cache_from_file():
     data = payload.get("data") or {}
     FORM_CACHE.clear()
     FORM_CACHE.update(data)
+    section_2 = FORM_CACHE.get("section_2")
+    if isinstance(section_2, list):
+        FORM_CACHE["section_2"] = _normalize_section_2_payload(section_2)
     section_1 = data.get("section_1") or {}
     SECTION_1_CACHE.clear()
     SECTION_1_CACHE.update(section_1)
@@ -615,6 +635,7 @@ def confirm_section_1(company_data, user_inputs):
 def confirm_section_2(payload):
     if payload is None:
         raise ValueError("section_2 requerida")
+    payload = _normalize_section_2_payload(payload)
     set_section_cache("section_2", payload)
     FORM_CACHE["_last_section"] = "section_2"
     save_cache_to_file()
@@ -660,7 +681,10 @@ def sync_usuarios_reca(env_path=".env"):
             "genero_usuario": (entry.get("genero") or "").strip(),
             "discapacidad_usuario": discapacidad_usuario,
             "discapacidad_detalle": discapacidad_detalle or None,
-            "certificado_porcentaje": (entry.get("certificado_porcentaje") or "").strip(),
+            "certificado_porcentaje": _normalize_decimal_value(
+                entry.get("certificado_porcentaje"),
+                decimal_separator=".",
+            ),
             "telefono_oferente": (entry.get("telefono_oferente") or "").strip(),
             "fecha_nacimiento": _parse_date_value(entry.get("fecha_nacimiento")),
             "cargo_oferente": (entry.get("cargo_oferente") or "").strip(),
@@ -770,11 +794,15 @@ def _write_section_2(ws, oferentes):
     for idx, entry in enumerate(oferentes):
         base_row = start_row + (block_height * idx)
         for field_id, (col, row) in SECTION_2_CELL_MAP.items():
+            if field_id == "desarrollo_actividad" and idx > 0:
+                continue
             offset = row - SECTION_2_TEMPLATE_ANCHOR_ROW
             target_row = base_row + offset
             value = entry.get(field_id, "")
             if value == "":
                 continue
+            if field_id == "certificado_porcentaje":
+                value = _coerce_excel_decimal_value(value)
             _log_excel(
                 f"WRITE section=section_2 cell={col}{target_row} key={field_id} value={value!r}"
             )

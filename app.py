@@ -33,8 +33,8 @@ from formularios.induccion_operativa import induccion_operativa
 from formularios.sensibilizacion import sensibilizacion
 from formularios.seguimientos import seguimientos
 import drive_upload
-from spell_check import attach_spell_checker
 from dictation import attach_dictation, cleanup_stale_audio
+import text_review
 from formularios.common import (
     _supabase_upsert,
     _supabase_enqueue_upsert,
@@ -53,6 +53,7 @@ from formularios.common import (
     _clear_supabase_session,
     _get_desktop_dir,
     _load_env_file,
+    _normalize_decimal_value,
     _next_available_file_path,
     probe_supabase_service,
 )
@@ -112,6 +113,21 @@ _DRIVE_UPLOAD_WORKER_STARTED = False
 _DRIVE_UPLOAD_QUEUE_LOADED = False
 _DRIVE_UPLOAD_FAILED_LOADED = False
 _SINGLE_INSTANCE_MUTEX_HANDLE = None
+SEGUIMIENTO_NORMATIVA_TEMPLATE_TEXT = """
+Se reitera la importancia de contar con la retroalimentación vía correo electrónico a la Agencia con copia a RECA, ante procesos de entrevista en el caso de no pasar candidatos filtros de selección y solicitar nuevos candidatos; y firma de contrato.
+
+Se dialoga de la nueva ley 2466 del 2025, en donde se orienta ante totalidad de colaboradores la vinculación de 2 personas con discapacidad, se informa beneficios tangibles y no tangibles bajo la ley 361 art. 31 deducción en la renta por vinculación de personas con discapacidad y el apoyo que está entregando la secretaria de desarrollo.
+
+El Decreto 0223 de 2026 es explícito al indicar en el numeral 1 de su artículo 2.2.6.3.3.33. que:
+“Los aprendices no integran la base de trabajadores de carácter permanente de la empresa, para efectos del cálculo de la cuota de empleo para personas en situación de discapacidad, prevista en el numeral 17 del artículo 57 del Código Sustantivo del Trabajo.”
+
+En consecuencia y a la luz de esta nueva norma, contratar aprendices con discapacidad no sirve para aumentar el número de personas con discapacidad computables dentro de la cuota de empleo exigida, por lo cual la cuota se calculará ahora sobre la base de trabajadores permanentes, y el decreto 0223 excluye a los aprendices de esa base.
+
+Sin embargo, el Decreto genera un incentivo distinto en el numeral 2 del mismo artículo, donde establece que:
+“La cuota de aprendices se reducirá en un 50% si las personas contratadas tienen una discapacidad comprobada no inferior al 25%”, en cumplimiento del parágrafo del artículo 31 de la Ley 361 de 1997.
+
+Es decir, que sí es posible contratar aprendices con discapacidad, pero el efecto jurídico directo es sobre la cuota de aprendices (Ley 789 de 2002), no sobre la cuota de empleo para personas con discapacidad (Ley 2466 de 2025 art. 57 num. 17 CST).
+""".strip()
 FORM_MODULE_MAP = {
     "presentacion_programa": presentacion_programa,
     "evaluacion_accesibilidad": evaluacion_accesibilidad,
@@ -193,6 +209,21 @@ def _log_capture(message):
         log_app_event(message)
     except Exception:
         pass
+
+
+def _set_module_cache_snapshot(module, cache_snapshot):
+    if not module or not isinstance(cache_snapshot, dict):
+        return
+    form_cache = getattr(module, "FORM_CACHE", None)
+    if isinstance(form_cache, dict):
+        form_cache.clear()
+        form_cache.update(copy.deepcopy(cache_snapshot))
+    section_1_cache = getattr(module, "SECTION_1_CACHE", None)
+    if isinstance(section_1_cache, dict):
+        section_1_cache.clear()
+        section_1 = cache_snapshot.get("section_1")
+        if isinstance(section_1, dict):
+            section_1_cache.update(copy.deepcopy(section_1))
 
 
 def _desktop_log_path():
@@ -1010,6 +1041,30 @@ def _apply_input_snapshot(window, snapshot_rows):
     return applied
 
 
+def _snapshot_has_meaningful_values(snapshot_rows):
+    if not isinstance(snapshot_rows, list):
+        return False
+    for row in snapshot_rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("value") or "").strip():
+            return True
+    return False
+
+
+def _cache_snapshot_has_meaningful_values(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if str(key or "").startswith("_"):
+                continue
+            if _cache_snapshot_has_meaningful_values(item):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_cache_snapshot_has_meaningful_values(item) for item in value)
+    return str(value or "").strip() != ""
+
+
 def _get_draft_save_command(window):
     save_cmd = getattr(window, "_save_draft_command", None)
     if callable(save_cmd):
@@ -1032,6 +1087,44 @@ def _get_draft_save_command(window):
     window._form_name = str(form_meta.get("name") or form_id)
     window._save_draft_command = lambda w=window, h=hub: h._save_current_form_draft(w)
     return window._save_draft_command
+
+
+def _consume_pending_draft_restore(window, form_id, module, section_routes, default_route):
+    hub = getattr(window, "master", None)
+    pending = getattr(hub, "_pending_draft_restore", None)
+    if not isinstance(pending, dict):
+        return False
+    if str(pending.get("form_id") or "") != str(form_id or ""):
+        return False
+
+    hub._pending_draft_restore = None
+    cache_snapshot = pending.get("cache")
+    if not isinstance(cache_snapshot, dict):
+        cache_snapshot = {}
+    try:
+        if hasattr(module, "clear_form_cache"):
+            module.clear_form_cache()
+        form_cache = getattr(module, "FORM_CACHE", None)
+        if isinstance(form_cache, dict):
+            form_cache.clear()
+            form_cache.update(copy.deepcopy(cache_snapshot))
+        if hasattr(module, "save_cache_to_file"):
+            module.save_cache_to_file()
+    except Exception:
+        pass
+
+    window._draft_restore_pending_ui_snapshot = pending.get("ui_snapshot")
+    window._draft_restore_target_section = str(
+        pending.get("ui_section") or cache_snapshot.get("_last_section") or ""
+    ).strip()
+    route = section_routes.get(window._draft_restore_target_section) or default_route
+    if callable(route):
+        try:
+            window.after_idle(route)
+        except Exception:
+            route()
+        return True
+    return False
 
 
 def _normalize_ascii_text(value):
@@ -1119,6 +1212,28 @@ def _bind_numeric_entry(entry, max_len=None):
         entry.insert(0, raw)
 
     entry.bind("<KeyRelease>", _on_key_release)
+
+
+def _bind_decimal_entry(entry):
+    def _normalize_current(*, allow_trailing_separator):
+        raw = _normalize_decimal_value(
+            entry.get(),
+            allow_trailing_separator=allow_trailing_separator,
+        )
+        if entry.get() == raw:
+            return
+        entry.delete(0, tk.END)
+        entry.insert(0, raw)
+
+    entry.bind(
+        "<KeyRelease>",
+        lambda _event=None: _normalize_current(allow_trailing_separator=True),
+    )
+    entry.bind(
+        "<FocusOut>",
+        lambda _event=None: _normalize_current(allow_trailing_separator=False),
+        add="+",
+    )
 
 
 def _bind_name_entry(entry):
@@ -1575,6 +1690,15 @@ def _finalize_export_flow(window, loading, completion_result):
     output_path = str(result.get("output_path") or "").strip()
     remote_url = str(result.get("remote_url") or "").strip()
     error = str(result.get("error") or "").strip()
+    hub = window.master if isinstance(window.master, HubWindow) else None
+
+    if hub and status in {"synced", "pending", "failed", "local"}:
+        try:
+            hub._delete_window_draft(window)
+        except Exception as exc:
+            _log_capture(
+                f"[DRAFT] delete_after_finalize_failed form={getattr(window, '_form_id', '')} status={status} err={exc}"
+            )
 
     if status == "synced":
         open_target = remote_url or output_path
@@ -2689,6 +2813,11 @@ def _start_background_finalization(
     def _worker():
         pythoncom = None
         com_initialized = False
+        module = FORM_MODULE_MAP.get(form_id)
+        original_cache_snapshot = {}
+        review_result = None
+        restore_original_cache = False
+        completed_successfully = False
         try:
             try:
                 import pythoncom as _pythoncom  # pyright: ignore[reportMissingImports]
@@ -2698,6 +2827,41 @@ def _start_background_finalization(
                 com_initialized = True
             except ImportError:
                 pythoncom = None
+
+            if module and hasattr(module, "get_form_cache"):
+                try:
+                    original_cache_snapshot = copy.deepcopy(module.get_form_cache() or {})
+                except Exception:
+                    original_cache_snapshot = {}
+
+            if module and original_cache_snapshot:
+                _update_loading_async(
+                    loading,
+                    status="Revisando ortografía...",
+                    progress=45,
+                )
+                review_result = text_review.review_export_cache(form_id, original_cache_snapshot)
+                _log_capture(
+                    "[OPENAI_REVIEW] "
+                    f"form={form_id} status={review_result.status} "
+                    f"reviewed_count={review_result.reviewed_count} "
+                    f"elapsed_ms={review_result.elapsed_ms} "
+                    f"reason={review_result.reason!r}"
+                )
+                if review_result.status == "reviewed":
+                    _set_module_cache_snapshot(module, review_result.cache)
+                    restore_original_cache = True
+                    _update_loading_async(
+                        loading,
+                        status="Ortografía revisada. Generando Excel...",
+                        progress=50,
+                    )
+                elif review_result.status in {"skipped", "failed"}:
+                    _update_loading_async(
+                        loading,
+                        status="Revisión ortográfica omitida. Generando Excel...",
+                        progress=50,
+                    )
 
             export_result = worker_fn()
             drive_job = None
@@ -2739,6 +2903,7 @@ def _start_background_finalization(
                     "drive_file_id": "",
                     "error": "",
                 }
+            completed_successfully = True
             if post_delivery_fn is not None and _should_clear_form_cache_after_delivery(completion_result):
                 try:
                     post_delivery_fn()
@@ -2749,6 +2914,16 @@ def _start_background_finalization(
         else:
             _safe_widget_after(window, lambda result=completion_result: _finish_success(result))
         finally:
+            if restore_original_cache and module:
+                try:
+                    current_cache = module.get_form_cache() if hasattr(module, "get_form_cache") else {}
+                except Exception:
+                    current_cache = {}
+                if not (completed_successfully and not current_cache):
+                    try:
+                        _set_module_cache_snapshot(module, original_cache_snapshot)
+                    except Exception:
+                        pass
             if com_initialized and pythoncom is not None:
                 try:
                     pythoncom.CoUninitialize()
@@ -2792,6 +2967,21 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         self._show_section_1()
 
     def _maybe_resume_form(self):
+        if _consume_pending_draft_restore(
+            self,
+            "presentacion_programa",
+            presentacion_programa,
+            {
+                "section_1": self._show_section_1,
+                "section_2": self._show_section_2,
+                "section_3": self._show_section_3,
+                "section_3_item_8": self._show_section_4,
+                "section_4": self._show_section_4,
+                "section_5": self._show_section_5,
+            },
+            self._show_section_1,
+        ):
+            return True
         if not presentacion_programa.cache_file_exists():
             return False
         resume = messagebox.askyesno(
@@ -3050,7 +3240,6 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             wrap="word",
         )
         self.section4_text.pack(fill="x", pady=(6, 16))
-        attach_spell_checker(self.section4_text)
 
         cached_notes = presentacion_programa.get_form_cache().get("section_4", {}).get(
             "acuerdos_observaciones"
@@ -5055,7 +5244,6 @@ class HubWindow(tk.Tk):
         )
         comentarios_txt = tk.Text(frame, width=52, height=6, wrap="word")
         comentarios_txt.grid(row=2, column=1, sticky="w", pady=(0, 6))
-        attach_spell_checker(comentarios_txt)
         comentarios_txt.insert(
             "1.0",
             company_row.get("comentarios_empresas")
@@ -5146,6 +5334,240 @@ class HubWindow(tk.Tk):
         count = len(self._get_user_drafts())
         self._drafts_btn.config(text=f"Borradores ({count})")
 
+    def _capture_window_draft_state(self, window, module):
+        module.save_cache_to_file()
+        cache_snapshot = copy.deepcopy(module.get_form_cache() or {})
+        ui_section = str(
+            getattr(window, "_current_section", "")
+            or cache_snapshot.get("_last_section")
+            or "section_1"
+        ).strip()
+        ui_snapshot = _collect_visible_input_snapshot(window)
+        if ui_section:
+            cache_snapshot["_last_section"] = ui_section
+        return cache_snapshot, ui_snapshot, ui_section
+
+    def _draft_state_has_content(self, cache_snapshot, ui_snapshot):
+        return _cache_snapshot_has_meaningful_values(cache_snapshot) or _snapshot_has_meaningful_values(
+            ui_snapshot
+        )
+
+    def _persist_form_draft(self, window, *, allow_empty=False, silent=False, toast_text=""):
+        form_id = getattr(window, "_form_id", "") or ""
+        form_name = getattr(window, "_form_name", "") or form_id
+        module = FORM_MODULE_MAP.get(form_id)
+        if not module:
+            if not silent:
+                messagebox.showinfo("Guardar", "Este formulario no tiene guardado disponible.")
+            return False
+        if not hasattr(module, "get_form_cache") or not hasattr(module, "save_cache_to_file"):
+            if not silent:
+                messagebox.showinfo("Guardar", "No se pudo guardar este formulario.")
+            return False
+
+        try:
+            cache_snapshot, ui_snapshot, ui_section = self._capture_window_draft_state(window, module)
+        except Exception as exc:
+            if silent:
+                _log_capture(f"[DRAFT] capture_failed form={form_id} err={exc}")
+                return False
+            messagebox.showerror("Guardar", f"No se pudo leer el formulario actual: {exc}")
+            return False
+
+        if not allow_empty and not self._draft_state_has_content(cache_snapshot, ui_snapshot):
+            if not silent:
+                messagebox.showinfo("Guardar", "Aún no hay datos para guardar.")
+            return False
+
+        try:
+            fingerprint_payload = {
+                "cache": cache_snapshot,
+                "ui_section": ui_section,
+                "ui_snapshot": ui_snapshot,
+            }
+            fingerprint = hashlib.sha1(
+                json.dumps(
+                    fingerprint_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest()
+        except Exception:
+            fingerprint = ""
+        if fingerprint and fingerprint == getattr(window, "_draft_last_fingerprint", ""):
+            if not silent:
+                self.show_toast("Borrador ya guardado")
+            return False
+
+        user_login = self._get_current_user_login()
+        if not user_login:
+            if not silent:
+                messagebox.showerror("Guardar", "No hay una sesión activa.")
+            return False
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        company_name = _extract_draft_company_name(cache_snapshot) or "Sin empresa"
+        session_key = getattr(window, "_draft_session_key", "") or uuid.uuid4().hex
+        window._draft_session_key = session_key
+        company_key = _extract_draft_company_key(cache_snapshot)
+        if company_key == "sin_clave":
+            company_key = f"sesion:{form_id}:{session_key}"
+
+        data = _load_drafts_store()
+        users = data.setdefault("users", {})
+        drafts = users.setdefault(user_login, [])
+        if not isinstance(drafts, list):
+            drafts = []
+            users[user_login] = drafts
+
+        draft_id = str(getattr(window, "_draft_id", "") or "").strip()
+        existing = None
+        if draft_id:
+            for item in drafts:
+                if str(item.get("draft_id") or "") == draft_id:
+                    existing = item
+                    break
+        if existing is None:
+            for item in drafts:
+                if (
+                    str(item.get("form_id") or "") == form_id
+                    and str(item.get("company_key") or "") == company_key
+                ):
+                    existing = item
+                    break
+
+        if existing is None:
+            draft_id = draft_id or str(uuid.uuid4())
+            existing = {
+                "draft_id": draft_id,
+                "form_id": form_id,
+                "form_name": form_name,
+                "company_key": company_key,
+                "company_name": company_name,
+                "draft_session_key": session_key,
+                "created_at": now,
+            }
+            drafts.append(existing)
+        else:
+            draft_id = str(existing.get("draft_id") or draft_id or uuid.uuid4())
+            existing["draft_id"] = draft_id
+
+        existing["updated_at"] = now
+        existing["last_section"] = ui_section or cache_snapshot.get("_last_section", "")
+        existing["cache"] = cache_snapshot
+        existing["company_key"] = company_key
+        existing["company_name"] = company_name
+        existing["ui_section"] = ui_section
+        existing["ui_snapshot"] = ui_snapshot
+        existing["draft_session_key"] = session_key
+
+        try:
+            _save_drafts_store(data)
+        except Exception as exc:
+            if silent:
+                _log_capture(f"[DRAFT] save_failed form={form_id} draft_id={draft_id} err={exc}")
+                return False
+            messagebox.showerror("Guardar", f"No se pudo guardar el borrador: {exc}")
+            return False
+
+        window._draft_id = draft_id
+        window._draft_last_fingerprint = fingerprint
+        self._refresh_drafts_badge()
+        if toast_text:
+            self.show_toast(toast_text)
+        return True
+
+    def _schedule_window_draft_autosave(self, window, delay_ms=250):
+        if not window or not window.winfo_exists():
+            return
+        after_id = getattr(window, "_draft_autosave_after_id", None)
+        if after_id:
+            try:
+                window.after_cancel(after_id)
+            except tk.TclError:
+                pass
+
+        def _run():
+            window._draft_autosave_after_id = None
+            self._persist_form_draft(
+                window,
+                allow_empty=True,
+                silent=True,
+                toast_text="",
+            )
+
+        try:
+            window._draft_autosave_after_id = window.after(delay_ms, _run)
+        except tk.TclError:
+            window._draft_autosave_after_id = None
+
+    def _install_form_autosave_bindings(self, window):
+        sticky_bar = getattr(window, "_sticky_actions_bar", None)
+        for _path, widget in _iter_widget_paths(window):
+            if sticky_bar and _is_descendant_of(widget, sticky_bar):
+                continue
+            if getattr(widget, "_draft_autosave_bound", False):
+                continue
+            if isinstance(widget, tk.Text):
+                widget.bind(
+                    "<FocusOut>",
+                    lambda _event=None, w=window: self._schedule_window_draft_autosave(w),
+                    add="+",
+                )
+            elif isinstance(widget, ttk.Combobox):
+                widget.bind(
+                    "<<ComboboxSelected>>",
+                    lambda _event=None, w=window: self._schedule_window_draft_autosave(w),
+                    add="+",
+                )
+                widget.bind(
+                    "<FocusOut>",
+                    lambda _event=None, w=window: self._schedule_window_draft_autosave(w),
+                    add="+",
+                )
+                widget.bind(
+                    "<Return>",
+                    lambda _event=None, w=window: self._schedule_window_draft_autosave(w),
+                    add="+",
+                )
+            elif isinstance(widget, (tk.Entry, DateEntry)):
+                state = str(widget.cget("state") or "")
+                if state != "readonly":
+                    widget.bind(
+                        "<FocusOut>",
+                        lambda _event=None, w=window: self._schedule_window_draft_autosave(w),
+                        add="+",
+                    )
+                    widget.bind(
+                        "<Return>",
+                        lambda _event=None, w=window: self._schedule_window_draft_autosave(w),
+                        add="+",
+                    )
+            else:
+                continue
+            widget._draft_autosave_bound = True
+
+    def _delete_window_draft(self, window):
+        draft_id = str(getattr(window, "_draft_id", "") or "").strip()
+        user_login = self._get_current_user_login()
+        if not draft_id or not user_login:
+            return False
+        data = _load_drafts_store()
+        users = data.get("users", {})
+        current = users.get(user_login, [])
+        if not isinstance(current, list):
+            return False
+        updated = [row for row in current if str(row.get("draft_id") or "") != draft_id]
+        if len(updated) == len(current):
+            return False
+        users[user_login] = updated
+        _save_drafts_store(data)
+        window._draft_id = ""
+        window._draft_last_fingerprint = ""
+        self._refresh_drafts_badge()
+        return True
+
     def _clear_form_memory_caches(self):
         for module in FORM_MODULE_MAP.values():
             try:
@@ -5185,87 +5607,13 @@ class HubWindow(tk.Tk):
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _save_current_form_draft(self, window):
-        form_id = getattr(window, "_form_id", "") or ""
-        form_name = getattr(window, "_form_name", "") or form_id
-        module = FORM_MODULE_MAP.get(form_id)
-        if not module:
-            messagebox.showinfo("Guardar", "Este formulario no tiene guardado manual disponible.")
-            return
-        if not hasattr(module, "get_form_cache") or not hasattr(module, "save_cache_to_file"):
-            messagebox.showinfo("Guardar", "No se pudo guardar este formulario.")
-            return
-
-        try:
-            module.save_cache_to_file()
-            cache_snapshot = copy.deepcopy(module.get_form_cache() or {})
-        except Exception as exc:
-            messagebox.showerror("Guardar", f"No se pudo leer el formulario actual: {exc}")
-            return
-
-        if not cache_snapshot:
-            messagebox.showinfo("Guardar", "Aún no hay datos confirmados para guardar.")
-            return
-
-        company_name = _extract_draft_company_name(cache_snapshot) or "Sin empresa"
-        company_key = _extract_draft_company_key(cache_snapshot)
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        ui_section = str(
-            getattr(window, "_current_section", "")
-            or cache_snapshot.get("_last_section")
-            or "section_1"
-        ).strip()
-        ui_snapshot = _collect_visible_input_snapshot(window)
-        if ui_section:
-            cache_snapshot["_last_section"] = ui_section
-
-        user_login = self._get_current_user_login()
-        if not user_login:
-            messagebox.showerror("Guardar", "No hay una sesión activa.")
-            return
-
-        data = _load_drafts_store()
-        users = data.setdefault("users", {})
-        drafts = users.setdefault(user_login, [])
-        if not isinstance(drafts, list):
-            drafts = []
-            users[user_login] = drafts
-
-        existing = None
-        for item in drafts:
-            if (
-                str(item.get("form_id") or "") == form_id
-                and str(item.get("company_key") or "") == company_key
-            ):
-                existing = item
-                break
-
-        if existing is None:
-            existing = {
-                "draft_id": str(uuid.uuid4()),
-                "form_id": form_id,
-                "form_name": form_name,
-                "company_key": company_key,
-                "company_name": company_name,
-                "created_at": now,
-            }
-            drafts.append(existing)
-
-        existing["updated_at"] = now
-        existing["last_section"] = ui_section or cache_snapshot.get("_last_section", "")
-        existing["cache"] = cache_snapshot
-        existing["company_name"] = company_name
-        existing["ui_section"] = ui_section
-        existing["ui_snapshot"] = ui_snapshot
-
-        try:
-            _save_drafts_store(data)
-        except Exception as exc:
-            messagebox.showerror("Guardar", f"No se pudo guardar el borrador: {exc}")
-            return
-
-        self._refresh_drafts_badge()
-        self.show_toast("Borrador guardado")
+    def _save_current_form_draft(self, window, *, silent=False, allow_empty=False, toast_text="Borrador guardado"):
+        self._persist_form_draft(
+            window,
+            allow_empty=allow_empty,
+            silent=silent,
+            toast_text="" if silent else toast_text,
+        )
 
     def _open_draft_entry(self, draft):
         form_id = str(draft.get("form_id") or "")
@@ -5278,26 +5626,27 @@ class HubWindow(tk.Tk):
             messagebox.showerror("Borradores", "El borrador no tiene datos válidos.")
             return
 
-        try:
-            if hasattr(module, "clear_form_cache"):
-                module.clear_form_cache()
-            form_cache = getattr(module, "FORM_CACHE", None)
-            if isinstance(form_cache, dict):
-                form_cache.clear()
-                form_cache.update(copy.deepcopy(cache_snapshot))
-            if hasattr(module, "save_cache_to_file"):
-                module.save_cache_to_file()
-        except Exception as exc:
-            messagebox.showerror("Borradores", f"No se pudo preparar el borrador: {exc}")
-            return
-
         form_meta = next((item for item in get_forms() if item.get("id") == form_id), None)
         if not form_meta:
             messagebox.showerror("Borradores", "No se encontró el formulario en el HUB.")
             return
+        self._pending_draft_restore = {
+            "form_id": form_id,
+            "draft_id": str(draft.get("draft_id") or "").strip(),
+            "draft_session_key": str(draft.get("draft_session_key") or "").strip(),
+            "cache": copy.deepcopy(cache_snapshot),
+            "ui_section": str(draft.get("ui_section") or "").strip(),
+            "ui_snapshot": copy.deepcopy(draft.get("ui_snapshot") or []),
+        }
         window = self._open_form(form_meta)
-        ui_snapshot = draft.get("ui_snapshot")
-        if not window or not isinstance(ui_snapshot, list) or not ui_snapshot:
+        if not window:
+            self._pending_draft_restore = None
+            return
+        if window:
+            window._draft_id = str(draft.get("draft_id") or "").strip()
+            window._draft_session_key = str(draft.get("draft_session_key") or "").strip() or uuid.uuid4().hex
+        ui_snapshot = getattr(window, "_draft_restore_pending_ui_snapshot", None)
+        if not isinstance(ui_snapshot, list) or not ui_snapshot:
             return
 
         def _try_apply(attempt=0):
@@ -5305,6 +5654,10 @@ class HubWindow(tk.Tk):
                 return
             applied = _apply_input_snapshot(window, ui_snapshot)
             if applied > 0 or attempt >= 12:
+                try:
+                    window._draft_restore_pending_ui_snapshot = None
+                except Exception:
+                    pass
                 return
             window.after(150, lambda: _try_apply(attempt + 1))
 
@@ -5624,6 +5977,9 @@ class HubWindow(tk.Tk):
         else:
             window._save_draft_command = None
         window._current_section = "section_1"
+        window._draft_session_key = getattr(window, "_draft_session_key", "") or uuid.uuid4().hex
+        window._draft_autosave_after_id = None
+        window._draft_last_fingerprint = getattr(window, "_draft_last_fingerprint", "")
         for name in [n for n in dir(window) if n.startswith("_show_section")]:
             original = getattr(window, name, None)
             if not callable(original):
@@ -5642,6 +5998,13 @@ class HubWindow(tk.Tk):
                         _log_capture(
                             f"[DICTATION] attach_wrapper_failed form={form_id} section={section} err={exc}"
                         )
+                    try:
+                        self._install_form_autosave_bindings(window)
+                        self._schedule_window_draft_autosave(window, delay_ms=250)
+                    except Exception as exc:
+                        _log_capture(
+                            f"[DRAFT] autosave_wrapper_failed form={form_id} section={section} err={exc}"
+                        )
                     return result
 
                 _wrapped._section_wrapped = True
@@ -5659,6 +6022,13 @@ class HubWindow(tk.Tk):
         except Exception as exc:
             _log_capture(
                 f"[DICTATION] attach_initial_failed form={form_id} section={getattr(window, '_current_section', 'section_1')} err={exc}"
+            )
+        try:
+            self._install_form_autosave_bindings(window)
+            self._schedule_window_draft_autosave(window, delay_ms=350)
+        except Exception as exc:
+            _log_capture(
+                f"[DRAFT] autosave_initial_failed form={form_id} section={getattr(window, '_current_section', 'section_1')} err={exc}"
             )
 
     def _open_form(self, form_meta):
@@ -5774,6 +6144,29 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         self._show_section_1()
 
     def _maybe_resume_form(self):
+        if _consume_pending_draft_restore(
+            self,
+            "evaluacion_accesibilidad",
+            evaluacion_accesibilidad,
+            {
+                "section_1": self._show_section_1,
+                "section_2": self._show_section_2,
+                "section_2_1": self._show_section_2_1,
+                "section_2_2": self._show_section_2_2,
+                "section_2_3": self._show_section_2_3,
+                "section_2_4": self._show_section_2_4,
+                "section_2_5": self._show_section_2_5,
+                "section_2_6": self._show_section_2_6,
+                "section_3": self._show_section_3,
+                "section_4": self._show_section_4,
+                "section_5": self._show_section_5,
+                "section_6": self._show_section_6,
+                "section_7": self._show_section_7,
+                "section_8": self._show_section_8,
+            },
+            self._show_section_1,
+        ):
+            return True
         if not evaluacion_accesibilidad.cache_file_exists():
             return False
         resume = messagebox.askyesno(
@@ -7211,7 +7604,6 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
             ).pack(anchor="w", pady=(6, 2))
             text_box = tk.Text(section_frame, height=4, wrap="word")
             text_box.pack(fill="x", pady=(0, 12))
-            attach_spell_checker(text_box)
             self.section6_fields[field["id"]] = {"texto": text_box}
 
         self._prefill_section_fields("section_6", self.section6_fields)
@@ -7267,7 +7659,6 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
             ).pack(anchor="w", pady=(8, 2))
             text_box = tk.Text(section_frame, height=4, wrap="word")
             text_box.pack(fill="x", pady=(0, 12))
-            attach_spell_checker(text_box)
             self.section7_fields[field["id"]] = {"texto": text_box}
 
         self._prefill_section_fields("section_7", self.section7_fields)
@@ -7424,7 +7815,6 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         cache = cache_snapshot
         section_1 = cache.get("section_1", {})
         company_name = section_1.get("nombre_empresa")
-        sheet_export = evaluacion_accesibilidad.build_google_sheet_export_payload(cache_snapshot)
 
         def _worker():
             def _on_progress(section_id):
@@ -7438,6 +7828,10 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     progress=5 + int((idx / total_steps) * 90),
                 )
 
+            reviewed_cache_snapshot = evaluacion_accesibilidad.get_form_cache()
+            sheet_export = evaluacion_accesibilidad.build_google_sheet_export_payload(
+                reviewed_cache_snapshot
+            )
             output_path = _raise_finalize_stage(
                 "guardando el Excel",
                 lambda: evaluacion_accesibilidad.export_to_excel(progress_callback=_on_progress),
@@ -7757,6 +8151,24 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             child.destroy()
 
     def _maybe_resume_form(self):
+        if _consume_pending_draft_restore(
+            self,
+            "condiciones_vacante",
+            condiciones_vacante,
+            {
+                "section_1": self._show_section_1,
+                "section_2": self._show_section_2,
+                "section_2_1": self._show_section_2_1,
+                "section_3": self._show_section_3,
+                "section_4": self._show_section_4,
+                "section_5": self._show_section_5,
+                "section_6": self._show_section_6,
+                "section_7": self._show_section_7,
+                "section_8": self._show_section_8,
+            },
+            self._show_section_1,
+        ):
+            return True
         if not condiciones_vacante.cache_file_exists():
             return False
         resume = messagebox.askyesno(
@@ -7961,7 +8373,6 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
                 ).grid(row=0, column=0, sticky="w", padx=8, pady=6)
                 obs_text = tk.Text(obs_row, height=3, wrap="word")
                 obs_text.grid(row=0, column=1, sticky="we", padx=8, pady=6)
-                attach_spell_checker(obs_text)
                 self.section2_fields["requiere_certificado_observaciones"] = obs_text
 
         competencias_frame = tk.Frame(content, bg=COLOR_LIGHT_BG)
@@ -8109,7 +8520,6 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             elif field["type"] == "texto_largo":
                 widget = tk.Text(row, height=3, wrap="word")
                 widget.grid(row=0, column=1, sticky="we", padx=8, pady=8)
-                attach_spell_checker(widget)
             else:
                 widget = tk.Entry(row, width=48)
                 widget.grid(row=0, column=1, sticky="w", padx=8, pady=8)
@@ -8229,7 +8639,6 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             ).grid(row=0, column=0, sticky="w", padx=8, pady=6)
             obs_text = tk.Text(obs_row, height=3, wrap="word")
             obs_text.grid(row=0, column=1, sticky="we", padx=8, pady=6)
-            attach_spell_checker(obs_text)
             self.section3_fields[category["observaciones_id"]] = obs_text
 
         self._prefill_section3_fields()
@@ -8443,7 +8852,6 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
         obs_text = tk.Text(obs_row, height=4, wrap="word")
         obs_text.grid(row=0, column=1, sticky="we", padx=8, pady=6)
-        attach_spell_checker(obs_text)
         self.section5_fields[condiciones_vacante.SECTION_5["observaciones"]["id"]] = obs_text
 
         self._prefill_section5_fields()
@@ -8629,7 +9037,6 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
         self.section7_text = tk.Text(section_frame, height=8, wrap="word")
         self.section7_text.pack(fill="x", padx=24, pady=(4, 12))
-        attach_spell_checker(self.section7_text)
 
         cached = condiciones_vacante.get_form_cache().get("section_7", {})
         cached_text = cached.get(condiciones_vacante.SECTION_7["field_id"])
@@ -8828,6 +9235,19 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         self._show_section_1()
 
     def _maybe_resume_form(self):
+        if _consume_pending_draft_restore(
+            self,
+            "seleccion_incluyente",
+            seleccion_incluyente,
+            {
+                "section_1": self._show_section_1,
+                "section_2": self._show_section_2,
+                "section_5": self._show_section_5,
+                "section_6": self._show_section_6,
+            },
+            self._show_section_1,
+        ):
+            return True
         if not seleccion_incluyente.cache_file_exists():
             return False
         resume = messagebox.askyesno(
@@ -9163,7 +9583,6 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 return ttk.Combobox(parent, values=meta.get("options", []), state="readonly", width=width)
             if meta.get("type") == "texto_largo":
                 w = tk.Text(parent, width=width, height=text_height, wrap="word")
-                attach_spell_checker(w)
                 return w
             if field_id == "cedula":
                 widget = ttk.Combobox(parent, values=self.cedula_options, state="normal", width=width)
@@ -9188,8 +9607,10 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 widget = _create_widget(parent, field_id, width=30)
                 widget.grid(row=row, column=col + 1, sticky="w", padx=6, pady=4)
                 if isinstance(widget, tk.Entry):
-                    if field_id in {"cedula", "certificado_porcentaje"}:
+                    if field_id == "cedula":
                         self._apply_numeric_entry(widget)
+                    if field_id == "certificado_porcentaje":
+                        self._apply_decimal_entry(widget)
                     if field_id in {"telefono_oferente", "telefono_emergencia"}:
                         self._apply_numeric_entry(widget, max_len=10)
                     if field_id in {"nombre_oferente", "nombre_contacto_emergencia"}:
@@ -9322,6 +9743,45 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
         remove_btn = None
 
+        def _get_shared_desarrollo_value():
+            for entry_fields in self.oferente_blocks:
+                widget = entry_fields.get("desarrollo_actividad")
+                if isinstance(widget, tk.Text):
+                    value = widget.get("1.0", tk.END).strip()
+                    if value:
+                        return value
+            return ""
+
+        def _set_text_widget_value(widget, value):
+            if not isinstance(widget, tk.Text):
+                return
+            current = widget.get("1.0", tk.END).strip()
+            if current == value:
+                return
+            widget.delete("1.0", tk.END)
+            if value:
+                widget.insert("1.0", value)
+
+        def _sync_desarrollo_widgets(source_widget=None):
+            if isinstance(source_widget, tk.Text):
+                shared_value = source_widget.get("1.0", tk.END).strip()
+            else:
+                shared_value = _get_shared_desarrollo_value()
+            for entry_fields in self.oferente_blocks:
+                widget = entry_fields.get("desarrollo_actividad")
+                if widget is source_widget:
+                    continue
+                _set_text_widget_value(widget, shared_value)
+
+        def _bind_shared_desarrollo(widget):
+            if not isinstance(widget, tk.Text):
+                return
+            widget.bind(
+                "<FocusOut>",
+                lambda _event=None, w=widget: _sync_desarrollo_widgets(w),
+                add="+",
+            )
+
         def _add_oferente_block():
             idx = len(self.oferente_blocks) + 1
             block = tk.LabelFrame(
@@ -9414,6 +9874,8 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             section3_frame.pack(fill="x", pady=(0, 8))
             fields["desarrollo_actividad"] = _create_widget(section3_frame, "desarrollo_actividad", width=80, text_height=6)
             fields["desarrollo_actividad"].pack(fill="x", padx=6, pady=6)
+            _set_text_widget_value(fields["desarrollo_actividad"], _get_shared_desarrollo_value())
+            _bind_shared_desarrollo(fields["desarrollo_actividad"])
 
             section41_frame = tk.LabelFrame(
                 block,
@@ -9601,6 +10063,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                     else:
                         widget.delete(0, tk.END)
                         widget.insert(0, value)
+            _sync_desarrollo_widgets()
 
         _prefill_section_2()
 
@@ -9619,6 +10082,13 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             side="right"
         )
     def _confirm_section_2(self):
+        shared_desarrollo = ""
+        for fields in self.oferente_blocks:
+            widget = fields.get("desarrollo_actividad")
+            if isinstance(widget, tk.Text):
+                shared_desarrollo = widget.get("1.0", tk.END).strip()
+                if shared_desarrollo:
+                    break
         payload = []
         for fields in self.oferente_blocks:
             entry = {}
@@ -9629,6 +10099,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                     entry[key] = widget.get("1.0", tk.END).strip()
                 else:
                     entry[key] = widget.get().strip()
+            entry["desarrollo_actividad"] = shared_desarrollo
             payload.append(entry)
         try:
             seleccion_incluyente.confirm_section_2(payload)
@@ -9669,7 +10140,6 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             btn.grid(row=idx // 3, column=idx % 3, sticky="w", padx=(0, 8), pady=(0, 8))
         ajustes = tk.Text(content, height=8, width=TEXT_WIDE, wrap="word")
         ajustes.pack(fill="x", padx=4, pady=(0, 10))
-        attach_spell_checker(ajustes)
         self.section5_fields["ajustes_recomendaciones"] = ajustes
 
         tk.Label(
@@ -9864,6 +10334,9 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
     def _apply_numeric_entry(self, entry, max_len=None):
         _bind_numeric_entry(entry, max_len=max_len)
 
+    def _apply_decimal_entry(self, entry):
+        _bind_decimal_entry(entry)
+
     def _apply_name_entry(self, entry):
         _bind_name_entry(entry)
 
@@ -9922,6 +10395,9 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _apply_numeric_entry(self, entry, max_len=None):
         _bind_numeric_entry(entry, max_len=max_len)
+
+    def _apply_decimal_entry(self, entry):
+        _bind_decimal_entry(entry)
 
     def _apply_name_entry(self, entry):
         _bind_name_entry(entry)
@@ -10026,6 +10502,19 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             self._apply_usuario_data(fields, data)
 
     def _maybe_resume_form(self):
+        if _consume_pending_draft_restore(
+            self,
+            "contratacion_incluyente",
+            contratacion_incluyente,
+            {
+                "section_1": self._show_section_1,
+                "section_2": self._show_section_2,
+                "section_6": self._show_section_6,
+                "section_7": self._show_section_7,
+            },
+            self._show_section_1,
+        ):
+            return True
         if not contratacion_incluyente.cache_file_exists():
             return False
         resume = messagebox.askyesno(
@@ -10074,6 +10563,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
         self.oferente_blocks = []
         self.oferente_frames = []
+        self.section2_shared_desarrollo_widget = None
 
         def _add_fields_grid(parent, field_specs, columns=2):
             fields = {}
@@ -10110,7 +10600,9 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 if field_id == "cedula":
                     self._apply_numeric_entry(widget)
                 elif not options:
-                    if field_id in {"cedula", "certificado_porcentaje"}:
+                    if field_id == "certificado_porcentaje":
+                        self._apply_decimal_entry(widget)
+                    elif field_id == "cedula":
                         self._apply_numeric_entry(widget)
                     if field_id in {"telefono_oferente", "telefono_emergencia"}:
                         self._apply_numeric_entry(widget, max_len=10)
@@ -10313,19 +10805,20 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 )
             )
 
-            section4_frame = tk.LabelFrame(
-                block,
-                text="4. DESARROLLO DE LA ACTIVIDAD",
-                bg="white",
-                fg="#222222",
-                font=FONT_LABEL,
-                padx=8,
-                pady=6,
-            )
-            section4_frame.pack(fill="x", padx=8, pady=(0, 8))
-            fields["desarrollo_actividad"] = tk.Text(section4_frame, height=5, wrap="word")
-            fields["desarrollo_actividad"].pack(fill="x", padx=6, pady=6)
-            attach_spell_checker(fields["desarrollo_actividad"])
+            if idx == 1:
+                section4_frame = tk.LabelFrame(
+                    block,
+                    text="4. DESARROLLO DE LA ACTIVIDAD",
+                    bg="white",
+                    fg="#222222",
+                    font=FONT_LABEL,
+                    padx=8,
+                    pady=6,
+                )
+                section4_frame.pack(fill="x", padx=8, pady=(0, 8))
+                fields["desarrollo_actividad"] = tk.Text(section4_frame, height=5, wrap="word")
+                fields["desarrollo_actividad"].pack(fill="x", padx=6, pady=6)
+                self.section2_shared_desarrollo_widget = fields["desarrollo_actividad"]
 
             section51_frame = tk.LabelFrame(
                 block,
@@ -10641,6 +11134,15 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                     else:
                         widget.delete(0, tk.END)
                         widget.insert(0, value)
+            shared_desarrollo = ""
+            for entry in cache:
+                shared_desarrollo = (entry.get("desarrollo_actividad") or "").strip()
+                if shared_desarrollo:
+                    break
+            if self.section2_shared_desarrollo_widget is not None:
+                self.section2_shared_desarrollo_widget.delete("1.0", tk.END)
+                if shared_desarrollo:
+                    self.section2_shared_desarrollo_widget.insert("1.0", shared_desarrollo)
 
         _prefill_section_2()
 
@@ -10683,7 +11185,6 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         ).pack(anchor="w", pady=(8, 4))
         ajustes = tk.Text(content, height=6, width=TEXT_WIDE, wrap="word")
         ajustes.pack(fill="x", padx=4, pady=(0, 16))
-        attach_spell_checker(ajustes)
         self.section6_fields["ajustes_recomendaciones"] = ajustes
 
         cache = contratacion_incluyente.get_form_cache().get("section_6", {})
@@ -10698,6 +11199,9 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         )
 
     def _confirm_section_2(self):
+        shared_desarrollo = ""
+        if isinstance(getattr(self, "section2_shared_desarrollo_widget", None), tk.Text):
+            shared_desarrollo = self.section2_shared_desarrollo_widget.get("1.0", tk.END).strip()
         payload = []
         for fields in self.oferente_blocks:
             entry = {}
@@ -10708,6 +11212,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                     entry[key] = widget.get("1.0", tk.END).strip()
                 else:
                     entry[key] = widget.get().strip()
+            entry["desarrollo_actividad"] = shared_desarrollo
             payload.append(entry)
         try:
             contratacion_incluyente.confirm_section_2(payload)
@@ -11002,6 +11507,21 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
             child.destroy()
 
     def _maybe_resume_form(self):
+        if _consume_pending_draft_restore(
+            self,
+            "induccion_organizacional",
+            induccion_organizacional,
+            {
+                "section_1": self._show_section_1,
+                "section_2": self._show_section_2,
+                "section_3": self._show_section_3,
+                "section_4": self._show_section_4,
+                "section_5": self._show_section_5,
+                "section_6": self._show_section_6,
+            },
+            self._show_section_1,
+        ):
+            return True
         if not induccion_organizacional.cache_file_exists():
             return False
         resume = messagebox.askyesno(
@@ -11343,7 +11863,6 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
             )
             texto = tk.Text(card, width=95, height=8, wrap="word")
             texto.grid(row=1, column=1, sticky="we", padx=4, pady=4)
-            attach_spell_checker(texto)
 
             medio.bind("<<ComboboxSelected>>", lambda _e, idx=i: _on_medio_change(idx))
 
@@ -11384,7 +11903,6 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
 
         self.section5_text = tk.Text(section_frame, width=120, height=10, wrap="word")
         self.section5_text.pack(fill="x", padx=FORM_PADX, pady=(0, 8))
-        attach_spell_checker(self.section5_text)
 
         cache = induccion_organizacional.get_form_cache().get("section_5", {})
         if cache.get("observaciones"):
@@ -11802,6 +12320,24 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
             child.destroy()
 
     def _maybe_resume_form(self):
+        if _consume_pending_draft_restore(
+            self,
+            "induccion_operativa",
+            induccion_operativa,
+            {
+                "section_1": self._show_section_1,
+                "section_2": self._show_section_2,
+                "section_3": self._show_section_3,
+                "section_4": self._show_section_4,
+                "section_5": self._show_section_5,
+                "section_6": self._show_section_6,
+                "section_7": self._show_section_7,
+                "section_8": self._show_section_8,
+                "section_9": self._show_section_9,
+            },
+            self._show_section_1,
+        ):
+            return True
         if not induccion_operativa.cache_file_exists():
             return False
         resume = messagebox.askyesno(
@@ -12359,7 +12895,6 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         )
         self.section6_text = tk.Text(section_frame, width=120, height=8, wrap="word")
         self.section6_text.pack(fill="x", padx=FORM_PADX, pady=(0, 8))
-        attach_spell_checker(self.section6_text)
 
         cached = induccion_operativa.get_form_cache().get("section_6", {})
         if cached.get("ajustes_requeridos"):
@@ -12415,7 +12950,6 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         ).pack(anchor="w", padx=FORM_PADX, pady=(8, 4))
         self.section8_text = tk.Text(section_frame, width=120, height=8, wrap="word")
         self.section8_text.pack(fill="x", padx=FORM_PADX, pady=(0, 8))
-        attach_spell_checker(self.section8_text)
 
         cached = induccion_operativa.get_form_cache().get("section_8", {})
         if cached.get("observaciones_recomendaciones"):
@@ -12704,6 +13238,20 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
             child.destroy()
 
     def _maybe_resume_form(self):
+        if _consume_pending_draft_restore(
+            self,
+            "sensibilizacion",
+            sensibilizacion,
+            {
+                "section_1": self._show_section_1,
+                "section_2": self._show_section_2,
+                "section_3": self._show_section_3,
+                "section_4": self._show_section_4,
+                "section_5": self._show_section_5,
+            },
+            self._show_section_1,
+        ):
+            return True
         if not sensibilizacion.cache_file_exists():
             return False
         resume = messagebox.askyesno(
@@ -12908,7 +13456,6 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         )
         self.section3_text = tk.Text(section_frame, width=120, height=8, wrap="word")
         self.section3_text.pack(fill="x", padx=FORM_PADX, pady=(0, 8))
-        attach_spell_checker(self.section3_text)
         cache = sensibilizacion.get_form_cache().get("section_3", {})
         if cache.get("observaciones"):
             self.section3_text.insert("1.0", cache.get("observaciones", ""))
@@ -13761,7 +14308,6 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         txt.pack(fill="x", pady=(0, 10))
         self.base_text["apoyos_ajustes"] = tk.Text(txt, height=4, wrap="word")
         self.base_text["apoyos_ajustes"].pack(fill="x")
-        attach_spell_checker(self.base_text["apoyos_ajustes"])
         attach_dictation(
             self.base_text["apoyos_ajustes"],
             form_id="seguimientos",
@@ -13987,9 +14533,15 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             pady=10,
         )
         txt.pack(fill="x", pady=(0, 10))
+        template_actions = tk.Frame(txt, bg=COLOR_LIGHT_BG)
+        template_actions.pack(fill="x", pady=(0, 8))
+        ttk.Button(
+            template_actions,
+            text="Seguimiento y normativa",
+            command=self._insert_followup_normativa_template,
+        ).pack(side="left")
         self.follow_text["situacion_encontrada"] = tk.Text(txt, height=5, wrap="word")
         self.follow_text["situacion_encontrada"].pack(fill="x", pady=(0, 8))
-        attach_spell_checker(self.follow_text["situacion_encontrada"])
         attach_dictation(
             self.follow_text["situacion_encontrada"],
             form_id="seguimientos",
@@ -14002,7 +14554,6 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         )
         self.follow_text["estrategias_ajustes"] = tk.Text(txt, height=5, wrap="word")
         self.follow_text["estrategias_ajustes"].pack(fill="x")
-        attach_spell_checker(self.follow_text["estrategias_ajustes"])
         attach_dictation(
             self.follow_text["estrategias_ajustes"],
             form_id="seguimientos",
@@ -14068,6 +14619,17 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             font=("Arial", 10),
         ).pack(fill="x")
         self.status_var.set("Ponderado final es de solo revisión.")
+
+    def _insert_followup_normativa_template(self):
+        text_widget = self.follow_text.get("estrategias_ajustes")
+        if not text_widget:
+            return
+        current_text = text_widget.get("1.0", tk.END).strip()
+        if current_text:
+            text_widget.insert(tk.END, "\n\n")
+        text_widget.insert(tk.END, SEGUIMIENTO_NORMATIVA_TEMPLATE_TEXT)
+        text_widget.focus_set()
+        text_widget.see(tk.END)
 
     def _buscar_empresa_por_nit(self):
         nit = self.base_vars.get("nit_empresa").get().strip() if self.base_vars.get("nit_empresa") else ""

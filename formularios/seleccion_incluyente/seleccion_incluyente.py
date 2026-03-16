@@ -8,8 +8,10 @@ from formularios.common import (
     _get_desktop_dir,
     _next_available_file_path,
     _normalize_cedula,
+    _normalize_decimal_value,
     _normalize_text,
     _parse_date_value,
+    _coerce_excel_decimal_value,
     sanitize_logo_error_cells,
     autofit_rows,
     clear_written_rows,
@@ -1122,6 +1124,21 @@ def save_cache_to_file():
         json.dump(payload, handle, ensure_ascii=False, indent=2)
 
 
+def _normalize_section_2_payload(payload):
+    if not isinstance(payload, list):
+        return payload
+    normalized = []
+    shared_desarrollo = ""
+    for entry in payload:
+        current = dict(entry or {})
+        normalized.append(current)
+        if not shared_desarrollo:
+            shared_desarrollo = (current.get("desarrollo_actividad") or "").strip()
+    for entry in normalized:
+        entry["desarrollo_actividad"] = shared_desarrollo
+    return normalized
+
+
 def load_cache_from_file():
     path = _get_cache_path()
     if not os.path.exists(path):
@@ -1131,6 +1148,9 @@ def load_cache_from_file():
     data = payload.get("data") or {}
     FORM_CACHE.clear()
     FORM_CACHE.update(data)
+    section_2 = FORM_CACHE.get("section_2")
+    if isinstance(section_2, list):
+        FORM_CACHE["section_2"] = _normalize_section_2_payload(section_2)
     section_1 = data.get("section_1") or {}
     SECTION_1_CACHE.clear()
     SECTION_1_CACHE.update(section_1)
@@ -1327,6 +1347,7 @@ def confirm_section_1(company_data, user_inputs):
 def confirm_section_2(payload):
     if payload is None:
         raise ValueError("section_2 requerida")
+    payload = _normalize_section_2_payload(payload)
     set_section_cache("section_2", payload)
     FORM_CACHE["_last_section"] = "section_2"
     save_cache_to_file()
@@ -1371,7 +1392,10 @@ def sync_usuarios_reca(env_path=".env"):
             "nombre_usuario": (entry.get("nombre_oferente") or "").strip(),
             "discapacidad_usuario": discapacidad_usuario,
             "discapacidad_detalle": discapacidad_detalle or None,
-            "certificado_porcentaje": (entry.get("certificado_porcentaje") or "").strip(),
+            "certificado_porcentaje": _normalize_decimal_value(
+                entry.get("certificado_porcentaje"),
+                decimal_separator=".",
+            ),
             "telefono_oferente": (entry.get("telefono_oferente") or "").strip(),
             "fecha_nacimiento": _parse_date_value(entry.get("fecha_nacimiento")),
             "cargo_oferente": (entry.get("cargo_oferente") or "").strip(),
@@ -1464,6 +1488,8 @@ def _write_section_2(ws, oferentes):
             value = entry.get(field_id, "")
             if value == "":
                 continue
+            if field_id == "certificado_porcentaje":
+                value = _coerce_excel_decimal_value(value)
             _log_excel(
                 f"WRITE section=section_2 cell={col}{target_row} key={field_id} value={value!r}"
             )

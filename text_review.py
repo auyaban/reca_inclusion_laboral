@@ -14,6 +14,7 @@ from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.condiciones_vacante import condiciones_vacante
 from formularios.induccion_organizacional import induccion_organizacional
 from formularios.induccion_operativa import induccion_operativa
+from logging_utils import log_app_event
 
 
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
@@ -36,6 +37,13 @@ class ReviewResult:
     reason: str = ""
     reviewed_count: int = 0
     elapsed_ms: int = 0
+
+
+def _log_review(message, level="INFO"):
+    try:
+        log_app_event(f"[OPENAI_REVIEW] {message}", level=level)
+    except Exception:
+        pass
 
 
 def _bool_env(value, default=False):
@@ -385,7 +393,12 @@ def review_export_cache(form_id, cache_snapshot, env_path=".env"):
     started_at = time.perf_counter()
     original_cache = copy.deepcopy(cache_snapshot or {})
     settings = _read_settings(env_path=env_path)
+    transport = "direct" if settings.get("api_key") else "edge"
+    _log_review(
+        f"start form={form_id} transport={transport} model={settings['model']} timeout={settings['timeout']}"
+    )
     if not settings["enabled"]:
+        _log_review(f"skip form={form_id} reason=disabled")
         return ReviewResult(
             status="skipped",
             cache=original_cache,
@@ -399,6 +412,7 @@ def review_export_cache(form_id, cache_snapshot, env_path=".env"):
         except Exception:
             jwt_token = ""
         if not jwt_token:
+            _log_review(f"skip form={form_id} reason=missing_api_key_and_session", level="WARN")
             return ReviewResult(
                 status="skipped",
                 cache=original_cache,
@@ -407,31 +421,45 @@ def review_export_cache(form_id, cache_snapshot, env_path=".env"):
             )
     targets = extract_review_targets(form_id, original_cache)
     if not targets:
+        _log_review(f"skip form={form_id} reason=no_reviewable_text")
         return ReviewResult(
             status="skipped",
             cache=original_cache,
             reason="no_reviewable_text",
             elapsed_ms=int((time.perf_counter() - started_at) * 1000),
         )
+    _log_review(f"targets form={form_id} count={len(targets)} transport={transport}")
 
     reviewed_texts: dict[str, str] = {}
     reviewed_targets = []
     changed_count = 0
     try:
-        for target in targets:
+        for index, target in enumerate(targets, start=1):
             original_text = target["text"]
+            path = tuple(target.get("path") or ())
             if original_text in reviewed_texts:
                 reviewed_text = reviewed_texts[original_text]
+                _log_review(
+                    f"reuse_cached_result form={form_id} index={index}/{len(targets)} path={path!r}"
+                )
             else:
+                _log_review(
+                    f"request form={form_id} index={index}/{len(targets)} path={path!r} chars={len(original_text)} transport={transport}"
+                )
                 reviewed_text = _review_text(original_text, settings)
                 reviewed_text = str(reviewed_text or "").strip()
                 if not reviewed_text:
                     reviewed_text = original_text
                 reviewed_texts[original_text] = reviewed_text
-            reviewed_targets.append({"path": target["path"], "text": reviewed_text})
+            reviewed_targets.append({"path": path, "text": reviewed_text})
             if reviewed_text != original_text:
                 changed_count += 1
     except Exception as exc:
+        _log_review(
+            f"failed form={form_id} transport={transport} reviewed_count={changed_count} "
+            f"path={path!r} error={_extract_error_message(exc)!r}",
+            level="ERROR",
+        )
         return ReviewResult(
             status="failed",
             cache=original_cache,
@@ -441,6 +469,10 @@ def review_export_cache(form_id, cache_snapshot, env_path=".env"):
         )
 
     reviewed_cache = apply_reviewed_targets(copy.deepcopy(original_cache), reviewed_targets)
+    _log_review(
+        f"done form={form_id} transport={transport} targets={len(targets)} "
+        f"reviewed_count={changed_count} elapsed_ms={int((time.perf_counter() - started_at) * 1000)}"
+    )
     return ReviewResult(
         status="reviewed",
         cache=reviewed_cache,

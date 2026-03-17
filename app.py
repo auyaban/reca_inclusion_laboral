@@ -35,6 +35,7 @@ from formularios.seguimientos import seguimientos
 import drive_upload
 from dictation import attach_dictation, cleanup_stale_audio
 import text_review
+import completion_payloads
 from formularios.common import (
     _supabase_upsert,
     _supabase_enqueue_upsert,
@@ -2857,6 +2858,7 @@ def _start_background_finalization(
         com_initialized = False
         module = FORM_MODULE_MAP.get(form_id)
         original_cache_snapshot = {}
+        export_cache_snapshot = {}
         review_result = None
         restore_original_cache = False
         completed_successfully = False
@@ -2922,10 +2924,36 @@ def _start_background_finalization(
                     "verificando el archivo generado",
                     RuntimeError(f"No se encontró el archivo generado:\n{output_path}"),
                 )
+            if module and hasattr(module, "get_form_cache"):
+                try:
+                    export_cache_snapshot = copy.deepcopy(module.get_form_cache() or {})
+                except Exception:
+                    export_cache_snapshot = {}
+            if not export_cache_snapshot:
+                if review_result is not None and getattr(review_result, "status", "") == "reviewed":
+                    export_cache_snapshot = copy.deepcopy(getattr(review_result, "cache", {}) or {})
+                else:
+                    export_cache_snapshot = copy.deepcopy(original_cache_snapshot or {})
             hub = window.master if isinstance(window.master, HubWindow) else None
             if hub and form_id:
                 hub.track_form_finished(form_id)
             if hub:
+                completion_payload = None
+                if form_id and export_cache_snapshot:
+                    try:
+                        completion_payload = completion_payloads.build_completion_payload(
+                            form_id,
+                            form_name,
+                            export_cache_snapshot,
+                            output_path=output_path,
+                            session_id=hub.current_session_id,
+                            app_version=get_version(),
+                            extra_context={"payload_source": "form_cache"},
+                        )
+                    except Exception as exc:
+                        _log_capture(
+                            f"build_completion_payload failed form={form_id} output={output_path} err={exc}"
+                        )
                 _update_loading_async(
                     loading,
                     status="Publicando en Google Drive...",
@@ -2936,6 +2964,7 @@ def _start_background_finalization(
                     form_name=form_name,
                     company_name=company_name,
                     drive_job=drive_job,
+                    completion_payload=completion_payload,
                 )
             else:
                 completion_result = {
@@ -4353,13 +4382,50 @@ class HubWindow(tk.Tk):
         self._form_event_ids.pop(form_id, None)
         self._form_event_payloads.pop(form_id, None)
 
-    def create_form_completion_record(self, form_name, company_name, output_path=None):
+    def _find_form_completion_record_by_source_item_key(self, source_item_key):
+        source_key = str(source_item_key or "").strip()
+        if not source_key:
+            return {}
+        try:
+            rows = _supabase_get_paged(
+                "formatos_finalizados_il",
+                {
+                    "select": "registro_id",
+                    "source_item_key": f"eq.{source_key}",
+                },
+                page_size=1,
+                max_pages=1,
+            )
+        except Exception as exc:
+            _log_capture(f"find_form_completion_record failed source_item_key={source_key} err={exc}")
+            return {}
+        return dict(rows[0]) if rows else {}
+
+    def create_form_completion_record(
+        self,
+        form_name,
+        company_name,
+        output_path=None,
+        *,
+        source_item_key=None,
+        payload_schema_version=1,
+        payload_source="form_cache",
+        payload_raw=None,
+        payload_normalized=None,
+        payload_generated_at=None,
+        drive_file_id="",
+        upload_status="pending",
+        upload_error="",
+        upload_attempted_at=None,
+        uploaded_at=None,
+    ):
         if not self._should_track_usage():
             return ""
         usuario_login = (self.current_user_profile.get("usuario_login") or self.current_user or "").strip()
         nombre_usuario = (self.current_user_profile.get("nombre_profesional") or self.current_user or "").strip()
         now_col = self._get_colombia_now()
-        registro_id = str(uuid.uuid4())
+        existing = self._find_form_completion_record_by_source_item_key(source_item_key)
+        registro_id = str(existing.get("registro_id") or uuid.uuid4())
         row = {
             "registro_id": registro_id,
             "session_id": self.current_session_id,
@@ -4367,14 +4433,20 @@ class HubWindow(tk.Tk):
             "nombre_usuario": nombre_usuario,
             "nombre_formato": (form_name or "").strip(),
             "nombre_empresa": (company_name or "").strip(),
-            "path_formato": "",
-            "drive_file_id": "",
+            "path_formato": str(output_path or "").strip(),
+            "drive_file_id": str(drive_file_id or "").strip(),
             "finalizado_at_colombia": now_col.strftime("%Y-%m-%d %H:%M:%S"),
             "finalizado_at_iso": now_col.isoformat(),
-            "upload_status": "pending",
-            "upload_error": "",
-            "upload_attempted_at": None,
-            "uploaded_at": None,
+            "upload_status": str(upload_status or "").strip() or "pending",
+            "upload_error": str(upload_error or "").strip(),
+            "upload_attempted_at": upload_attempted_at,
+            "uploaded_at": uploaded_at,
+            "source_item_key": str(source_item_key or "").strip() or None,
+            "payload_schema_version": int(payload_schema_version or 1),
+            "payload_source": str(payload_source or "").strip() or "form_cache",
+            "payload_raw": payload_raw,
+            "payload_normalized": payload_normalized,
+            "payload_generated_at": payload_generated_at,
         }
         if output_path:
             _log_capture(
@@ -4386,12 +4458,37 @@ class HubWindow(tk.Tk):
             _log_capture(f"create_form_completion_record failed registro_id={registro_id} err={exc}")
         return registro_id
 
-    def finalize_form_delivery(self, output_path, *, form_name, company_name, drive_job=None):
+    def finalize_form_delivery(
+        self,
+        output_path,
+        *,
+        form_name,
+        company_name,
+        drive_job=None,
+        completion_payload=None,
+    ):
+        completion_payload = dict(completion_payload or {})
+        payload_normalized = completion_payload.get("payload_normalized")
+        payload_raw = completion_payload.get("payload_raw")
+        payload_source = (
+            ((payload_normalized or {}).get("metadata") or {}).get("payload_source")
+            or "form_cache"
+        )
+        payload_generated_at = (
+            ((payload_normalized or {}).get("metadata") or {}).get("generated_at")
+            or ((payload_raw or {}).get("metadata") or {}).get("generated_at")
+        )
         job = {
             "registro_id": self.create_form_completion_record(
                 form_name,
                 company_name,
                 output_path=output_path,
+                source_item_key=completion_payload.get("source_item_key"),
+                payload_schema_version=completion_payloads.PAYLOAD_SCHEMA_VERSION,
+                payload_source=payload_source,
+                payload_raw=payload_raw,
+                payload_normalized=payload_normalized,
+                payload_generated_at=payload_generated_at,
             ),
             "form_name": form_name,
             "company_name": company_name,
@@ -4428,6 +4525,52 @@ class HubWindow(tk.Tk):
                 _persist_drive_upload_queue_locked()
                 _persist_drive_failed_queue_locked()
         return result
+
+    def record_followup_completion(self, *, case_target, case_path, case_record=None, followup_index):
+        if not self._should_track_usage():
+            return ""
+        base_payload = seguimientos.get_base_payload(case_target)
+        followup_payload = seguimientos.get_followup_payload(case_target, followup_index)
+        case_record_data = dict(case_record or {})
+        output_path = str(case_path or case_record_data.get("local_path") or "").strip()
+        remote_url = str(case_record_data.get("webViewLink") or "").strip()
+        drive_file_id = str(case_record_data.get("id") or case_record_data.get("drive_file_id") or "").strip()
+        completion_payload = completion_payloads.build_followup_completion_payload(
+            case_ref=case_target,
+            followup_index=followup_index,
+            base_payload=base_payload,
+            followup_payload=followup_payload,
+            form_name=f"Seguimiento al Proceso de Inclusion Laboral #{int(followup_index)}",
+            session_id=self.current_session_id,
+            app_version=get_version(),
+            extra_context={
+                "payload_source": "seguimientos_sheet",
+                "local_path": output_path,
+                "remote_url": remote_url,
+                "drive_file_id": drive_file_id,
+                "case_record": case_record_data,
+                "case_meta": seguimientos.get_case_meta(case_target),
+            },
+        )
+        now_iso = self._get_colombia_now().isoformat()
+        upload_status = "synced" if drive_file_id or remote_url else "pending"
+        return self.create_form_completion_record(
+            f"Seguimiento al Proceso de Inclusion Laboral #{int(followup_index)}",
+            str(base_payload.get("nombre_empresa") or "").strip(),
+            output_path=output_path or remote_url,
+            source_item_key=completion_payload.get("source_item_key"),
+            payload_schema_version=completion_payloads.PAYLOAD_SCHEMA_VERSION,
+            payload_source="seguimientos_sheet",
+            payload_raw=completion_payload.get("payload_raw"),
+            payload_normalized=completion_payload.get("payload_normalized"),
+            payload_generated_at=(
+                ((completion_payload.get("payload_normalized") or {}).get("metadata") or {}).get("generated_at")
+            ),
+            drive_file_id=drive_file_id,
+            upload_status=upload_status,
+            upload_attempted_at=now_iso if upload_status == "synced" else None,
+            uploaded_at=now_iso if upload_status == "synced" else None,
+        )
 
     def _on_app_close(self):
         _log_capture("_on_app_close: cerrando app")
@@ -6022,6 +6165,33 @@ class HubWindow(tk.Tk):
         window._draft_session_key = getattr(window, "_draft_session_key", "") or uuid.uuid4().hex
         window._draft_autosave_after_id = None
         window._draft_last_fingerprint = getattr(window, "_draft_last_fingerprint", "")
+        if not getattr(window, "_usage_close_tracking_installed", False):
+            window._usage_close_tracking_installed = True
+            window._usage_finish_logged = False
+            original_destroy = window.destroy
+
+            def _track_usage_finish_once():
+                if getattr(window, "_usage_finish_logged", False):
+                    return
+                window._usage_finish_logged = True
+                try:
+                    self.track_form_finished(form_id)
+                except Exception as exc:
+                    _log_capture(
+                        f"[USAGE] track_form_finished_failed form={form_id} err={exc}"
+                    )
+
+            def _tracked_destroy(*args, **kwargs):
+                _track_usage_finish_once()
+                return original_destroy(*args, **kwargs)
+
+            window._track_usage_finish_once = _track_usage_finish_once
+            window._original_destroy = original_destroy
+            window.destroy = _tracked_destroy
+            try:
+                window.protocol("WM_DELETE_WINDOW", window.destroy)
+            except tk.TclError:
+                pass
         for name in [n for n in dir(window) if n.startswith("_show_section")]:
             original = getattr(window, name, None)
             if not callable(original):
@@ -14483,6 +14653,13 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         self._build_scroller()
         self._render_selected_sheet()
 
+    def _get_hub_window(self):
+        if isinstance(self.owner, SeguimientosWindow) and isinstance(self.owner.master, HubWindow):
+            return self.owner.master
+        if isinstance(self.master, HubWindow):
+            return self.master
+        return None
+
     def _build_header(self):
         header = tk.Frame(self, bg=COLOR_LIGHT_BG)
         header.pack(fill="x", padx=FORM_PADX, pady=(18, 8))
@@ -15485,6 +15662,20 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
                 "Sincronización con Drive",
                 f"La hoja se guardó localmente, pero falló la sincronización con Drive.\n{exc}",
             )
+        if sheet.startswith(seguimientos.SHEET_PREFIX):
+            hub = self._get_hub_window()
+            if hub:
+                try:
+                    hub.record_followup_completion(
+                        case_target=self.case_target,
+                        case_path=self.case_path,
+                        case_record=self.case_record,
+                        followup_index=idx,
+                    )
+                except Exception as exc:
+                    _log_capture(
+                        f"record_followup_completion failed case={self.case_target!r} idx={idx} err={exc}"
+                    )
         self.status_var.set(f"Guardado exitoso en hoja: {sheet}")
         if isinstance(self.owner, SeguimientosWindow):
             self.owner.case_record = self.case_record

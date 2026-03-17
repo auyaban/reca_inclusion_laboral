@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -19,7 +20,8 @@ from logging_utils import log_app_event
 
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 DEFAULT_MODEL = "gpt-4.1-mini"
-DEFAULT_TIMEOUT_SECONDS = 20
+DEFAULT_TIMEOUT_SECONDS = 45
+TIMEOUT_RETRY_SECONDS = 75
 MAX_TEXT_CHARS = 6000
 DEFAULT_EDGE_FUNCTION_NAME = "text-review-orthography"
 REVIEW_PROMPT = (
@@ -110,6 +112,21 @@ def _extract_error_message(exc):
     return str(exc)
 
 
+def _is_timeout_error(exc):
+    if isinstance(exc, TimeoutError):
+        return True
+    if isinstance(exc, socket.timeout):
+        return True
+    if isinstance(exc, urllib.error.URLError):
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, TimeoutError):
+            return True
+        if isinstance(reason, socket.timeout):
+            return True
+    message = _extract_error_message(exc).lower()
+    return "timed out" in message or "timeout" in message
+
+
 def _extract_output_text(payload):
     direct = payload.get("output_text")
     if isinstance(direct, str) and direct.strip():
@@ -135,9 +152,23 @@ def _extract_output_text(payload):
 
 
 def _review_text(text, settings):
-    if settings.get("api_key"):
-        return _review_text_direct(text, settings)
-    return _review_text_via_edge(text, settings)
+    try:
+        if settings.get("api_key"):
+            return _review_text_direct(text, settings)
+        return _review_text_via_edge(text, settings)
+    except Exception as exc:
+        if not _is_timeout_error(exc):
+            raise
+        retry_settings = dict(settings)
+        retry_settings["timeout"] = max(int(settings.get("timeout") or 0), TIMEOUT_RETRY_SECONDS)
+        _log_review(
+            f"timeout_retry transport={'direct' if settings.get('api_key') else 'edge'} "
+            f"timeout={settings.get('timeout')} retry_timeout={retry_settings['timeout']}",
+            level="WARN",
+        )
+        if retry_settings.get("api_key"):
+            return _review_text_direct(text, retry_settings)
+        return _review_text_via_edge(text, retry_settings)
 
 
 def _review_text_direct(text, settings):

@@ -1634,6 +1634,48 @@ def _maximize_window(window):
         pass
 
 
+def _find_chrome_executable():
+    candidates = []
+    local_app_data = str(os.getenv("LOCALAPPDATA") or "").strip()
+    program_files = str(os.getenv("PROGRAMFILES") or "").strip()
+    program_files_x86 = str(os.getenv("PROGRAMFILES(X86)") or "").strip()
+    for base in (local_app_data, program_files, program_files_x86):
+        if not base:
+            continue
+        candidates.append(os.path.join(base, "Google", "Chrome", "Application", "chrome.exe"))
+    try:
+        import winreg  # type: ignore
+
+        for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            try:
+                with winreg.OpenKey(
+                    root,
+                    r"Software\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe",
+                ) as key:
+                    value, _ = winreg.QueryValueEx(key, "")
+                    if value:
+                        candidates.insert(0, str(value))
+            except OSError:
+                continue
+    except Exception:
+        pass
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return ""
+
+
+def _open_url_prefer_chrome(url):
+    target = str(url or "").strip()
+    if not target:
+        raise RuntimeError("No se indicó una URL para abrir.")
+    chrome_path = _find_chrome_executable()
+    if chrome_path:
+        subprocess.Popen([chrome_path, target], close_fds=True)
+        return
+    webbrowser.open(target)
+
+
 def _finish_with_loading(loading, message, open_target=None, open_prompt=None):
     loading.set_status("Listo")
     loading.set_progress(100)
@@ -1649,7 +1691,7 @@ def _finish_with_loading(loading, message, open_target=None, open_prompt=None):
         if open_file:
             try:
                 if str(open_target).startswith("http"):
-                    webbrowser.open(open_target)
+                    _open_url_prefer_chrome(open_target)
                 else:
                     os.startfile(open_target)
             except Exception as exc:
@@ -1934,13 +1976,13 @@ def _build_wizard_actions(
 
 
 def _section1_build_search(self, parent, include_tipo_visita=False):
-    search_w = ENTRY_W_LONG
+    search_w = 42
     try:
         sw = int(self.winfo_screenwidth() or 0)
         if sw and sw <= 1366:
-            search_w = 22
+            search_w = 32
         elif sw and sw <= 1600:
-            search_w = 25
+            search_w = 38
     except Exception:
         pass
     frame = tk.Frame(parent, bg=COLOR_LIGHT_BG)
@@ -13646,6 +13688,8 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         _maximize_window(self)
 
         self.user_row = None
+        self.linked_company = {}
+        self.case_record = None
         self.case_path = None
         self.cedula_options = []
         self._filtered_cedulas = []
@@ -13656,12 +13700,29 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         self.user_role_var = tk.StringVar(value="")
         self.user_discapacidad_var = tk.StringVar(value="")
         self.path_var = tk.StringVar(value="")
+        self.company_var = tk.StringVar(value="")
+        self.followups_var = tk.StringVar(value="")
         self.suggestion_var = tk.StringVar(value="")
-        self.compensar_var = tk.StringVar(value="Si (Compensar)")
+        self.compensar_var = tk.StringVar(value="")
+        self.company_nit_var = tk.StringVar(value="")
+        self.company_name_search_var = tk.StringVar(value="")
+        self._case_summary_cache = None
+        self._case_suggestion_cache = None
+        self._case_cache_key = ""
 
         self._build_header()
         self._build_body()
         self._load_cedulas()
+
+    def _get_case_target(self):
+        if (
+            self.case_record
+            and str((self.case_record or {}).get("source") or "").strip() == "drive"
+            and str((self.case_record or {}).get("mime_type") or "").strip()
+            == seguimientos.GOOGLE_SHEETS_MIME
+        ):
+            return self.case_record
+        return self.case_path
 
     def _build_header(self):
         header = tk.Frame(self, bg=COLOR_LIGHT_BG)
@@ -13678,8 +13739,8 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         tk.Label(
             header,
             text=(
-                "Flujo por persona: busca por cédula, detecta/crea archivo, "
-                "y sugiere la pestaña siguiente."
+                "Flujo por persona: busca por cédula en el shared drive, "
+                "detecta o crea el caso, descarga una copia editable y sugiere la pestaña siguiente."
             ),
             font=FONT_SUBTITLE,
             fg="#333333",
@@ -13720,11 +13781,61 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         self.compensar_combo = ttk.Combobox(
             search,
             textvariable=self.compensar_var,
-            values=["Si (Compensar)", "No (Otro)"],
-            state="readonly",
+            values=["", "Si (Compensar)", "No (Otro)"],
+            state="disabled",
             width=30,
         )
         self.compensar_combo.grid(row=1, column=1, sticky="w", pady=4)
+
+        company_lookup = tk.LabelFrame(
+            container,
+            text="Resolver Empresa Si No Viene Amarrada",
+            bg=COLOR_LIGHT_BG,
+            font=FONT_LABEL,
+            padx=12,
+            pady=10,
+        )
+        company_lookup.pack(fill="x", pady=(12, 0))
+
+        tk.Label(company_lookup, text="NIT empresa:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
+            row=0, column=0, sticky="w", padx=(0, 8), pady=4
+        )
+        self.company_nit_entry = ttk.Combobox(
+            company_lookup, textvariable=self.company_nit_var, width=28, state="disabled", values=()
+        )
+        self.company_nit_entry.grid(row=0, column=1, sticky="w", pady=4)
+        self.company_nit_entry.bind("<KeyRelease>", self._update_company_nit_suggestions)
+        self.company_nit_entry.bind("<Button-1>", self._update_company_nit_suggestions)
+        self.company_nit_entry.bind("<FocusIn>", self._update_company_nit_suggestions)
+        self.company_nit_entry.bind("<<ComboboxSelected>>", self._buscar_empresa_manual_por_nit)
+        self.company_nit_entry.bind("<Return>", self._buscar_empresa_manual_por_nit)
+        self.company_nit_btn = ttk.Button(
+            company_lookup,
+            text="Buscar por NIT",
+            command=self._buscar_empresa_manual_por_nit,
+            state="disabled",
+        )
+        self.company_nit_btn.grid(row=0, column=2, sticky="w", padx=(12, 0), pady=4)
+
+        tk.Label(company_lookup, text="Nombre empresa:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
+            row=1, column=0, sticky="w", padx=(0, 8), pady=4
+        )
+        self.company_name_entry = ttk.Combobox(
+            company_lookup, textvariable=self.company_name_search_var, width=62, state="disabled", values=()
+        )
+        self.company_name_entry.grid(row=1, column=1, sticky="w", pady=4)
+        self.company_name_entry.bind("<KeyRelease>", self._update_company_name_suggestions)
+        self.company_name_entry.bind("<Button-1>", self._update_company_name_suggestions)
+        self.company_name_entry.bind("<FocusIn>", self._update_company_name_suggestions)
+        self.company_name_entry.bind("<<ComboboxSelected>>", self._buscar_empresa_manual_por_nombre)
+        self.company_name_entry.bind("<Return>", self._buscar_empresa_manual_por_nombre)
+        self.company_name_btn = ttk.Button(
+            company_lookup,
+            text="Buscar por nombre",
+            command=self._buscar_empresa_manual_por_nombre,
+            state="disabled",
+        )
+        self.company_name_btn.grid(row=1, column=2, sticky="w", padx=(12, 0), pady=4)
 
         info = tk.LabelFrame(
             container,
@@ -13753,8 +13864,10 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         status.pack(fill="x", pady=(12, 0))
         status.grid_columnconfigure(1, weight=1)
 
-        self._add_info_row(status, 0, "Ruta archivo:", self.path_var)
-        self._add_info_row(status, 1, "Sugerencia:", self.suggestion_var)
+        self._add_info_row(status, 0, "Archivo / Link:", self.path_var)
+        self._add_info_row(status, 1, "Empresa:", self.company_var)
+        self._add_info_row(status, 2, "Seguimientos:", self.followups_var)
+        self._add_info_row(status, 3, "Sugerencia:", self.suggestion_var)
         tk.Label(
             status,
             textvariable=self.status_var,
@@ -13763,7 +13876,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             bg=COLOR_LIGHT_BG,
             anchor="w",
             justify="left",
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         actions = tk.Frame(container, bg=COLOR_LIGHT_BG)
         _pack_actions(actions, pad_y=(14, FORM_PADY), pad_x=False)
@@ -13771,21 +13884,14 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         ttk.Button(actions, text="Regresar", command=self._close_to_hub).pack(side="left")
         self.create_btn = ttk.Button(
             actions,
-            text="Crear / Actualizar Caso",
-            command=self._crear_o_actualizar_caso,
+            text="Abrir / Preparar Caso",
+            command=self._abrir_preparar_caso,
             state="disabled",
         )
         self.create_btn.pack(side="right")
-        self.edit_btn = ttk.Button(
-            actions,
-            text="Diligenciar",
-            command=self._open_editor,
-            state="disabled",
-        )
-        self.edit_btn.pack(side="right", padx=(0, 8))
         self.open_btn = ttk.Button(
             actions,
-            text="Abrir archivo",
+            text="Abrir en Drive",
             command=self._abrir_archivo,
             state="disabled",
         )
@@ -13809,6 +13915,207 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             wraplength=730,
         ).grid(row=row, column=1, sticky="w", pady=2)
 
+    def _set_company_lookup_enabled(self, enabled):
+        state = "normal" if enabled else "disabled"
+        try:
+            self.company_nit_entry.config(state=state)
+            self.company_name_entry.config(state=state)
+            self.company_nit_btn.config(state=state)
+            self.company_name_btn.config(state=state)
+        except Exception:
+            pass
+
+    def _set_compensar_choice_enabled(self, enabled):
+        try:
+            self.compensar_combo.config(state="readonly" if enabled else "disabled")
+        except Exception:
+            pass
+
+    def _resolve_compensar_choice(self, company):
+        caja = str((company or {}).get("caja_compensacion") or "").strip().lower()
+        if not caja:
+            return ""
+        return "Si (Compensar)" if "compensar" in caja else "No (Otro)"
+
+    def _current_case_cache_key(self, record=None, path=None):
+        record = record or self.case_record or {}
+        path = path or self.case_path or ""
+        file_id = str((record or {}).get("file_id") or "").strip()
+        if file_id:
+            return f"file:{file_id}"
+        return f"path:{str(path or '').strip()}"
+
+    def _update_company_name_suggestions(self, _event=None):
+        combo = self.company_name_entry
+        if not combo:
+            return
+        prefix = self.company_name_search_var.get().strip()
+        if len(prefix) < 2:
+            combo["values"] = ()
+            return
+        try:
+            rows = seguimientos.get_empresas_by_nombre_prefix(prefix, limit=12)
+        except Exception:
+            rows = []
+        values = []
+        seen = set()
+        for row in rows:
+            name = str(row.get("nombre_empresa") or "").strip()
+            if not name:
+                continue
+            key = name.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            values.append(name)
+        combo["values"] = values
+
+    def _update_company_nit_suggestions(self, _event=None):
+        combo = self.company_nit_entry
+        if not combo:
+            return
+        prefix = "".join(self.company_nit_var.get().split())
+        if len(prefix) < 2:
+            combo["values"] = ()
+            return
+        try:
+            rows = seguimientos.get_empresas_by_nit_prefix(prefix, limit=12)
+        except Exception:
+            rows = []
+        values = []
+        seen = set()
+        for row in rows:
+            nit = "".join(str(row.get("nit_empresa") or "").split())
+            name = str(row.get("nombre_empresa") or "").strip()
+            if not nit:
+                continue
+            label = f"{nit} - {name}" if name else nit
+            if nit in seen:
+                continue
+            seen.add(nit)
+            values.append(label)
+        combo["values"] = values
+
+    def _apply_linked_company_to_ui(self):
+        linked_name = str((self.linked_company or {}).get("nombre_empresa") or "").strip()
+        linked_nit = str((self.linked_company or {}).get("nit_empresa") or "").strip()
+        if linked_nit:
+            self.company_nit_var.set(linked_nit)
+        if linked_name:
+            self.company_name_search_var.set(linked_name)
+        if linked_name and linked_nit:
+            self.company_var.set(f"{linked_name} ({linked_nit})")
+        elif linked_name:
+            self.company_var.set(linked_name)
+        else:
+            self.company_var.set("(Sin empresa cargada)")
+        compensar_choice = self._resolve_compensar_choice(self.linked_company)
+        self.compensar_var.set(compensar_choice)
+        self._set_company_lookup_enabled(not bool(linked_name or linked_nit))
+        self._set_compensar_choice_enabled(bool(linked_name or linked_nit) and not compensar_choice)
+
+    def _buscar_empresa_manual_por_nit(self, _event=None):
+        raw_nit = self.company_nit_var.get().strip()
+        nit = raw_nit.split(" - ", 1)[0].strip()
+        if not nit:
+            messagebox.showerror("Empresa", "Ingresa el NIT para buscar la empresa.")
+            return
+        try:
+            company = seguimientos.get_empresa_by_nit(nit)
+        except Exception as exc:
+            messagebox.showerror("Empresa", str(exc))
+            return
+        if not company:
+            self.compensar_var.set("")
+            self._set_compensar_choice_enabled(True)
+            messagebox.showinfo("Empresa", "No se encontró empresa para ese NIT.")
+            return
+        self.linked_company = company
+        self._apply_linked_company_to_ui()
+        self.status_var.set("Empresa resuelta manualmente por NIT.")
+
+    def _buscar_empresa_manual_por_nombre(self, _event=None):
+        name = self.company_name_search_var.get().strip()
+        if not name:
+            messagebox.showerror("Empresa", "Ingresa el nombre para buscar la empresa.")
+            return
+        options = list(self.company_name_entry.cget("values") or [])
+        if options:
+            exact = next((v for v in options if str(v).strip().casefold() == name.casefold()), None)
+            if exact and exact != name:
+                self.company_name_search_var.set(str(exact).strip())
+                name = str(exact).strip()
+        try:
+            company = seguimientos.get_empresa_by_nombre(name)
+        except Exception as exc:
+            messagebox.showerror("Empresa", str(exc))
+            return
+        if not company:
+            self.compensar_var.set("")
+            self._set_compensar_choice_enabled(True)
+            messagebox.showinfo("Empresa", "No se encontró empresa con ese nombre.")
+            return
+        self.linked_company = company
+        self._apply_linked_company_to_ui()
+        self.status_var.set("Empresa resuelta manualmente por nombre.")
+
+    def _run_loading_job(self, *, title, initial_status, worker, on_success, on_error_title="Error"):
+        dialog = LoadingDialog(self, title=title)
+        dialog.set_status(initial_status)
+        dialog.set_progress(8)
+        result = {"value": None, "error": None}
+
+        def _progress(status=None, progress=None):
+            _update_loading_async(dialog, status=status, progress=progress)
+
+        def _worker():
+            try:
+                result["value"] = worker(_progress)
+            except Exception as exc:
+                result["error"] = exc
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+        def _check_done():
+            if thread.is_alive():
+                self.after(180, _check_done)
+                return
+            dialog.close()
+            if result["error"] is not None:
+                messagebox.showerror(on_error_title, str(result["error"]))
+                return
+            on_success(result["value"])
+
+        self.after(180, _check_done)
+
+    def _apply_summary_result(self, *, suggestion=None, summary=None, missing_case_status=None):
+        if not suggestion and not summary:
+            self._refresh_suggestion()
+            return
+        if not summary:
+            summary = {}
+        if not suggestion:
+            suggestion = {}
+        sheet = suggestion.get("sheet") or ""
+        msg = suggestion.get("message") or ""
+        self.suggestion_var.set(f"{sheet} - {msg}" if sheet or msg else "")
+        company_text = summary.get("empresa") or ""
+        if not company_text:
+            linked_name = str((self.linked_company or {}).get("nombre_empresa") or "").strip()
+            linked_nit = str((self.linked_company or {}).get("nit_empresa") or "").strip()
+            if linked_name and linked_nit:
+                company_text = f"{linked_name} ({linked_nit})"
+            else:
+                company_text = linked_name
+        self.company_var.set(company_text or "(Sin empresa cargada)")
+        followups = summary.get("seguimientos") or []
+        self.followups_var.set(", ".join(followups) if followups else "Sin seguimientos con fecha registrada")
+        if missing_case_status:
+            self.status_var.set(missing_case_status)
+        else:
+            self.status_var.set("Archivo encontrado y estado calculado correctamente.")
+
     def _load_cedulas(self):
         try:
             self.cedula_options = seguimientos.get_usuarios_reca_cedulas()
@@ -13830,47 +14137,165 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         if not cedula:
             messagebox.showerror("Error", "Ingresa una cédula.")
             return
-        try:
-            row = seguimientos.get_usuario_reca_by_cedula(cedula)
-        except Exception as exc:
-            messagebox.showerror("Error", str(exc))
-            return
-        if not row:
-            messagebox.showerror("Error", "No se encontró la cédula en usuarios_reca.")
-            return
-
-        self.user_row = row
-        self.user_name_var.set(str(row.get("nombre_usuario") or ""))
-        self.user_phone_var.set(str(row.get("telefono_oferente") or ""))
-        self.user_role_var.set(str(row.get("cargo_oferente") or ""))
-        discapacidad = row.get("discapacidad_detalle") or row.get("discapacidad_usuario") or ""
-        self.user_discapacidad_var.set(str(discapacidad))
-
         normalized = re.sub(r"\D+", "", cedula)
-        self.case_path = seguimientos.find_case_workbook(normalized, row.get("nombre_usuario"))
-        self.path_var.set(self.case_path or "(No existe archivo aún)")
-        self.create_btn.config(state="normal")
-        self.open_btn.config(state="normal" if self.case_path else "disabled")
-        self.edit_btn.config(state="normal" if self.case_path else "disabled")
-        self._refresh_suggestion()
+
+        def _worker(progress):
+            progress("Buscando el vinculado en usuarios RECA...", 15)
+            row = seguimientos.get_usuario_reca_by_cedula(cedula)
+            if not row:
+                raise RuntimeError("No se encontró la cédula en usuarios_reca.")
+            progress("Resolviendo la empresa asociada desde contratación...", 35)
+            try:
+                linked_company = seguimientos.get_linked_company_for_user(row)
+            except Exception:
+                linked_company = {}
+            progress("Buscando el caso en Google Drive...", 60)
+            case_record = seguimientos.find_case_record(normalized, row.get("nombre_usuario"))
+            case_path = (case_record or {}).get("local_path") if case_record else None
+            case_target = (
+                case_record
+                if case_record
+                and str((case_record or {}).get("source") or "").strip() == "drive"
+                and str((case_record or {}).get("mime_type") or "").strip() == seguimientos.GOOGLE_SHEETS_MIME
+                else case_path
+            )
+            suggestion = None
+            summary = None
+            if case_target:
+                progress("Leyendo el estado actual del caso...", 82)
+                suggestion = seguimientos.suggest_next_step(case_target)
+                summary = seguimientos.describe_case(case_target)
+            progress("Organizando la información del caso...", 100)
+            return {
+                "row": row,
+                "linked_company": linked_company,
+                "case_record": case_record,
+                "case_path": case_path,
+                "suggestion": suggestion,
+                "summary": summary,
+            }
+
+        def _on_success(data):
+            row = data.get("row") or {}
+            self.user_row = row
+            self.linked_company = data.get("linked_company") or {}
+            self.user_name_var.set(str(row.get("nombre_usuario") or ""))
+            self.user_phone_var.set(str(row.get("telefono_oferente") or ""))
+            self.user_role_var.set(str(row.get("cargo_oferente") or ""))
+            discapacidad = row.get("discapacidad_detalle") or row.get("discapacidad_usuario") or ""
+            self.user_discapacidad_var.set(str(discapacidad))
+            self._apply_linked_company_to_ui()
+            if not (self.linked_company or {}).get("nombre_empresa") and not (self.linked_company or {}).get("nit_empresa"):
+                self.compensar_var.set("")
+                self._set_compensar_choice_enabled(False)
+            self.case_record = data.get("case_record")
+            self.case_path = data.get("case_path")
+            self._case_suggestion_cache = data.get("suggestion")
+            self._case_summary_cache = data.get("summary")
+            self._case_cache_key = self._current_case_cache_key(self.case_record, self.case_path)
+            self.path_var.set(
+                ((self.case_record or {}).get("webViewLink") or self.case_path)
+                if self.case_record
+                else "(No existe archivo aún)"
+            )
+            self.create_btn.config(state="normal")
+            self.open_btn.config(state="normal" if self.case_record else "disabled")
+            if not self._get_case_target():
+                linked_name = str((self.linked_company or {}).get("nombre_empresa") or "").strip()
+                if linked_name:
+                    status_text = "No existe archivo para este vinculado. La empresa se resolvió desde contratación."
+                else:
+                    status_text = "No existe archivo para este vinculado. Busca la empresa por NIT o nombre para confirmar si es Compensar."
+                self._apply_summary_result(
+                    suggestion={"sheet": "", "message": "Se sugiere crear caso y empezar por hoja base (9...)"},
+                    summary={"empresa": "", "seguimientos": []},
+                    missing_case_status=status_text,
+                )
+                return
+            self._apply_summary_result(
+                suggestion=data.get("suggestion"),
+                summary=data.get("summary"),
+            )
+
+        self._run_loading_job(
+            title="Buscando vinculado",
+            initial_status="Preparando la búsqueda del caso...",
+            worker=_worker,
+            on_success=_on_success,
+            on_error_title="Búsqueda",
+        )
 
     def _refresh_suggestion(self):
-        if not self.case_path:
+        case_target = self._get_case_target()
+        if not case_target:
             self.suggestion_var.set("Se sugiere crear caso y empezar por hoja base (9...)")
-            self.status_var.set("No existe archivo para este vinculado.")
+            self._apply_linked_company_to_ui()
+            self.followups_var.set("")
+            linked_name = str((self.linked_company or {}).get("nombre_empresa") or "").strip()
+            if linked_name:
+                self.status_var.set("No existe archivo para este vinculado. La empresa se resolvió desde contratación.")
+            else:
+                self.status_var.set("No existe archivo para este vinculado. Busca la empresa por NIT o nombre para confirmar si es Compensar.")
             return
         try:
-            suggestion = seguimientos.suggest_next_step(self.case_path)
+            suggestion = seguimientos.suggest_next_step(case_target)
+            summary = seguimientos.describe_case(case_target)
         except Exception as exc:
             self.suggestion_var.set("No fue posible leer sugerencia.")
+            self.company_var.set("")
+            self.followups_var.set("")
             self.status_var.set(f"Archivo encontrado, pero falló lectura de estado: {exc}")
             return
         sheet = suggestion.get("sheet") or ""
         msg = suggestion.get("message") or ""
         self.suggestion_var.set(f"{sheet} - {msg}")
+        company_text = summary.get("empresa") or ""
+        if company_text:
+            self.company_var.set(company_text)
+        else:
+            self._apply_linked_company_to_ui()
+        followups = summary.get("seguimientos") or []
+        if followups:
+            self.followups_var.set(", ".join(followups))
+        else:
+            self.followups_var.set("Sin seguimientos con fecha registrada")
         self.status_var.set("Archivo encontrado y estado calculado correctamente.")
 
     def _crear_o_actualizar_caso(self):
+        if not self.user_row:
+            messagebox.showerror("Error", "Primero busca y selecciona una cédula válida.")
+            return False
+        raw = self.cedula_combo.get().strip()
+        cedula = re.sub(r"\D+", "", raw)
+        if not cedula:
+            messagebox.showerror("Error", "Cédula inválida.")
+            return False
+        is_compensar = self.compensar_var.get().startswith("Si")
+        user_row = dict(self.user_row or {})
+        if self.linked_company:
+            if self.linked_company.get("nit_empresa"):
+                user_row["empresa_nit"] = str(self.linked_company.get("nit_empresa") or "").strip()
+            if self.linked_company.get("nombre_empresa"):
+                user_row["empresa_nombre"] = str(self.linked_company.get("nombre_empresa") or "").strip()
+        try:
+            result = seguimientos.ensure_case_record(cedula, user_row, is_compensar=is_compensar)
+        except Exception as exc:
+            messagebox.showerror("Error", str(exc))
+            return False
+        self.case_record = result.get("record") or {}
+        self.case_path = self.case_record.get("local_path")
+        self.path_var.set(self.case_record.get("webViewLink") or self.case_path or "")
+        self.open_btn.config(state="normal" if self.case_record else "disabled")
+        created = bool(result.get("created"))
+        max_seg = result.get("max_seguimientos")
+        action = "creado" if created else "actualizado"
+        self.status_var.set(
+            f"Caso {action} correctamente. Límite de seguimientos: {max_seg}."
+        )
+        self._refresh_suggestion()
+        return True
+
+    def _abrir_preparar_caso(self):
         if not self.user_row:
             messagebox.showerror("Error", "Primero busca y selecciona una cédula válida.")
             return
@@ -13880,37 +14305,116 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             messagebox.showerror("Error", "Cédula inválida.")
             return
         is_compensar = self.compensar_var.get().startswith("Si")
-        try:
-            result = seguimientos.ensure_case_workbook(cedula, self.user_row, is_compensar=is_compensar)
-        except Exception as exc:
-            messagebox.showerror("Error", str(exc))
-            return
-        self.case_path = result.get("path")
-        self.path_var.set(self.case_path or "")
-        self.open_btn.config(state="normal" if self.case_path else "disabled")
-        self.edit_btn.config(state="normal" if self.case_path else "disabled")
-        created = bool(result.get("created"))
-        max_seg = result.get("max_seguimientos")
-        action = "creado" if created else "actualizado"
-        self.status_var.set(
-            f"Caso {action} correctamente. Límite de seguimientos: {max_seg}."
+        user_row = dict(self.user_row or {})
+        if self.linked_company:
+            if self.linked_company.get("nit_empresa"):
+                user_row["empresa_nit"] = str(self.linked_company.get("nit_empresa") or "").strip()
+            if self.linked_company.get("nombre_empresa"):
+                user_row["empresa_nombre"] = str(self.linked_company.get("nombre_empresa") or "").strip()
+
+        def _worker(progress):
+            progress("Preparando el caso en Google Drive...", 20)
+            result = seguimientos.ensure_case_record(cedula, user_row, is_compensar=is_compensar)
+            record = result.get("record") or {}
+            case_path = record.get("local_path")
+            case_target = (
+                record
+                if str((record or {}).get("source") or "").strip() == "drive"
+                and str((record or {}).get("mime_type") or "").strip() == seguimientos.GOOGLE_SHEETS_MIME
+                else case_path
+            )
+            cache_key = self._current_case_cache_key(record, case_path)
+            if (not bool(result.get("created"))) and cache_key and cache_key == self._case_cache_key and self._case_suggestion_cache and self._case_summary_cache:
+                progress("Usando el estado del caso ya leído...", 75)
+                suggestion = self._case_suggestion_cache
+                summary = self._case_summary_cache
+            else:
+                progress("Leyendo la hoja sugerida para continuar...", 75)
+                suggestion = seguimientos.suggest_next_step(case_target)
+                summary = seguimientos.describe_case(case_target)
+            progress("Abriendo el editor del caso...", 100)
+            return {
+                "result": result,
+                "suggestion": suggestion,
+                "summary": summary,
+                "cache_key": cache_key,
+            }
+
+        def _on_success(data):
+            result = data.get("result") or {}
+            self.case_record = result.get("record") or {}
+            self.case_path = self.case_record.get("local_path")
+            self.path_var.set(self.case_record.get("webViewLink") or self.case_path or "")
+            self.open_btn.config(state="normal" if self.case_record else "disabled")
+            self._case_suggestion_cache = data.get("suggestion")
+            self._case_summary_cache = data.get("summary")
+            self._case_cache_key = str(data.get("cache_key") or self._current_case_cache_key(self.case_record, self.case_path))
+            created = bool(result.get("created"))
+            max_seg = result.get("max_seguimientos")
+            action = "creado" if created else "actualizado"
+            self._apply_summary_result(
+                suggestion=data.get("suggestion"),
+                summary=data.get("summary"),
+            )
+            self.status_var.set(f"Caso {action} correctamente. Límite de seguimientos: {max_seg}.")
+            if self._get_case_target():
+                self._open_editor()
+
+        self._run_loading_job(
+            title="Preparando caso",
+            initial_status="Validando la cédula y preparando el caso...",
+            worker=_worker,
+            on_success=_on_success,
+            on_error_title="Caso",
         )
-        self._refresh_suggestion()
 
     def _abrir_archivo(self):
-        if not self.case_path or not os.path.exists(self.case_path):
+        if not self.case_record:
             messagebox.showerror("Error", "No hay archivo para abrir.")
             return
         try:
-            os.startfile(self.case_path)
+            open_target = self.case_record.get("webViewLink") or self.case_path
+            if open_target and str(open_target).startswith("http"):
+                _open_url_prefer_chrome(open_target)
+            elif self.case_path and os.path.exists(self.case_path):
+                os.startfile(self.case_path)
+            else:
+                raise RuntimeError("No se encontró una ruta o link válido del caso.")
         except Exception as exc:
             messagebox.showerror("Error", f"No se pudo abrir el archivo.\n{exc}")
 
     def _open_editor(self):
-        if not self.case_path or not os.path.exists(self.case_path):
+        case_target = self._get_case_target()
+        if not case_target:
             messagebox.showerror("Error", "No hay archivo de seguimiento para diligenciar.")
             return
-        editor = SeguimientoEditorWindow(self, self.case_path)
+        if self.case_record and (
+            str((self.case_record or {}).get("source") or "").strip() != "drive"
+            or str((self.case_record or {}).get("mime_type") or "").strip()
+            != seguimientos.GOOGLE_SHEETS_MIME
+        ):
+            try:
+                raw = self.cedula_combo.get().strip()
+                cedula = re.sub(r"\D+", "", raw)
+                user_row = dict(self.user_row or {})
+                if self.linked_company:
+                    if self.linked_company.get("nit_empresa"):
+                        user_row["empresa_nit"] = str(self.linked_company.get("nit_empresa") or "").strip()
+                    if self.linked_company.get("nombre_empresa"):
+                        user_row["empresa_nombre"] = str(self.linked_company.get("nombre_empresa") or "").strip()
+                result = seguimientos.ensure_case_record(
+                    cedula,
+                    user_row,
+                    is_compensar=self.compensar_var.get().startswith("Si"),
+                )
+            except Exception as exc:
+                messagebox.showerror("Error", f"No se pudo migrar el caso a Google Sheets.\n{exc}")
+                return
+            self.case_record = result.get("record") or self.case_record
+            self.case_path = self.case_record.get("local_path")
+            self.path_var.set(self.case_record.get("webViewLink") or self.case_path or "")
+            self.open_btn.config(state="normal" if self.case_record else "disabled")
+        editor = SeguimientoEditorWindow(self, self.case_path, case_record=self.case_record)
         _focus_window(editor)
 
     def _close_to_hub(self):
@@ -13919,21 +14423,37 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
 
 
 class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
-    def __init__(self, parent, case_path):
+    def __init__(self, parent, case_path, case_record=None):
         super().__init__(parent)
         self.owner = parent
         self.case_path = case_path
+        self.case_record = case_record or {}
+        self.case_target = (
+            self.case_record
+            if (
+                str((self.case_record or {}).get("source") or "").strip() == "drive"
+                and str((self.case_record or {}).get("mime_type") or "").strip()
+                == seguimientos.GOOGLE_SHEETS_MIME
+            )
+            else self.case_path
+        )
         self.title("Seguimientos - Diligenciamiento")
         self.configure(bg=COLOR_LIGHT_BG)
         self.geometry("1200x820")
         _maximize_window(self)
 
-        self.meta = seguimientos.get_case_meta(case_path)
-        self.max_seg = int(self.meta.get("max_seguimientos") or 3)
-        self.sheet_options = [seguimientos.SHEET_BASE] + [
-            f"{seguimientos.SHEET_PREFIX}{i}" for i in range(1, self.max_seg + 1)
-        ] + [seguimientos.SHEET_FINAL]
-        suggestion = seguimientos.suggest_next_step(case_path)
+        self.meta = seguimientos.get_case_meta(self.case_target)
+        self.workflow = seguimientos.get_workflow_state(self.case_target)
+        self.max_seg = int(
+            self.workflow.get("max_seguimientos") or self.meta.get("max_seguimientos") or 3
+        )
+        self.base_sheet_name = str(
+            self.workflow.get("base_sheet_name")
+            or self.meta.get("base_sheet_name")
+            or seguimientos.SHEET_BASE
+        )
+        self.sheet_options = list(self.workflow.get("visible_sheets") or [self.base_sheet_name])
+        suggestion = seguimientos.suggest_next_step(self.case_target)
         self.sheet_var = tk.StringVar(value=suggestion.get("sheet") or self.sheet_options[0])
         if self.sheet_var.get() not in self.sheet_options:
             self.sheet_var.set(self.sheet_options[0])
@@ -13955,6 +14475,8 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         self.follow_emp_eval = []
         self.follow_emp_obs = []
         self.follow_asistentes = []
+        self.current_followup_index = None
+        self.save_button = None
 
         self._build_header()
         self._build_controls()
@@ -13973,7 +14495,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         ).pack(anchor="w")
         tk.Label(
             header,
-            text=f"Caso: {self.case_path}",
+            text=f"Caso: {((self.case_record or {}).get('webViewLink') or self.case_path or '')}",
             font=("Arial", 10),
             bg=COLOR_LIGHT_BG,
             fg="#333333",
@@ -13998,14 +14520,10 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         self.sheet_combo.pack(side="left")
         self.sheet_combo.bind("<<ComboboxSelected>>", lambda _e: self._render_selected_sheet())
 
-        ttk.Button(controls, text="Guardar hoja", command=self._save_current_sheet).pack(
-            side="right"
-        )
+        self.save_button = ttk.Button(controls, text="Guardar hoja", command=self._save_current_sheet)
+        self.save_button.pack(side="right")
         ttk.Button(controls, text="Cerrar", command=self.destroy).pack(side="right", padx=(0, 8))
-        ttk.Button(controls, text="Abrir Excel", command=self._open_excel).pack(
-            side="right", padx=(0, 8)
-        )
-        ttk.Button(controls, text="Refrescar", command=self._render_selected_sheet).pack(
+        ttk.Button(controls, text="Abrir en Drive", command=self._open_excel).pack(
             side="right", padx=(0, 8)
         )
 
@@ -14057,6 +14575,10 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
     def _safe_set_date_widget(self, widget, value):
         text = str(value or "").strip()
         if not text:
+            try:
+                widget.delete(0, tk.END)
+            except Exception:
+                pass
             return
         for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y"):
             try:
@@ -14082,6 +14604,40 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         date_entry.grid(row=row, column=1, sticky="w", pady=3)
         self._safe_set_date_widget(date_entry, var.get())
         return date_entry
+
+    def _add_dictation_subsection(
+        self,
+        parent,
+        *,
+        title,
+        store,
+        key,
+        field_id,
+        initial_value="",
+        height=5,
+        bottom_pad=8,
+    ):
+        section = tk.Frame(parent, bg=COLOR_LIGHT_BG, bd=1, relief="groove")
+        section.pack(fill="x", pady=(0, bottom_pad))
+        header = tk.Frame(section, bg=COLOR_LIGHT_BG)
+        header.pack(fill="x", padx=10, pady=(8, 4))
+        title_label = tk.Label(header, text=title, font=FONT_LABEL, bg=COLOR_LIGHT_BG)
+        title_label.pack(side="left", anchor="w")
+        text_widget = tk.Text(section, height=height, wrap="word")
+        text_widget.pack(fill="x", padx=10, pady=(0, 10))
+        attach_dictation(
+            text_widget,
+            form_id="seguimientos",
+            field_id=field_id,
+            session_provider=lambda: _supabase_get_access_token(".env"),
+            log_fn=_log_capture,
+            controls_parent=header,
+            anchor_widget=title_label,
+            placement="inline_right",
+        )
+        text_widget.insert("1.0", str(initial_value or ""))
+        store[key] = text_widget
+        return text_widget
 
     def _update_empresa_nombre_suggestions(self, _event=None):
         combo = self.company_name_combo
@@ -14135,7 +14691,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
     def _render_selected_sheet(self):
         self._clear_content()
         sheet = self.sheet_var.get()
-        if sheet == seguimientos.SHEET_BASE:
+        if sheet == self.base_sheet_name:
             self._render_sheet_base()
         elif sheet.startswith(seguimientos.SHEET_PREFIX):
             match = re.search(r"(\d+)$", sheet)
@@ -14145,10 +14701,128 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             self._render_sheet_followup(int(match.group(1)))
         else:
             self._render_sheet_final()
+        self._apply_sheet_access_rules()
         self.canvas.yview_moveto(0)
 
+    def _refresh_workflow_state(self, preferred_sheet=None):
+        self.meta = seguimientos.get_case_meta(self.case_target)
+        self.workflow = seguimientos.get_workflow_state(self.case_target)
+        self.max_seg = int(
+            self.workflow.get("max_seguimientos") or self.meta.get("max_seguimientos") or 3
+        )
+        self.base_sheet_name = str(
+            self.workflow.get("base_sheet_name")
+            or self.meta.get("base_sheet_name")
+            or seguimientos.SHEET_BASE
+        )
+        self.sheet_options = list(self.workflow.get("visible_sheets") or [self.base_sheet_name])
+        if getattr(self, "sheet_combo", None) is not None:
+            self.sheet_combo["values"] = self.sheet_options
+        target_sheet = preferred_sheet or self.sheet_var.get().strip()
+        if target_sheet not in self.sheet_options:
+            target_sheet = (
+                self.workflow.get("suggested_sheet")
+                or (self.sheet_options[0] if self.sheet_options else self.base_sheet_name)
+            )
+        self.sheet_var.set(target_sheet)
+
+    def _is_sheet_editable(self, sheet_name):
+        current = str(sheet_name or "").strip()
+        if current == str(self.base_sheet_name or "").strip():
+            return True
+        return current == str((self.workflow or {}).get("editable_sheet") or "").strip()
+
+    def _set_single_widget_edit_state(self, widget, editable):
+        try:
+            klass = str(widget.winfo_class() or "")
+        except Exception:
+            klass = ""
+        try:
+            if klass == "Text":
+                widget.config(state="normal" if editable else "disabled")
+            elif klass in {"Entry", "TEntry", "DateEntry"}:
+                widget.config(state="normal" if editable else "disabled")
+            elif klass == "TCombobox":
+                widget.config(state="readonly" if editable else "disabled")
+            elif klass in {"Button", "TButton"}:
+                widget.config(state="normal" if editable else "disabled")
+        except Exception:
+            pass
+
+    def _get_base_followup_date_widget(self, followup_number):
+        try:
+            idx = int(followup_number or 0)
+        except Exception:
+            return None
+        if 1 <= idx <= 3 and len(self.base_dates_1) >= idx:
+            return self.base_dates_1[idx - 1]
+        if 4 <= idx <= 6:
+            pos = idx - 4
+            if len(self.base_dates_2) > pos:
+                return self.base_dates_2[pos]
+        return None
+
+    def _set_widget_edit_state(self, widget, editable):
+        try:
+            klass = str(widget.winfo_class() or "")
+        except Exception:
+            klass = ""
+        try:
+            if klass == "Text":
+                widget.config(state="normal" if editable else "disabled")
+            elif klass in {"Entry", "TEntry", "DateEntry"}:
+                widget.config(state="normal" if editable else "disabled")
+            elif klass == "TCombobox":
+                if widget is self.company_name_combo:
+                    widget.config(state="normal" if editable else "disabled")
+                else:
+                    widget.config(state="readonly" if editable else "disabled")
+            elif klass in {"Button", "TButton"}:
+                widget.config(state="normal" if editable else "disabled")
+        except Exception:
+            pass
+        for child in widget.winfo_children():
+            self._set_widget_edit_state(child, editable)
+
+    def _apply_sheet_access_rules(self):
+        editable = self._is_sheet_editable(self.sheet_var.get())
+        self._set_widget_edit_state(self.content_frame, editable)
+        current_sheet = self.sheet_var.get().strip()
+        next_followup = int((self.workflow or {}).get("next_followup") or 0)
+        if current_sheet == str(self.base_sheet_name or "").strip():
+            if next_followup <= 1:
+                self._set_widget_edit_state(self.content_frame, True)
+                if self.save_button is not None:
+                    self.save_button.config(state="normal")
+                self.status_var.set("Hoja base y seguimiento 1 habilitados hasta registrar la fecha del seguimiento 1.")
+                return
+            self._set_widget_edit_state(self.content_frame, False)
+            next_date_widget = self._get_base_followup_date_widget(next_followup)
+            if next_date_widget is not None:
+                self._set_single_widget_edit_state(next_date_widget, True)
+            if self.save_button is not None:
+                self.save_button.config(state="normal")
+            self.status_var.set(
+                f"Hoja base bloqueada. Solo puedes editar la fecha del seguimiento {next_followup}."
+            )
+            return
+        if self.save_button is not None:
+            self.save_button.config(state="normal" if editable else "disabled")
+        if not editable:
+            if current_sheet == seguimientos.SHEET_FINAL:
+                self.status_var.set("Ponderado final es de solo revisión.")
+            elif current_sheet == self.base_sheet_name:
+                self.status_var.set("Editando hoja base.")
+            elif current_sheet.startswith(seguimientos.SHEET_PREFIX):
+                self.status_var.set(
+                    f"{current_sheet} ya fue diligenciado. Solo puedes revisarlo; el siguiente habilitado es "
+                    f"{(self.workflow or {}).get('editable_sheet') or seguimientos.SHEET_FINAL}."
+                )
+        elif (self.workflow or {}).get("message"):
+            self.status_var.set(str((self.workflow or {}).get("message")))
+
     def _render_sheet_base(self):
-        payload = seguimientos.get_base_payload(self.case_path)
+        payload = seguimientos.get_base_payload(self.case_target)
         self.base_vars = {
             k: tk.StringVar(value=str(payload.get(k, "")))
             for k in [
@@ -14164,6 +14838,8 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
                 "cargo",
                 "asesor",
                 "sede_empresa",
+                "caja_compensacion",
+                "profesional_asignado",
                 "nombre_vinculado",
                 "cedula",
                 "telefono_vinculado",
@@ -14176,6 +14852,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
                 "certificado_porcentaje",
                 "discapacidad",
                 "tipo_contrato",
+                "fecha_firma_contrato",
                 "fecha_inicio_contrato",
                 "fecha_fin_contrato",
             ]
@@ -14215,7 +14892,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             textvariable=self.base_vars["nombre_empresa"],
             values=(),
             state="normal",
-            width=58,
+            width=72,
         )
         self.company_name_combo.grid(row=row, column=1, sticky="w", pady=3)
         self.company_name_combo.bind("<KeyRelease>", self._update_empresa_nombre_suggestions)
@@ -14241,6 +14918,22 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         self._add_labeled_entry(top, row, "Asesor:", self.base_vars["asesor"], width=40)
         row += 1
         self._add_labeled_entry(top, row, "Sede Compensar:", self.base_vars["sede_empresa"], width=30)
+        row += 1
+        self._add_labeled_entry(
+            top,
+            row,
+            "Empresa afiliada a Caja de Compensación:",
+            self.base_vars["caja_compensacion"],
+            width=30,
+        )
+        row += 1
+        self._add_labeled_entry(
+            top,
+            row,
+            "Profesional asignado RECA:",
+            self.base_vars["profesional_asignado"],
+            width=40,
+        )
         row += 1
 
         search_actions = tk.Frame(top, bg=COLOR_LIGHT_BG)
@@ -14283,6 +14976,14 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         self._add_labeled_date(
             vinc,
             r,
+            "Fecha firma contrato:",
+            self.base_vars["fecha_firma_contrato"],
+            width=18,
+        )
+        r += 1
+        self._add_labeled_date(
+            vinc,
+            r,
             "Fecha inicio contrato:",
             self.base_vars["fecha_inicio_contrato"],
             width=18,
@@ -14306,16 +15007,16 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             pady=10,
         )
         txt.pack(fill="x", pady=(0, 10))
-        self.base_text["apoyos_ajustes"] = tk.Text(txt, height=4, wrap="word")
-        self.base_text["apoyos_ajustes"].pack(fill="x")
-        attach_dictation(
-            self.base_text["apoyos_ajustes"],
-            form_id="seguimientos",
+        self._add_dictation_subsection(
+            txt,
+            title="Apoyos y/o ajustes razonables requeridos:",
+            store=self.base_text,
+            key="apoyos_ajustes",
             field_id="base:apoyos_ajustes",
-            session_provider=lambda: _supabase_get_access_token(".env"),
-            log_fn=_log_capture,
+            initial_value=payload.get("apoyos_ajustes", ""),
+            height=4,
+            bottom_pad=0,
         )
-        self.base_text["apoyos_ajustes"].insert("1.0", str(payload.get("apoyos_ajustes", "")))
 
         funcs = tk.LabelFrame(
             self.content_frame,
@@ -14388,10 +15089,11 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         self.status_var.set("Editando hoja base.")
 
     def _render_sheet_followup(self, idx):
-        payload = seguimientos.get_followup_payload(self.case_path, idx)
+        self.current_followup_index = idx
+        payload = seguimientos.get_followup_payload(self.case_target, idx)
         self.follow_vars = {
             "modalidad": tk.StringVar(value=str(payload.get("modalidad") or "")),
-            "seguimiento_numero": tk.StringVar(value=str(payload.get("seguimiento_numero") or idx)),
+            "seguimiento_numero": tk.StringVar(value=str(idx)),
             "tipo_apoyo": tk.StringVar(value=str(payload.get("tipo_apoyo") or "")),
         }
         top = tk.LabelFrame(
@@ -14417,13 +15119,20 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         tk.Label(top, text="Seguimiento #:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
             row=0, column=2, sticky="w", padx=(24, 6)
         )
-        ttk.Combobox(
+        tk.Label(
             top,
             textvariable=self.follow_vars["seguimiento_numero"],
-            values=[str(i) for i in range(1, self.max_seg + 1)],
-            state="readonly",
+            font=FONT_LABEL,
+            bg=COLOR_LIGHT_BG,
             width=8,
+            anchor="w",
         ).grid(row=0, column=3, sticky="w")
+        if idx > 1:
+            ttk.Button(
+                top,
+                text="Copiar seguimiento anterior",
+                command=self._copy_previous_followup_values,
+            ).grid(row=0, column=4, sticky="w", padx=(24, 0))
 
         items = tk.LabelFrame(
             self.content_frame,
@@ -14533,36 +15242,24 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             pady=10,
         )
         txt.pack(fill="x", pady=(0, 10))
-        template_actions = tk.Frame(txt, bg=COLOR_LIGHT_BG)
-        template_actions.pack(fill="x", pady=(0, 8))
-        ttk.Button(
-            template_actions,
-            text="Seguimiento y normativa",
-            command=self._insert_followup_normativa_template,
-        ).pack(side="left")
-        self.follow_text["situacion_encontrada"] = tk.Text(txt, height=5, wrap="word")
-        self.follow_text["situacion_encontrada"].pack(fill="x", pady=(0, 8))
-        attach_dictation(
-            self.follow_text["situacion_encontrada"],
-            form_id="seguimientos",
+        self._add_dictation_subsection(
+            txt,
+            title="Situación encontrada:",
+            store=self.follow_text,
+            key="situacion_encontrada",
             field_id=f"followup_{idx}:situacion_encontrada",
-            session_provider=lambda: _supabase_get_access_token(".env"),
-            log_fn=_log_capture,
+            initial_value=payload.get("situacion_encontrada") or "",
+            height=5,
         )
-        self.follow_text["situacion_encontrada"].insert(
-            "1.0", str(payload.get("situacion_encontrada") or "")
-        )
-        self.follow_text["estrategias_ajustes"] = tk.Text(txt, height=5, wrap="word")
-        self.follow_text["estrategias_ajustes"].pack(fill="x")
-        attach_dictation(
-            self.follow_text["estrategias_ajustes"],
-            form_id="seguimientos",
+        self._add_dictation_subsection(
+            txt,
+            title="Estrategias:",
+            store=self.follow_text,
+            key="estrategias_ajustes",
             field_id=f"followup_{idx}:estrategias_ajustes",
-            session_provider=lambda: _supabase_get_access_token(".env"),
-            log_fn=_log_capture,
-        )
-        self.follow_text["estrategias_ajustes"].insert(
-            "1.0", str(payload.get("estrategias_ajustes") or "")
+            initial_value=payload.get("estrategias_ajustes") or "",
+            height=5,
+            bottom_pad=0,
         )
 
         asist = tk.LabelFrame(
@@ -14596,6 +15293,46 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             self.follow_asistentes.append((e_name, e_cargo))
 
         self.status_var.set(f"Editando hoja de seguimiento {idx}.")
+
+    def _set_entry_value(self, entry, value):
+        entry.delete(0, tk.END)
+        entry.insert(0, str(value or ""))
+
+    def _copy_previous_followup_values(self):
+        idx = int(self.current_followup_index or 0)
+        if idx <= 1:
+            messagebox.showinfo("Seguimientos", "El seguimiento 1 no tiene un seguimiento anterior para copiar.")
+            return
+        try:
+            previous = seguimientos.get_followup_payload(self.case_target, idx - 1)
+        except Exception as exc:
+            messagebox.showerror("Error", f"No se pudo leer el seguimiento anterior.\n{exc}")
+            return
+
+        self.follow_vars["modalidad"].set(str(previous.get("modalidad") or ""))
+        self.follow_vars["tipo_apoyo"].set(str(previous.get("tipo_apoyo") or ""))
+
+        prev_item_obs = previous.get("item_observaciones") or []
+        prev_item_auto = previous.get("item_autoevaluacion") or []
+        prev_item_emp = previous.get("item_eval_empresa") or []
+        prev_emp_eval = previous.get("empresa_eval") or []
+        prev_emp_obs = previous.get("empresa_observacion") or []
+
+        for i, entry in enumerate(self.follow_item_obs):
+            self._set_entry_value(entry, prev_item_obs[i] if i < len(prev_item_obs) else "")
+        for i, var in enumerate(self.follow_item_auto):
+            var.set(str(prev_item_auto[i] if i < len(prev_item_auto) else ""))
+        for i, var in enumerate(self.follow_item_emp):
+            var.set(str(prev_item_emp[i] if i < len(prev_item_emp) else ""))
+        for i, var in enumerate(self.follow_emp_eval):
+            var.set(str(prev_emp_eval[i] if i < len(prev_emp_eval) else ""))
+        for i, entry in enumerate(self.follow_emp_obs):
+            self._set_entry_value(entry, prev_emp_obs[i] if i < len(prev_emp_obs) else "")
+
+        self.status_var.set(
+            f"Se copiaron dropdowns y observaciones desde el seguimiento {idx - 1}. "
+            "No se copiaron situación, estrategias ni asistentes."
+        )
 
     def _render_sheet_final(self):
         card = tk.LabelFrame(
@@ -14677,6 +15414,8 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             "cargo": "cargo",
             "asesor": "asesor",
             "sede_empresa": "sede_empresa",
+            "caja_compensacion": "caja_compensacion",
+            "profesional_asignado": "profesional_asignado",
         }
         for field, key in mapping.items():
             if field in self.base_vars:
@@ -14695,7 +15434,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
     def _collect_followup_payload(self, idx):
         payload = {
             "modalidad": self.follow_vars["modalidad"].get().strip(),
-            "seguimiento_numero": self.follow_vars["seguimiento_numero"].get().strip() or str(idx),
+            "seguimiento_numero": str(idx),
             "item_observaciones": [e.get().strip() for e in self.follow_item_obs],
             "item_autoevaluacion": [v.get().strip() for v in self.follow_item_auto],
             "item_eval_empresa": [v.get().strip() for v in self.follow_item_emp],
@@ -14712,14 +15451,20 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _save_current_sheet(self):
         sheet = self.sheet_var.get()
+        if not self._is_sheet_editable(sheet):
+            messagebox.showinfo(
+                "Seguimientos",
+                "Esta hoja ya está cerrada. Solo se puede editar la hoja actualmente habilitada."
+            )
+            return
         try:
-            if sheet == seguimientos.SHEET_BASE:
+            if sheet == self.base_sheet_name:
                 payload = self._collect_base_payload()
-                seguimientos.save_base_payload(self.case_path, payload)
+                seguimientos.save_base_payload(self.case_target, payload)
             elif sheet.startswith(seguimientos.SHEET_PREFIX):
                 idx = int(re.search(r"(\d+)$", sheet).group(1))
                 payload = self._collect_followup_payload(idx)
-                seguimientos.save_followup_payload(self.case_path, idx, payload)
+                seguimientos.save_followup_payload(self.case_target, idx, payload)
             else:
                 messagebox.showinfo("Ponderado final", "Esta hoja no se diligencia manualmente.")
                 return
@@ -14732,15 +15477,33 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
             return
+        try:
+            if self.case_record and self.case_path:
+                seguimientos.sync_case_record_from_local(self.case_record, self.case_path)
+        except Exception as exc:
+            messagebox.showwarning(
+                "Sincronización con Drive",
+                f"La hoja se guardó localmente, pero falló la sincronización con Drive.\n{exc}",
+            )
         self.status_var.set(f"Guardado exitoso en hoja: {sheet}")
         if isinstance(self.owner, SeguimientosWindow):
+            self.owner.case_record = self.case_record
             self.owner.case_path = self.case_path
-            self.owner.path_var.set(self.case_path)
+            self.owner.path_var.set(
+                (self.case_record or {}).get("webViewLink") or self.case_path
+            )
             self.owner._refresh_suggestion()
+        self._refresh_workflow_state()
+        self._render_selected_sheet()
 
     def _open_excel(self):
         try:
-            os.startfile(self.case_path)
+            if self.case_record and str((self.case_record or {}).get("webViewLink") or "").strip():
+                _open_url_prefer_chrome(str(self.case_record.get("webViewLink")))
+            elif self.case_path:
+                os.startfile(self.case_path)
+            else:
+                raise RuntimeError("No hay ruta o link del caso para abrir.")
         except Exception as exc:
             messagebox.showerror("Error", f"No se pudo abrir el archivo.\n{exc}")
 

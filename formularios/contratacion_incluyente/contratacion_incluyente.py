@@ -531,6 +531,8 @@ def get_usuario_reca_by_cedula(cedula, env_path=".env"):
             "fecha_firma_contrato",
             "tipo_contrato",
             "fecha_fin",
+            "empresa_nit",
+            "empresa_nombre",
         ]
     )
     params = {
@@ -668,6 +670,8 @@ def sync_usuarios_reca(env_path=".env"):
     if not data:
         return 0
 
+    empresa_nit = (SECTION_1_CACHE.get("nit_empresa") or "").strip()
+    empresa_nombre = (SECTION_1_CACHE.get("nombre_empresa") or "").strip()
     rows = []
     for entry in data:
         cedula = _normalize_cedula(entry.get("cedula"))
@@ -704,6 +708,9 @@ def sync_usuarios_reca(env_path=".env"):
             "pendiente_otros_oferentes": (entry.get("pendiente_otros_oferentes") or "").strip(),
             "cuenta_pension": (entry.get("cuenta_pension") or "").strip(),
             "tipo_pension": (entry.get("tipo_pension") or "").strip(),
+            # Siempre dejamos la última empresa de contratación asociada a la cédula.
+            "empresa_nit": empresa_nit,
+            "empresa_nombre": empresa_nombre,
         }
         cleaned = {k: v for k, v in row.items() if v not in ("", None)}
         rows.append(cleaned)

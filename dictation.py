@@ -400,6 +400,9 @@ class DictationTextHelper:
         session_provider: Callable[[], str],
         log_fn: Optional[Callable[[str], None]] = None,
         show_controls: bool = True,
+        controls_parent: Optional[tk.Widget] = None,
+        anchor_widget: Optional[tk.Widget] = None,
+        placement: str = "auto",
     ):
         self.text = text_widget
         self.form_id = str(form_id or "")
@@ -407,12 +410,14 @@ class DictationTextHelper:
         self.session_provider = session_provider
         self.log_fn = log_fn
         self.show_controls = bool(show_controls)
+        self.placement = str(placement or "auto").strip().lower()
         self._handle: Optional[RecordingHandle] = None
         self._tick_after_id = None
         self._worker = None
         self._is_recording = False
         self._is_processing = False
-        self._controls_parent = self.text.master
+        self._controls_parent = controls_parent or self.text.master
+        self._anchor_widget = anchor_widget or self.text
         self._controls = None
         self._button = None
         self._status = None
@@ -436,6 +441,8 @@ class DictationTextHelper:
             self._status.pack(side="left", padx=(0, 6), pady=2)
             self._controls.place(x=0, y=0)
             self.text.bind("<Configure>", self._place_controls, add="+")
+            if self._anchor_widget is not self.text:
+                self._anchor_widget.bind("<Configure>", self._place_controls, add="+")
             self._controls_parent.bind("<Configure>", self._place_controls, add="+")
         self.text.bind("<Destroy>", self._on_destroy, add="+")
         if self.show_controls:
@@ -487,28 +494,51 @@ class DictationTextHelper:
         if not self.show_controls or self._controls is None:
             return
         try:
-            if not self.text.winfo_exists() or not self._controls.winfo_exists():
+            if (
+                not self.text.winfo_exists()
+                or not self._controls.winfo_exists()
+                or not self._anchor_widget.winfo_exists()
+            ):
                 return
             parent = self._controls_parent
             parent_w = max(1, parent.winfo_width())
             parent_h = max(1, parent.winfo_height())
-            text_x = self.text.winfo_x()
-            text_y = self.text.winfo_y()
-            text_w = self.text.winfo_width()
-            text_h = self.text.winfo_height()
+            anchor_x = self._anchor_widget.winfo_x()
+            anchor_y = self._anchor_widget.winfo_y()
+            anchor_w = self._anchor_widget.winfo_width()
+            anchor_h = self._anchor_widget.winfo_height()
             controls_w = max(1, self._controls.winfo_reqwidth())
             controls_h = max(1, self._controls.winfo_reqheight())
 
-            x = text_x + text_w + 6
-            y = text_y
+            if self.placement == "inline_right":
+                x = min(
+                    max(0, anchor_x + anchor_w + 8),
+                    max(0, parent_w - controls_w),
+                )
+                y = anchor_y + max(0, (anchor_h - controls_h) // 2)
+                y = max(0, min(y, max(0, parent_h - controls_h)))
+                self._controls.place(x=int(x), y=int(y))
+                return
 
-            if x + controls_w > parent_w:
-                x_left = text_x - controls_w - 6
-                if x_left >= 0:
-                    x = x_left
+            x = min(max(0, anchor_x + anchor_w - controls_w), max(0, parent_w - controls_w))
+            y = anchor_y - controls_h - 4
+
+            if y < 0:
+                x_right = anchor_x + anchor_w + 6
+                if x_right + controls_w <= parent_w:
+                    x = x_right
+                    y = anchor_y
                 else:
-                    x = min(max(0, text_x + text_w - controls_w), max(0, parent_w - controls_w))
-                    y = min(text_y + text_h + 2, max(0, parent_h - controls_h))
+                    x_left = anchor_x - controls_w - 6
+                    if x_left >= 0:
+                        x = x_left
+                        y = anchor_y
+                    else:
+                        x = min(
+                            max(0, anchor_x + anchor_w - controls_w),
+                            max(0, parent_w - controls_w),
+                        )
+                        y = min(anchor_y + anchor_h + 2, max(0, parent_h - controls_h))
 
             y = max(0, min(y, max(0, parent_h - controls_h)))
             self._controls.place(x=int(x), y=int(y))
@@ -630,6 +660,9 @@ def attach_dictation(
     session_provider: Callable[[], str],
     log_fn: Optional[Callable[[str], None]] = None,
     show_controls: bool = True,
+    controls_parent: Optional[tk.Widget] = None,
+    anchor_widget: Optional[tk.Widget] = None,
+    placement: str = "auto",
 ):
     try:
         if str(text_widget.cget("state")) == "disabled":
@@ -647,6 +680,9 @@ def attach_dictation(
         session_provider=session_provider,
         log_fn=log_fn,
         show_controls=show_controls,
+        controls_parent=controls_parent,
+        anchor_widget=anchor_widget,
+        placement=placement,
     )
     setattr(text_widget, "_dictation_helper", helper)
     return helper

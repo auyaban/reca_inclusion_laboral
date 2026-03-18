@@ -1291,6 +1291,17 @@ def format_checkbox_symbol(value):
     return "\u2611" if bool(value) else "\u2610"
 
 
+def write_checkbox_symbol(ws, cell_ref, value):
+    """
+    Write a checkbox glyph that survives Google Drive PDF export.
+    Uses ✓ (U+2713) and □ (U+25A1) which are present in every Unicode font
+    (Arial, Calibri, DejaVu, Noto, etc.), avoiding font-embedding issues.
+    """
+    symbol = "\u2713" if bool(value) else "\u25A1"
+    ws_write(ws, cell_ref, symbol)
+    return symbol
+
+
 _EXCEL_MAX_ROW_HEIGHT = 409.0
 
 

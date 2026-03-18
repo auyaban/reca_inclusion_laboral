@@ -27,13 +27,27 @@ from formularios.presentacion_programa import presentacion_programa
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.condiciones_vacante import condiciones_vacante
 from formularios.seleccion_incluyente import seleccion_incluyente
+from formularios.seleccion_incluyente_labs import seleccion_incluyente as seleccion_incluyente_labs
+from formularios.seleccion_incluyente_labs.voice_section2 import (
+    VOICE_FUNCTION_NAME as SELECTION_SECTION2_VOICE_FUNCTION,
+    get_subsection_spec as get_selection_labs_subsection_spec,
+    postprocess_extraction_payload as postprocess_selection_labs_extraction,
+    summarize_candidate_updates as summarize_selection_labs_updates,
+)
 from formularios.contratacion_incluyente import contratacion_incluyente
 from formularios.induccion_organizacional import induccion_organizacional
 from formularios.induccion_operativa import induccion_operativa
 from formularios.sensibilizacion import sensibilizacion
 from formularios.seguimientos import seguimientos
 import drive_upload
-from dictation import attach_dictation, cleanup_stale_audio
+from dictation import (
+    attach_dictation,
+    cancel_recording,
+    claim_recording,
+    cleanup_stale_audio,
+    start_recording,
+    stop_and_submit_audio,
+)
 import text_review
 import completion_payloads
 from formularios.common import (
@@ -65,7 +79,7 @@ from updater import (
     download_installer,
     run_installer,
 )
-from logging_utils import get_log_file_path, get_logs_root, log_app_event
+from logging_utils import get_log_file_path, get_logs_root, log_app_event, log_labs_event
 
 
 APP_NAME = "RECA Inclusion Laboral"
@@ -134,6 +148,7 @@ FORM_MODULE_MAP = {
     "evaluacion_accesibilidad": evaluacion_accesibilidad,
     "condiciones_vacante": condiciones_vacante,
     "seleccion_incluyente": seleccion_incluyente,
+    "seleccion_incluyente_labs": seleccion_incluyente_labs,
     "contratacion_incluyente": contratacion_incluyente,
     "induccion_organizacional": induccion_organizacional,
     "induccion_operativa": induccion_operativa,
@@ -144,6 +159,7 @@ WINDOW_CLASS_FORM_ID_MAP = {
     "EvaluacionAccesibilidadWindow": "evaluacion_accesibilidad",
     "CondicionesVacanteWindow": "condiciones_vacante",
     "SeleccionIncluyenteWindow": "seleccion_incluyente",
+    "SeleccionIncluyenteLabsWindow": "seleccion_incluyente_labs",
     "ContratacionIncluyenteWindow": "contratacion_incluyente",
     "InduccionOrganizacionalWindow": "induccion_organizacional",
     "InduccionOperativaWindow": "induccion_operativa",
@@ -208,6 +224,13 @@ def _show_single_instance_warning():
 def _log_capture(message):
     try:
         log_app_event(message)
+    except Exception:
+        pass
+
+
+def _log_labs(message, level="INFO"):
+    try:
+        log_labs_event(message, level=level)
     except Exception:
         pass
 
@@ -1976,6 +1999,64 @@ def _build_wizard_actions(
     return actions
 
 
+def _confirm_labs_experimental_warning(parent):
+    accepted = {"value": False}
+    modal = tk.Toplevel(parent)
+    modal.title("Labs")
+    modal.configure(bg=COLOR_LIGHT_BG)
+    modal.geometry("720x360")
+    modal.transient(parent)
+    modal.grab_set()
+    modal.resizable(False, False)
+
+    shell = tk.Frame(modal, bg=COLOR_LIGHT_BG, padx=24, pady=20)
+    shell.pack(fill="both", expand=True)
+
+    tk.Label(
+        shell,
+        text="Función Experimental",
+        font=("Arial", 20, "bold"),
+        fg="#A40000",
+        bg=COLOR_LIGHT_BG,
+    ).pack(anchor="center", pady=(0, 12))
+
+    warning_text = (
+        "Este flujo de Labs está en desarrollo y es experimental.\n\n"
+        "Puede contener errores, guardar información incompleta o producir resultados distintos al flujo oficial "
+        "de Selección Incluyente.\n\n"
+        "Úsalo solo para pruebas controladas y valida manualmente toda la información antes de continuar."
+    )
+    tk.Message(
+        shell,
+        text=warning_text,
+        width=620,
+        font=("Arial", 12),
+        fg="#222222",
+        bg=COLOR_LIGHT_BG,
+        justify="center",
+    ).pack(fill="x", pady=(0, 18))
+
+    actions = tk.Frame(shell, bg=COLOR_LIGHT_BG)
+    actions.pack(side="bottom")
+
+    ttk.Button(actions, text="Cancelar", command=modal.destroy).pack(side="left", padx=(0, 10))
+
+    def _accept():
+        accepted["value"] = True
+        modal.destroy()
+
+    ttk.Button(actions, text="Acepto y continuar", command=_accept).pack(side="left")
+    modal.protocol("WM_DELETE_WINDOW", modal.destroy)
+    try:
+        modal.wait_window()
+    except Exception:
+        pass
+    _log_labs(
+        f"experimental_warning accepted={bool(accepted['value'])}"
+    )
+    return bool(accepted["value"])
+
+
 def _section1_build_search(self, parent, include_tipo_visita=False):
     search_w = 42
     try:
@@ -2231,6 +2312,10 @@ def _iter_widget_tree(root):
 
 def _attach_dictation_for_section(window, form_id, section_name):
     if not window or not form_id:
+        return
+    disabled_sections = set(getattr(window, "_disable_section_dictation_sections", set()) or set())
+    if str(section_name or "").strip() in disabled_sections:
+        _clear_section_dictation_button(window)
         return
     _clear_section_dictation_button(window)
     container = getattr(window, "section_container", None) or window
@@ -2737,6 +2822,337 @@ class LoadingDialog:
             return
 
 
+class LabsSection2VoiceDialog:
+    def __init__(
+        self,
+        parent,
+        *,
+        subsection_key,
+        section_label,
+        candidate_index,
+        form_id,
+        session_provider,
+    ):
+        self.parent = parent
+        self.subsection_key = str(subsection_key or "").strip()
+        self.section_label = str(section_label or self.subsection_key).strip() or self.subsection_key
+        self.candidate_index = int(candidate_index)
+        self.form_id = str(form_id or "").strip()
+        self.session_provider = session_provider
+        self.result = None
+        self._handle = None
+        self._is_recording = False
+        self._is_processing = False
+        self._closed = False
+        self._worker = None
+        self.spec = get_selection_labs_subsection_spec(self.subsection_key)
+        _log_labs(
+            f"voice_dialog_open subsection={self.subsection_key} candidate_index={self.candidate_index}"
+        )
+
+        self.window = tk.Toplevel(parent)
+        self.window.title(f"Labs - {self.section_label}")
+        self.window.configure(bg=COLOR_LIGHT_BG)
+        self.window.geometry("760x560")
+        self.window.transient(parent)
+        self.window.grab_set()
+        self.window.protocol("WM_DELETE_WINDOW", self._on_cancel)
+
+        container = tk.Frame(self.window, bg=COLOR_LIGHT_BG)
+        container.pack(fill="both", expand=True, padx=18, pady=18)
+
+        tk.Label(
+            container,
+            text=f"{self.section_label} - Oferente {self.candidate_index}",
+            font=FONT_SECTION,
+            bg=COLOR_LIGHT_BG,
+            fg=COLOR_PURPLE,
+            anchor="w",
+        ).pack(fill="x", pady=(0, 8))
+
+        warning_box = tk.Frame(container, bg="#FFF4E5", bd=1, relief="solid")
+        warning_box.pack(fill="x", pady=(0, 12))
+        tk.Label(
+            warning_box,
+            text=(
+                "Funcion experimental. Usa un solo audio por oferente y por subseccion. "
+                "Si falta un dato, es mejor no decirlo que inventarlo."
+            ),
+            bg="#FFF4E5",
+            fg="#7A4100",
+            justify="left",
+            wraplength=700,
+            padx=12,
+            pady=10,
+        ).pack(fill="x")
+
+        tk.Label(
+            container,
+            text="Por favor di algo asi...",
+            font=FONT_LABEL,
+            bg=COLOR_LIGHT_BG,
+            anchor="w",
+        ).pack(fill="x")
+
+        tk.Label(
+            container,
+            text=str(self.spec.get("script") or "").strip(),
+            bg=COLOR_LIGHT_BG,
+            fg="#333333",
+            justify="left",
+            wraplength=700,
+            anchor="w",
+        ).pack(fill="x", pady=(4, 10))
+
+        tk.Label(
+            container,
+            text="Ejemplos",
+            font=FONT_LABEL,
+            bg=COLOR_LIGHT_BG,
+            anchor="w",
+        ).pack(fill="x")
+
+        examples_text = tk.Text(container, height=14, wrap="word", bg="white")
+        examples_text.pack(fill="both", expand=True, pady=(4, 12))
+        examples = self.spec.get("examples") or []
+        examples_text.insert(
+            "1.0",
+            "\n\n".join(f"- {str(example).strip()}" for example in examples if str(example).strip()),
+        )
+        examples_text.configure(state="disabled")
+
+        actions = tk.Frame(container, bg=COLOR_LIGHT_BG)
+        actions.pack(fill="x")
+
+        self.status_label = tk.Label(
+            actions,
+            text="Listo para grabar.",
+            bg=COLOR_LIGHT_BG,
+            fg="#444444",
+            anchor="w",
+        )
+        self.status_label.pack(side="left")
+
+        self.record_button = ttk.Button(actions, text="Iniciar grabacion", command=self._on_toggle)
+        self.record_button.pack(side="right")
+        self.cancel_button = ttk.Button(actions, text="Cancelar", command=self._on_cancel)
+        self.cancel_button.pack(side="right", padx=(0, 8))
+
+        self._center()
+
+    def _center(self):
+        self.window.update_idletasks()
+        width = self.window.winfo_width()
+        height = self.window.winfo_height()
+        x = (self.window.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.window.winfo_screenheight() // 2) - (height // 2)
+        self.window.geometry(f"{width}x{height}+{x}+{y}")
+
+    def _set_status(self, text, color="#444444"):
+        try:
+            self.status_label.config(text=text, fg=color)
+            self.window.update_idletasks()
+        except tk.TclError:
+            return
+
+    def _on_toggle(self):
+        if self._is_processing:
+            return
+        if self._is_recording:
+            self._stop_and_submit_async()
+        else:
+            self._start_recording()
+
+    def _start_recording(self):
+        try:
+            handle = start_recording(
+                field_id=f"{self.subsection_key}:candidate_{self.candidate_index}",
+                form_id=self.form_id,
+            )
+        except Exception as exc:
+            self._set_status(f"No se pudo iniciar grabacion: {exc}", "#A40000")
+            return
+        if not claim_recording(handle):
+            cancel_recording(handle)
+            self._set_status("Ya hay otro dictado activo.", "#A40000")
+            _log_labs(
+                f"voice_record_start_blocked subsection={self.subsection_key} candidate_index={self.candidate_index}",
+                level="WARN",
+            )
+            return
+        self._handle = handle
+        self._is_recording = True
+        self.record_button.config(text="Detener y procesar")
+        self._set_status("Grabando...", "#B35300")
+        _log_labs(
+            f"voice_record_started subsection={self.subsection_key} candidate_index={self.candidate_index} file={handle.file_path}"
+        )
+
+    def _stop_and_submit_async(self):
+        if not self._handle:
+            return
+        self._is_recording = False
+        self._is_processing = True
+        self.record_button.config(state="disabled")
+        self.cancel_button.config(state="disabled")
+        self._set_status("Procesando audio...", "#1F4E79")
+        _log_labs(
+            f"voice_submit_start subsection={self.subsection_key} candidate_index={self.candidate_index}"
+        )
+
+        def _worker():
+            try:
+                jwt = str(self.session_provider() or "").strip()
+            except Exception:
+                jwt = ""
+            result = stop_and_submit_audio(
+                self._handle,
+                jwt,
+                function_name=SELECTION_SECTION2_VOICE_FUNCTION,
+                language="es",
+                extra_fields={
+                    "form_id": self.form_id,
+                    "section_id": "section_2",
+                    "subsection_key": self.subsection_key,
+                    "candidate_index": str(self.candidate_index),
+                },
+            )
+            try:
+                self.window.after(0, lambda: self._finish_request(result))
+            except tk.TclError:
+                return
+
+        self._worker = threading.Thread(target=_worker, daemon=True)
+        self._worker.start()
+
+    def _finish_request(self, result):
+        self._is_processing = False
+        self.record_button.config(state="normal", text="Iniciar grabacion")
+        self.cancel_button.config(state="normal")
+        self._handle = None
+        if self._closed:
+            return
+        if not result.ok:
+            self._set_status(result.error_message or "No fue posible procesar el audio.", "#A40000")
+            _log_labs(
+                f"voice_submit_failed subsection={self.subsection_key} candidate_index={self.candidate_index} "
+                f"elapsed_ms={result.elapsed_ms} code={result.error_code} message={result.error_message}",
+                level="ERROR",
+            )
+            messagebox.showerror(
+                "Labs",
+                result.error_message or "No fue posible procesar el audio.",
+                parent=self.window,
+            )
+            return
+        payload = result.payload or {}
+        usage = payload.get("usage") or {}
+        warnings = payload.get("warnings") or []
+        _log_labs(
+            f"voice_submit_ok subsection={self.subsection_key} candidate_index={self.candidate_index} "
+            f"elapsed_ms={result.elapsed_ms} "
+            f"transcription_chars={len(str(payload.get('transcription') or ''))} "
+            f"warnings={len(warnings) if isinstance(warnings, list) else 0} "
+            f"transcribe_model={usage.get('transcribe_model')} extract_model={usage.get('extract_model')}"
+        )
+        self.result = result.payload or {}
+        self._closed = True
+        self.window.destroy()
+
+    def _on_cancel(self):
+        self._closed = True
+        if self._is_recording and self._handle is not None:
+            try:
+                cancel_recording(self._handle)
+            except Exception:
+                pass
+            _log_labs(
+                f"voice_dialog_cancel_recording subsection={self.subsection_key} candidate_index={self.candidate_index}",
+                level="WARN",
+            )
+        self._handle = None
+        try:
+            self.window.destroy()
+        except tk.TclError:
+            return
+
+    def show(self):
+        self.window.wait_window()
+        return self.result
+
+
+class LabsSection2PreviewDialog:
+    def __init__(self, parent, *, section_label, candidate_index, transcription, preview_lines, warnings):
+        self.parent = parent
+        self.result = False
+        self.window = tk.Toplevel(parent)
+        self.window.title(f"Preview Labs - {section_label}")
+        self.window.configure(bg=COLOR_LIGHT_BG)
+        self.window.geometry("760x640")
+        self.window.transient(parent)
+        self.window.grab_set()
+        self.window.protocol("WM_DELETE_WINDOW", self._on_cancel)
+
+        container = tk.Frame(self.window, bg=COLOR_LIGHT_BG)
+        container.pack(fill="both", expand=True, padx=18, pady=18)
+
+        tk.Label(
+            container,
+            text=f"Preview de autollenado - Oferente {candidate_index}",
+            font=FONT_SECTION,
+            bg=COLOR_LIGHT_BG,
+            fg=COLOR_PURPLE,
+            anchor="w",
+        ).pack(fill="x", pady=(0, 10))
+
+        tk.Label(container, text="Transcripcion", font=FONT_LABEL, bg=COLOR_LIGHT_BG, anchor="w").pack(fill="x")
+        transcription_box = tk.Text(container, height=8, wrap="word", bg="white")
+        transcription_box.pack(fill="x", pady=(4, 12))
+        transcription_box.insert("1.0", transcription or "")
+        transcription_box.configure(state="disabled")
+
+        tk.Label(container, text="Campos detectados", font=FONT_LABEL, bg=COLOR_LIGHT_BG, anchor="w").pack(fill="x")
+        extracted_box = tk.Text(container, height=12, wrap="word", bg="white")
+        extracted_box.pack(fill="both", expand=True, pady=(4, 12))
+        extracted_box.insert("1.0", "\n".join(preview_lines) if preview_lines else "No se detectaron campos aplicables.")
+        extracted_box.configure(state="disabled")
+
+        tk.Label(container, text="Advertencias", font=FONT_LABEL, bg=COLOR_LIGHT_BG, anchor="w").pack(fill="x")
+        warnings_box = tk.Text(container, height=5, wrap="word", bg="white")
+        warnings_box.pack(fill="x", pady=(4, 12))
+        warnings_box.insert("1.0", "\n".join(f"- {item}" for item in warnings) if warnings else "Sin advertencias.")
+        warnings_box.configure(state="disabled")
+
+        actions = tk.Frame(container, bg=COLOR_LIGHT_BG)
+        actions.pack(fill="x")
+        ttk.Button(actions, text="Cancelar", command=self._on_cancel).pack(side="right")
+        ttk.Button(actions, text="Aplicar", command=self._on_apply).pack(side="right", padx=(0, 8))
+        self._center()
+
+    def _center(self):
+        self.window.update_idletasks()
+        width = self.window.winfo_width()
+        height = self.window.winfo_height()
+        x = (self.window.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.window.winfo_screenheight() // 2) - (height // 2)
+        self.window.geometry(f"{width}x{height}+{x}+{y}")
+
+    def _on_apply(self):
+        self.result = True
+        self.window.destroy()
+
+    def _on_cancel(self):
+        self.result = False
+        try:
+            self.window.destroy()
+        except tk.TclError:
+            return
+
+    def show(self):
+        self.window.wait_window()
+        return self.result
+
+
 class FinalizeProcessError(RuntimeError):
     def __init__(self, stage, cause):
         self.stage = str(stage or "").strip() or "finalizando el formulario"
@@ -3010,6 +3426,7 @@ def get_forms():
         evaluacion_accesibilidad.register_form(),
         condiciones_vacante.register_form(),
         seleccion_incluyente.register_form(),
+        seleccion_incluyente_labs.register_form(),
         contratacion_incluyente.register_form(),
         induccion_organizacional.register_form(),
         induccion_operativa.register_form(),
@@ -3775,6 +4192,7 @@ class HubWindow(tk.Tk):
         self._version_check_thread = None
         self._drafts_btn = None
         self._refresh_db_btn = None
+        self._labs_btn = None
         self._sync_panel_btn = None
         self._net_status_label = None
         self._net_status_after_id = None
@@ -5989,6 +6407,12 @@ class HubWindow(tk.Tk):
             command=self._refresh_database_cache,
         )
         self._refresh_db_btn.pack(side="right", padx=(0, 8))
+        self._labs_btn = ttk.Button(
+            left_header,
+            text="Labs",
+            command=self._open_labs_flow,
+        )
+        self._labs_btn.pack(side="right", padx=(0, 8))
         self._refresh_drafts_badge()
 
         # Lista de formularios con scroll para pantallas pequenas.
@@ -6043,7 +6467,7 @@ class HubWindow(tk.Tk):
             widget.bind("<Shift-MouseWheel>", lambda _e: "break", add="+")
             widget.bind("<Enter>", lambda _e: forms_canvas.xview_moveto(0.0), add="+")
 
-        forms = get_forms()
+        forms = [form for form in get_forms() if not bool(form.get("hidden"))]
         if not forms:
             tk.Label(
                 forms_content,
@@ -6268,6 +6692,12 @@ class HubWindow(tk.Tk):
             _focus_window(window)
             self.track_form_open(form_meta["id"], form_meta["name"])
             return window
+        if form_meta["id"] == "seleccion_incluyente_labs":
+            window = SeleccionIncluyenteLabsWindow(self)
+            self._bind_form_runtime(window, form_meta)
+            _focus_window(window)
+            self.track_form_open(form_meta["id"], form_meta["name"])
+            return window
         if form_meta["id"] == "contratacion_incluyente":
             window = ContratacionIncluyenteWindow(self)
             self._bind_form_runtime(window, form_meta)
@@ -6300,6 +6730,13 @@ class HubWindow(tk.Tk):
             return window
         messagebox.showinfo("Formulario", f"Abrir formulario: {form_meta['name']}")
         return None
+
+    def _open_labs_flow(self):
+        if not _confirm_labs_experimental_warning(self):
+            _log_labs("open_labs_flow cancelled_by_warning")
+            return None
+        _log_labs("open_labs_flow accepted")
+        return self._open_form(_resolve_form_meta("seleccion_incluyente_labs"))
 
     def _ensure_toast(self):
         if self._toast_label is not None:
@@ -8789,32 +9226,21 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         self.section3_fields = {}
         options = condiciones_vacante.SECTION_3["options"]
 
-        bulk_actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
-        bulk_actions.pack(fill="x", pady=(0, 8))
-        ttk.Button(
-            bulk_actions,
-            text='Marcar Todas "Alto"',
-            command=lambda: self._set_section3_habilidades_nivel("Alto."),
-        ).pack(side="right")
-        ttk.Button(
-            bulk_actions,
-            text='Marcar Todas "Medio"',
-            command=lambda: self._set_section3_habilidades_nivel("Medio."),
-        ).pack(side="right", padx=(0, 8))
-        ttk.Button(
-            bulk_actions,
-            text='Marcar Todas "Bajo"',
-            command=lambda: self._set_section3_habilidades_nivel("Bajo."),
-        ).pack(side="right", padx=(0, 8))
-
         for category in condiciones_vacante.SECTION_3["categories"]:
+            category_frame = tk.Frame(content, bg=COLOR_LIGHT_BG)
+            category_frame.pack(fill="x", pady=(8, 4))
             tk.Label(
-                content,
+                category_frame,
                 text=category["title"],
                 font=FONT_SECTION,
                 fg=COLOR_PURPLE,
                 bg=COLOR_LIGHT_BG,
-            ).pack(anchor="w", pady=(8, 4))
+            ).pack(anchor="w")
+            self._build_condiciones_category_actions(
+                category_frame,
+                self.section3_fields,
+                [field_id for field_id, _label in category["items"]],
+            )
 
             for field_id, label in category["items"]:
                 row = tk.Frame(content, bg="white", bd=1, relief="solid")
@@ -8870,8 +9296,28 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
                 widget.delete("1.0", tk.END)
                 widget.insert("1.0", value)
 
-    def _set_section3_habilidades_nivel(self, value):
-        self._set_condiciones_habilidades_nivel(self.section3_fields, value)
+    def _build_condiciones_category_actions(self, parent, fields, field_ids):
+        actions = tk.Frame(parent, bg=COLOR_LIGHT_BG)
+        actions.pack(anchor="w", pady=(4, 0))
+        action_specs = [
+            ("Todo alto", "Alto."),
+            ("Todo medio", "Medio."),
+            ("Todo bajo", "Bajo."),
+            ("Todo no aplica", "No aplica"),
+        ]
+        for label, value in action_specs:
+            ttk.Button(
+                actions,
+                text=label,
+                command=lambda selected=value, ids=tuple(field_ids): self._set_condiciones_habilidades_nivel(
+                    fields,
+                    selected,
+                    ids,
+                ),
+            ).pack(side="left", padx=(0, 8))
+
+    def _set_section3_habilidades_nivel(self, value, field_ids=None):
+        self._set_condiciones_habilidades_nivel(self.section3_fields, value, field_ids)
 
     def _confirm_section_3(self):
         payload = {}
@@ -8981,32 +9427,21 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         self.section5_fields = {}
         options = condiciones_vacante.SECTION_5["options"]
 
-        bulk_actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
-        bulk_actions.pack(fill="x", pady=(0, 8))
-        ttk.Button(
-            bulk_actions,
-            text='Marcar Todas "Alto"',
-            command=lambda: self._set_section5_habilidades_nivel("Alto."),
-        ).pack(side="right")
-        ttk.Button(
-            bulk_actions,
-            text='Marcar Todas "Medio"',
-            command=lambda: self._set_section5_habilidades_nivel("Medio."),
-        ).pack(side="right", padx=(0, 8))
-        ttk.Button(
-            bulk_actions,
-            text='Marcar Todas "Bajo"',
-            command=lambda: self._set_section5_habilidades_nivel("Bajo."),
-        ).pack(side="right", padx=(0, 8))
-
         for category in condiciones_vacante.SECTION_5["categories"]:
+            category_frame = tk.Frame(content, bg=COLOR_LIGHT_BG)
+            category_frame.pack(fill="x", pady=(8, 4))
             tk.Label(
-                content,
+                category_frame,
                 text=category["title"],
                 font=FONT_SECTION,
                 fg=COLOR_PURPLE,
                 bg=COLOR_LIGHT_BG,
-            ).pack(anchor="w", pady=(8, 4))
+            ).pack(anchor="w")
+            self._build_condiciones_category_actions(
+                category_frame,
+                self.section5_fields,
+                [item[0] for item in category["items"]],
+            )
 
             for item in category["items"]:
                 field_id = item[0]
@@ -9083,11 +9518,14 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
                 widget.delete("1.0", tk.END)
                 widget.insert("1.0", value)
 
-    def _set_section5_habilidades_nivel(self, value):
-        self._set_condiciones_habilidades_nivel(self.section5_fields, value)
+    def _set_section5_habilidades_nivel(self, value, field_ids=None):
+        self._set_condiciones_habilidades_nivel(self.section5_fields, value, field_ids)
 
-    def _set_condiciones_habilidades_nivel(self, fields, value):
-        for widget in fields.values():
+    def _set_condiciones_habilidades_nivel(self, fields, value, field_ids=None):
+        allowed_ids = set(field_ids or []) if field_ids else None
+        for field_id, widget in fields.items():
+            if allowed_ids is not None and field_id not in allowed_ids:
+                continue
             if isinstance(widget, ttk.Combobox):
                 widget.set(value)
 
@@ -9133,17 +9571,24 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         self.section6_container.pack(fill="x")
         self.disability_options = condiciones_vacante.SECTION_6["options"]
         self.disability_descriptions = condiciones_vacante.get_disability_descriptions()
-
-        base_rows = condiciones_vacante.SECTION_6.get("base_rows", 4)
-        for _ in range(base_rows):
+        self.section6_base_rows = condiciones_vacante.SECTION_6.get("base_rows", 4)
+        for _ in range(self.section6_base_rows):
             self._add_disability_row()
 
-        add_row_btn = ttk.Button(
-            content,
+        row_actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
+        row_actions.pack(anchor="w", pady=(6, 8))
+        self.section6_add_btn = ttk.Button(
+            row_actions,
             text="Agregar discapacidad",
             command=self._add_disability_row,
         )
-        add_row_btn.pack(anchor="w", pady=(6, 8))
+        self.section6_add_btn.pack(side="left")
+        self.section6_remove_btn = ttk.Button(
+            row_actions,
+            text="Eliminar última discapacidad",
+            command=self._remove_last_disability_row,
+        )
+        self.section6_remove_btn.pack(side="left", padx=(8, 0))
 
         cached_rows = condiciones_vacante.get_form_cache().get("section_6", [])
         if cached_rows:
@@ -9151,6 +9596,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
                 if idx >= len(self.section6_rows):
                     self._add_disability_row()
                 self._set_disability_row(self.section6_rows[idx], entry)
+        self._update_section6_row_actions()
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
@@ -9158,23 +9604,24 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         ttk.Button(actions, text="Continuar", command=self._confirm_section_6).pack(side="right")
 
     def _add_disability_row(self):
-        row_index = len(self.section6_rows)
         row = tk.Frame(self.section6_container, bg="white", bd=1, relief="solid")
         row.pack(fill="x", pady=4)
-        row.grid_columnconfigure(2, weight=1)
+        row.grid_columnconfigure(0, weight=2, minsize=360)
+        row.grid_columnconfigure(1, weight=3)
 
         combo = ttk.Combobox(
             row,
             values=self.disability_options,
             state="readonly",
-            width=36,
+            width=48,
         )
-        combo.grid(row=0, column=0, sticky="w", padx=8, pady=6)
+        combo.grid(row=0, column=0, sticky="ew", padx=8, pady=6)
 
         descripcion = tk.Text(row, height=3, wrap="word", width=50, state="disabled")
         descripcion.grid(row=0, column=1, sticky="we", padx=8, pady=6)
 
         row_entry = {
+            "frame": row,
             "combo": combo,
             "descripcion": descripcion,
         }
@@ -9184,8 +9631,21 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             "<<ComboboxSelected>>",
             lambda _event, target=row_entry: self._update_disability_description(target),
         )
+        self._update_section6_row_actions()
 
         return row_entry
+
+    def _remove_last_disability_row(self):
+        if len(self.section6_rows) <= getattr(self, "section6_base_rows", 4):
+            return
+        row_entry = self.section6_rows.pop()
+        row_entry["frame"].destroy()
+        self._update_section6_row_actions()
+
+    def _update_section6_row_actions(self):
+        if hasattr(self, "section6_remove_btn"):
+            state = "normal" if len(self.section6_rows) > getattr(self, "section6_base_rows", 4) else "disabled"
+            self.section6_remove_btn.configure(state=state)
 
     def _update_disability_description(self, row_entry):
         selection = row_entry["combo"].get().strip()
@@ -9427,14 +9887,19 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
 
 class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
+    FORM_META_ID = "seleccion_incluyente"
+    FORM_MODULE = seleccion_incluyente
+    WINDOW_TITLE = "Seleccion Incluyente - Seccion 1"
+
     def __init__(self, parent):
         super().__init__(parent)
-        self.title("Seleccion Incluyente - Seccion 1")
+        self.title(self.WINDOW_TITLE)
         self.configure(bg=COLOR_LIGHT_BG)
         self.geometry("1000x700")
         _maximize_window(self)
 
-        self._empresa_lookup = seleccion_incluyente
+        self._seleccion_module = self.FORM_MODULE
+        self._empresa_lookup = self._seleccion_module
 
         self.company_data = None
         self.fields = {}
@@ -9447,10 +9912,11 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         self._show_section_1()
 
     def _maybe_resume_form(self):
+        module = self._seleccion_module
         if _consume_pending_draft_restore(
             self,
-            "seleccion_incluyente",
-            seleccion_incluyente,
+            self.FORM_META_ID,
+            module,
             {
                 "section_1": self._show_section_1,
                 "section_2": self._show_section_2,
@@ -9460,18 +9926,18 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             self._show_section_1,
         ):
             return True
-        if not seleccion_incluyente.cache_file_exists():
+        if not module.cache_file_exists():
             return False
         resume = messagebox.askyesno(
             "Reanudar",
             "Se encontró un formulario en progreso. ¿Deseas continuar donde lo dejaste?",
         )
         if not resume:
-            seleccion_incluyente.clear_cache_file()
-            seleccion_incluyente.clear_form_cache()
+            module.clear_cache_file()
+            module.clear_form_cache()
             return False
-        seleccion_incluyente.load_cache_from_file()
-        last_section = seleccion_incluyente.get_form_cache().get("_last_section")
+        module.load_cache_from_file()
+        last_section = module.get_form_cache().get("_last_section")
         if last_section == "section_1":
             self._show_section_2()
         elif last_section == "section_2":
@@ -9538,7 +10004,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _load_cedula_options(self):
         try:
-            self.cedula_options = seleccion_incluyente.get_usuarios_reca_cedulas()
+            self.cedula_options = self._seleccion_module.get_usuarios_reca_cedulas()
         except Exception:
             self.cedula_options = []
 
@@ -9608,7 +10074,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             widget.delete(0, tk.END)
             widget.insert(0, normalized)
         try:
-            data = seleccion_incluyente.get_usuario_reca_by_cedula(normalized)
+            data = self._seleccion_module.get_usuario_reca_by_cedula(normalized)
         except Exception:
             return
         if data:
@@ -9685,9 +10151,9 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             self.status_label.config(text="Buscando empresa...")
             self.update_idletasks()
             if mode == "nombre":
-                company = seleccion_incluyente.get_empresa_by_nombre(nombre)
+                company = self._seleccion_module.get_empresa_by_nombre(nombre)
             else:
-                company = seleccion_incluyente.get_empresa_by_nit(nit)
+                company = self._seleccion_module.get_empresa_by_nit(nit)
         except Exception as exc:
             self.status_label.config(text="")
             messagebox.showerror("Error", str(exc))
@@ -9698,7 +10164,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             msg = "No se encontró empresa para ese nombre." if mode == "nombre" else "No se encontró empresa para ese NIT."
             self.status_label.config(text=msg)
             self.continue_btn.config(state="disabled")
-            for key in seleccion_incluyente.SECTION_1_SUPABASE_MAP.keys():
+            for key in self._seleccion_module.SECTION_1_SUPABASE_MAP.keys():
                 self._set_readonly_value(key, "")
             return
 
@@ -9713,7 +10179,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         self.company_data = company
         self.status_label.config(text="Empresa encontrada.")
         self.continue_btn.config(state="normal")
-        for key in seleccion_incluyente.SECTION_1_SUPABASE_MAP.keys():
+        for key in self._seleccion_module.SECTION_1_SUPABASE_MAP.keys():
             self._set_readonly_value(key, company.get(key))
 
     def _confirm_and_continue(self):
@@ -9732,7 +10198,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             "nit_empresa": self.fields["nit_empresa"].get().strip(),
         }
         try:
-            seleccion_incluyente.confirm_section_1(self.company_data, user_inputs)
+            self._seleccion_module.confirm_section_1(self.company_data, user_inputs)
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
             return
@@ -9742,7 +10208,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         return getattr(self, "_section1_labels", {}).get(field_id, field_id)
 
     def _prefill_section_1(self):
-        cache = seleccion_incluyente.get_form_cache().get("section_1", {})
+        cache = self._seleccion_module.get_form_cache().get("section_1", {})
         if not cache:
             return
         self.company_data = cache
@@ -9773,6 +10239,202 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             entry.insert(0, cache.get(key, ""))
             entry.configure(state="readonly")
 
+    def _labs_voice_ui_enabled(self):
+        return getattr(self, "FORM_META_ID", "") == "seleccion_incluyente_labs"
+
+    def _build_selection_subsection_shell(self, parent, title, subsection_key):
+        if not self._labs_voice_ui_enabled():
+            frame = tk.LabelFrame(
+                parent,
+                text=title,
+                bg="white",
+                fg="#222222",
+                font=FONT_LABEL,
+                padx=8,
+                pady=6,
+            )
+            frame.pack(fill="x", pady=(0, 8))
+            return frame, frame, None, None
+
+        frame = tk.Frame(
+            parent,
+            bg="white",
+            bd=1,
+            relief="solid",
+            highlightbackground="#D9D2E3",
+            highlightthickness=1,
+        )
+        frame.pack(fill="x", pady=(0, 10))
+        header = tk.Frame(frame, bg="#F1EAF8")
+        header.pack(fill="x")
+        title_label = tk.Label(
+            header,
+            text=title,
+            font=FONT_LABEL,
+            bg="#F1EAF8",
+            fg="#222222",
+            anchor="w",
+        )
+        title_label.pack(side="left", padx=10, pady=8)
+        body = tk.Frame(frame, bg="white")
+        body.pack(fill="x", padx=10, pady=10)
+        return frame, body, header, title_label
+
+    def _install_labs_subsection_button(self, header, title_label, subsection_key, label, candidate_fields=None):
+        if not self._labs_voice_ui_enabled() or not header or not title_label:
+            return None
+        button = ttk.Button(
+            header,
+            text="Dictar",
+            command=lambda key=subsection_key, section_label=label: self._on_labs_subsection_dictation(
+                key,
+                section_label,
+                candidate_fields,
+            ),
+        )
+        button.pack(side="left", padx=(10, 0), pady=6)
+        return button
+
+    def _attach_labs_text_dictation(self, text_widget, header, title_label, subsection_key):
+        if not self._labs_voice_ui_enabled() or not isinstance(text_widget, tk.Text):
+            return
+        try:
+            attach_dictation(
+                text_widget,
+                form_id=getattr(self, "_form_id", self.FORM_META_ID),
+                field_id=f"{subsection_key}:voice",
+                session_provider=lambda: _supabase_get_access_token(".env"),
+                log_fn=_log_capture,
+                show_controls=True,
+                controls_parent=header,
+                anchor_widget=title_label,
+                placement="inline_right",
+            )
+        except Exception as exc:
+            _log_capture(
+                f"[DICTATION] attach_labs_subsection_failed form={getattr(self, '_form_id', self.FORM_META_ID)} "
+                f"section={subsection_key} err={exc}"
+            )
+
+    def _get_labs_candidate_index(self, candidate_fields):
+        if not candidate_fields:
+            return 1
+        try:
+            return int(self.oferente_blocks.index(candidate_fields)) + 1
+        except Exception:
+            return 1
+
+    def _apply_labs_candidate_updates(self, candidate_fields, updates, subsection_key):
+        if not isinstance(candidate_fields, dict):
+            return
+        for field_id, value in (updates or {}).items():
+            if value in (None, ""):
+                continue
+            widget = candidate_fields.get(field_id)
+            if widget is None:
+                continue
+            if isinstance(widget, ttk.Combobox):
+                widget.set(str(value))
+                continue
+            if isinstance(widget, tk.Text):
+                widget.delete("1.0", tk.END)
+                widget.insert("1.0", str(value))
+                continue
+            try:
+                state = str(widget.cget("state"))
+            except Exception:
+                state = ""
+            if state == "readonly":
+                _set_readonly_entry_value(widget, str(value))
+            else:
+                widget.delete(0, tk.END)
+                widget.insert(0, str(value))
+
+        fecha_widget = candidate_fields.get("fecha_nacimiento")
+        edad_widget = candidate_fields.get("edad")
+        if fecha_widget is not None and edad_widget is not None and updates.get("fecha_nacimiento"):
+            try:
+                self._format_birthdate(None, fecha_widget, edad_widget)
+            except Exception:
+                pass
+
+        if subsection_key == "section_3_desarrollo":
+            widget = candidate_fields.get("desarrollo_actividad")
+            sync_fn = getattr(self, "_labs_section2_sync_desarrollo_widgets", None)
+            if callable(sync_fn) and isinstance(widget, tk.Text):
+                sync_fn(widget)
+
+    def _on_labs_subsection_dictation(self, subsection_key, section_label, candidate_fields=None):
+        candidate_index = self._get_labs_candidate_index(candidate_fields)
+        _log_labs(
+            f"subsection_dictation_open subsection={subsection_key} candidate_index={candidate_index}"
+        )
+        dialog = LabsSection2VoiceDialog(
+            self,
+            subsection_key=subsection_key,
+            section_label=section_label,
+            candidate_index=candidate_index,
+            form_id=getattr(self, "_form_id", self.FORM_META_ID),
+            session_provider=lambda: _supabase_get_access_token(".env"),
+        )
+        response = dialog.show()
+        if not response:
+            _log_labs(
+                f"subsection_dictation_cancelled subsection={subsection_key} candidate_index={candidate_index}",
+                level="WARN",
+            )
+            return
+
+        extraction = response.get("extraction") or {}
+        transcription = str(response.get("transcription") or "").strip()
+        try:
+            processed = postprocess_selection_labs_extraction(
+                extraction,
+                subsection_key=subsection_key,
+                candidate_index=candidate_index,
+            )
+        except Exception as exc:
+            _log_labs(
+                f"subsection_dictation_invalid_structured_response subsection={subsection_key} "
+                f"candidate_index={candidate_index} detail={exc}",
+                level="ERROR",
+            )
+            messagebox.showerror(
+                "Labs",
+                f"No fue posible interpretar la respuesta estructurada.\n\nDetalle: {exc}",
+                parent=self,
+            )
+            return
+
+        updates = processed.get("candidate") or {}
+        preview_lines = summarize_selection_labs_updates(updates)
+        warnings = []
+        for item in list(response.get("warnings") or []) + list(processed.get("warnings") or []):
+            text = str(item or "").strip()
+            if text and text not in warnings:
+                warnings.append(text)
+
+        preview = LabsSection2PreviewDialog(
+            self,
+            section_label=section_label,
+            candidate_index=candidate_index,
+            transcription=transcription,
+            preview_lines=preview_lines,
+            warnings=warnings,
+        )
+        if not preview.show():
+            _log_labs(
+                f"subsection_preview_cancelled subsection={subsection_key} candidate_index={candidate_index} "
+                f"fields={','.join(sorted(updates.keys()))}",
+                level="WARN",
+            )
+            return
+        self._apply_labs_candidate_updates(candidate_fields, updates, subsection_key)
+        _log_labs(
+            f"subsection_preview_applied subsection={subsection_key} candidate_index={candidate_index} "
+            f"fields={','.join(sorted(updates.keys()))} warnings={len(warnings)}"
+        )
+
     def _show_section_2(self):
         self._clear_section_container()
         self.header_title.config(text="2. DATOS DEL OFERENTE")
@@ -9787,7 +10449,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
 
-        field_meta = {field["id"]: field for field in seleccion_incluyente.SECTION_2["fields"]}
+        field_meta = {field["id"]: field for field in self._seleccion_module.SECTION_2["fields"]}
 
         def _create_widget(parent, field_id, width=30, text_height=4):
             meta = field_meta.get(field_id, {})
@@ -9994,6 +10656,8 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 add="+",
             )
 
+        self._labs_section2_sync_desarrollo_widgets = _sync_desarrollo_widgets
+
         def _add_oferente_block():
             idx = len(self.oferente_blocks) + 1
             block = tk.LabelFrame(
@@ -10009,17 +10673,19 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
             fields = {}
 
-            section2_frame = tk.LabelFrame(
+            section2_frame, section2_body, section2_header, section2_title = self._build_selection_subsection_shell(
                 block,
-                text="2. DATOS DEL OFERENTE",
-                bg="white",
-                fg="#222222",
-                font=FONT_LABEL,
-                padx=8,
-                pady=6,
+                "2. DATOS DEL OFERENTE",
+                "section_2_fields",
             )
-            section2_frame.pack(fill="x", pady=(0, 8))
-            section2_frame.grid_columnconfigure(1, weight=1)
+            section2_body.grid_columnconfigure(1, weight=1)
+            self._install_labs_subsection_button(
+                section2_header,
+                section2_title,
+                "section_2_fields",
+                "2. Datos del oferente",
+                fields,
+            )
 
             section2_fields = [
                 "numero",
@@ -10041,7 +10707,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 "cuenta_pension",
                 "tipo_pension",
             ]
-            fields.update(_add_fields_grid(section2_frame, section2_fields, columns=2))
+            fields.update(_add_fields_grid(section2_body, section2_fields, columns=2))
             numero_widget = fields.get("numero")
             if numero_widget:
                 numero_widget.delete(0, tk.END)
@@ -10074,124 +10740,143 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                     lambda event, fw=fecha_widget, ew=edad_widget: self._format_birthdate(event, fw, ew),
                 )
 
-            section3_frame = tk.LabelFrame(
+            section3_frame, section3_body, section3_header, section3_title = self._build_selection_subsection_shell(
                 block,
-                text="3. DESARROLLO DE LA ACTIVIDAD",
-                bg="white",
-                fg="#222222",
-                font=FONT_LABEL,
-                padx=8,
-                pady=6,
+                "3. DESARROLLO DE LA ACTIVIDAD",
+                "section_3_desarrollo",
             )
-            section3_frame.pack(fill="x", pady=(0, 8))
-            fields["desarrollo_actividad"] = _create_widget(section3_frame, "desarrollo_actividad", width=80, text_height=6)
+            self._install_labs_subsection_button(
+                section3_header,
+                section3_title,
+                "section_3_desarrollo",
+                "3. Desarrollo de la actividad",
+                fields,
+            )
+            fields["desarrollo_actividad"] = _create_widget(section3_body, "desarrollo_actividad", width=80, text_height=6)
             fields["desarrollo_actividad"].pack(fill="x", padx=6, pady=6)
             _set_text_widget_value(fields["desarrollo_actividad"], _get_shared_desarrollo_value())
             _bind_shared_desarrollo(fields["desarrollo_actividad"])
 
-            section41_frame = tk.LabelFrame(
+            section41_frame, section41_body, section41_header, section41_title = self._build_selection_subsection_shell(
                 block,
-                text="4.1 Condiciones medicas y de salud",
-                bg="white",
-                fg="#222222",
-                font=FONT_LABEL,
-                padx=8,
-                pady=6,
+                "4.1 Condiciones medicas y de salud",
+                "section_4_1_salud",
             )
-            section41_frame.pack(fill="x", pady=(0, 8))
+            self._install_labs_subsection_button(
+                section41_header,
+                section41_title,
+                "section_4_1_salud",
+                "4.1 Condiciones médicas y de salud",
+                fields,
+            )
 
             fields.update(
                 _add_question_block(
-                    section41_frame,
+                    section41_body,
                     "¿Toma medicamentos?",
                     ["medicamentos_nivel_apoyo", "medicamentos_conocimiento", "medicamentos_horarios", "medicamentos_nota"],
                 )
             )
             fields.update(
                 _add_question_block(
-                    section41_frame,
+                    section41_body,
                     "¿Presenta alguna alergia?",
                     ["alergias_nivel_apoyo", "alergias_tipo", "alergias_nota"],
                 )
             )
             fields.update(
                 _add_question_block(
-                    section41_frame,
+                    section41_body,
                     "¿Tiene algún tipo de restricción médica?",
                     ["restriccion_nivel_apoyo", "restriccion_conocimiento", "restriccion_nota"],
                 )
             )
             fields.update(
                 _add_question_block(
-                    section41_frame,
+                    section41_body,
                     "¿Asiste a controles médicos con especialista?",
                     ["controles_nivel_apoyo", "controles_asistencia", "controles_frecuencia", "controles_nota"],
                 )
             )
 
-            section42_frame = tk.LabelFrame(
+            section42a_frame, section42a_body, section42a_header, section42a_title = self._build_selection_subsection_shell(
                 block,
-                text="4.2 Habilidades basicas de la vida diaria",
-                bg="white",
-                fg="#222222",
-                font=FONT_LABEL,
-                padx=8,
-                pady=6,
+                "4.2A Habilidades basicas de la vida diaria",
+                "section_4_2_a_habilidades",
             )
-            section42_frame.pack(fill="x", pady=(0, 8))
+            self._install_labs_subsection_button(
+                section42a_header,
+                section42a_title,
+                "section_4_2_a_habilidades",
+                "4.2A Habilidades básicas de la vida diaria",
+                fields,
+            )
 
             fields.update(
                 _add_question_block(
-                    section42_frame,
+                    section42a_body,
                     "¿Se desplaza por la ciudad de manera independiente?",
                     ["desplazamiento_nivel_apoyo", "desplazamiento_modo", "desplazamiento_transporte", "desplazamiento_nota"],
                 )
             )
             fields.update(
                 _add_question_block(
-                    section42_frame,
+                    section42a_body,
                     "¿Se le facilita ubicarse dentro de la ciudad?",
                     ["ubicacion_nivel_apoyo", "ubicacion_ciudad", "ubicacion_aplicaciones", "ubicacion_nota"],
                 )
             )
             fields.update(
                 _add_question_block(
-                    section42_frame,
+                    section42a_body,
                     "¿Reconoce y maneja el dinero?",
                     ["dinero_nivel_apoyo", "dinero_reconocimiento", "dinero_manejo", "dinero_medios", "dinero_nota"],
                 )
             )
             fields.update(
                 _add_question_block(
-                    section42_frame,
+                    section42a_body,
                     "Presentacion personal",
                     ["presentacion_nivel_apoyo", "presentacion_personal", "presentacion_nota"],
                 )
             )
             fields.update(
                 _add_question_block(
-                    section42_frame,
+                    section42a_body,
                     "¿Conoce y maneja algún apoyo de comunicación escrita?",
                     ["comunicacion_escrita_nivel_apoyo", "comunicacion_escrita_apoyo", "comunicacion_escrita_nota"],
                 )
             )
             fields.update(
                 _add_question_block(
-                    section42_frame,
+                    section42a_body,
                     "¿Conoce y maneja algún apoyo de comunicación verbal?",
                     ["comunicacion_verbal_nivel_apoyo", "comunicacion_verbal_apoyo", "comunicacion_verbal_nota"],
                 )
             )
             fields.update(
                 _add_question_block(
-                    section42_frame,
+                    section42a_body,
                     "¿A quién recurre al momento de tomar decisiones?",
                     ["decisiones_nivel_apoyo", "toma_decisiones", "toma_decisiones_nota"],
                 )
             )
+
+            section42b_frame, section42b_body, section42b_header, section42b_title = self._build_selection_subsection_shell(
+                block,
+                "4.2B Actividades, apoyos y discriminacion",
+                "section_4_2_b_actividades",
+            )
+            self._install_labs_subsection_button(
+                section42b_header,
+                section42b_title,
+                "section_4_2_b_actividades",
+                "4.2B Actividades, apoyos y discriminación",
+                fields,
+            )
             fields.update(
                 _add_activity_block(
-                    section42_frame,
+                    section42b_body,
                     "¿Necesita apoyo en algunas de las siguientes actividades de la vida diaria?",
                     "aseo_nivel_apoyo",
                     "alimentacion",
@@ -10205,7 +10890,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             )
             fields.update(
                 _add_activity_block(
-                    section42_frame,
+                    section42b_body,
                     "¿Necesita apoyo en algunas de las siguientes actividades instrumentales de la vida diaria?",
                     "instrumentales_nivel_apoyo",
                     "instrumentales_actividades",
@@ -10220,7 +10905,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             )
             fields.update(
                 _add_question_block(
-                    section42_frame,
+                    section42b_body,
                     "¿Necesita apoyo durante actividades laborales?",
                     ["actividades_nivel_apoyo", "actividades_apoyo", "actividades_nota"],
                     subitems=[
@@ -10232,7 +10917,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             )
             fields.update(
                 _add_question_block(
-                    section42_frame,
+                    section42b_body,
                     "¿Ha sufrido o vivido discriminación?",
                     ["discriminacion_nivel_apoyo", "discriminacion", "discriminacion_nota"],
                     subitems=[
@@ -10257,7 +10942,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             _update_remove_button_state()
 
         def _prefill_section_2():
-            cache = seleccion_incluyente.get_form_cache().get("section_2", [])
+            cache = self._seleccion_module.get_form_cache().get("section_2", [])
             if not cache:
                 _add_oferente_block()
                 return
@@ -10314,7 +10999,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             entry["desarrollo_actividad"] = shared_desarrollo
             payload.append(entry)
         try:
-            seleccion_incluyente.confirm_section_2(payload)
+            self._seleccion_module.confirm_section_2(payload)
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
             return
@@ -10343,7 +11028,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         ).pack(anchor="w", pady=(8, 4))
         template_actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         template_actions.pack(fill="x", padx=4, pady=(0, 4))
-        for idx, (template_key, label) in enumerate(seleccion_incluyente.AJUSTES_ENTREVISTA_TEMPLATE_BUTTONS):
+        for idx, (template_key, label) in enumerate(self._seleccion_module.AJUSTES_ENTREVISTA_TEMPLATE_BUTTONS):
             btn = ttk.Button(
                 template_actions,
                 text=label,
@@ -10365,7 +11050,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         nota.pack(anchor="w", padx=4, pady=(0, 16))
         self.section5_fields["nota"] = nota
 
-        cache = seleccion_incluyente.get_form_cache().get("section_5", {})
+        cache = self._seleccion_module.get_form_cache().get("section_5", {})
         if cache:
             ajustes.delete("1.0", tk.END)
             ajustes.insert("1.0", cache.get("ajustes_recomendaciones", ""))
@@ -10382,7 +11067,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         text_widget = self.section5_fields.get("ajustes_recomendaciones")
         if not text_widget:
             return
-        template_text = seleccion_incluyente.AJUSTES_ENTREVISTA_TEMPLATES.get(template_key, "").strip()
+        template_text = self._seleccion_module.AJUSTES_ENTREVISTA_TEMPLATES.get(template_key, "").strip()
         if not template_text:
             return
         current_text = text_widget.get("1.0", tk.END).strip()
@@ -10400,7 +11085,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             "nota": self.section5_fields["nota"].get().strip(),
         }
         try:
-            seleccion_incluyente.confirm_section_5(payload)
+            self._seleccion_module.confirm_section_5(payload)
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
             return
@@ -10408,7 +11093,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _show_section_6(self):
         self._clear_section_container()
-        self.header_title.config(text=seleccion_incluyente.SECTION_6["title"])
+        self.header_title.config(text=self._seleccion_module.SECTION_6["title"])
         self.header_subtitle.config(text="Registra asistentes y agrega filas si aplica.")
 
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
@@ -10436,7 +11121,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
         self.section6_rows = []
         asistentes_catalog = _get_asistentes_profesionales_catalog()
-        for idx in range(seleccion_incluyente.SECTION_6["rows"]):
+        for idx in range(self._seleccion_module.SECTION_6["rows"]):
             nombre_entry, cargo_entry = _create_asistente_inputs(
                 table,
                 ENTRY_W_WIDE,
@@ -10467,7 +11152,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         )
         add_btn.grid(row=len(self.section6_rows) + 1, column=0, sticky="w", pady=(8, 0))
 
-        cached_rows = seleccion_incluyente.get_form_cache().get("section_6", [])
+        cached_rows = self._seleccion_module.get_form_cache().get("section_6", [])
         while len(self.section6_rows) < len(cached_rows):
             _add_asistente_row()
         for idx, entry in enumerate(cached_rows):
@@ -10494,14 +11179,14 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 }
             )
         try:
-            seleccion_incluyente.confirm_section_6(asistentes)
+            self._seleccion_module.confirm_section_6(asistentes)
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
             return
         loading = LoadingDialog(self, title="Guardando")
         loading.set_status("Generando Excel...")
         loading.set_progress(40)
-        cache_snapshot = seleccion_incluyente.get_form_cache()
+        cache_snapshot = self._seleccion_module.get_form_cache()
         cache = cache_snapshot
         section_1 = cache.get("section_1", {})
         company_name = section_1.get("nombre_empresa")
@@ -10509,7 +11194,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         def _worker():
             output_path = _raise_finalize_stage(
                 "generando el Excel",
-                lambda: seleccion_incluyente.export_to_excel(clear_cache=False),
+                lambda: self._seleccion_module.export_to_excel(clear_cache=False),
             )
             _update_loading_async(
                 loading,
@@ -10518,18 +11203,18 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             )
             _raise_finalize_stage(
                 "guardando en Supabase",
-                seleccion_incluyente.sync_usuarios_reca,
+                self._seleccion_module.sync_usuarios_reca,
             )
             return output_path
 
         _start_background_finalization(
             self,
             loading,
-            form_name="Seleccion Incluyente",
+            form_name=getattr(self, "_form_name", self._seleccion_module.FORM_NAME),
             company_name=company_name,
-            form_id="seleccion_incluyente",
+            form_id=getattr(self, "_form_id", self.FORM_META_ID),
             worker_fn=_worker,
-            post_delivery_fn=lambda: _clear_form_cache_safe(seleccion_incluyente),
+            post_delivery_fn=lambda: _clear_form_cache_safe(self._seleccion_module),
         )
 
     def _format_birthdate(self, _event, fecha_widget, edad_widget):
@@ -10551,6 +11236,17 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _apply_name_entry(self, entry):
         _bind_name_entry(entry)
+
+
+class SeleccionIncluyenteLabsWindow(SeleccionIncluyenteWindow):
+    FORM_META_ID = "seleccion_incluyente_labs"
+    FORM_MODULE = seleccion_incluyente_labs
+    WINDOW_TITLE = "Seleccion Incluyente Labs - Seccion 1"
+
+    def __init__(self, parent):
+        self._disable_section_dictation_sections = {"section_2"}
+        super().__init__(parent)
+
 
 class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
     def __init__(self, parent):

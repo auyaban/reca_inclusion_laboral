@@ -419,6 +419,7 @@ _STANDARD_NORMALIZERS: dict[str, Callable[..., dict[str, Any]]] = {
     "evaluacion_accesibilidad": _normalize_evaluacion,
     "condiciones_vacante": _normalize_condiciones,
     "seleccion_incluyente": _normalize_seleccion,
+    "seleccion_incluyente_labs": _normalize_seleccion,
     "contratacion_incluyente": _normalize_contratacion,
     "induccion_organizacional": _normalize_induccion_organizacional,
     "induccion_operativa": _normalize_induccion_operativa,

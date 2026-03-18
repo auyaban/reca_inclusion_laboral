@@ -5,6 +5,7 @@ import shutil
 import time
 from formularios.common import (
     format_checkbox_symbol,
+    write_checkbox_symbol,
     _get_desktop_dir,
     _next_available_file_path,
     _normalize_text,
@@ -752,7 +753,7 @@ def export_to_excel(cache=None):
                 f"checkbox_value={value!r} checkbox_symbol={symbol!r}",
                 output_path,
             )
-            ws_write(ws, cell, symbol)
+            write_checkbox_symbol(ws, cell, value)
 
         for key, cell in EXCEL_MAPPING["section_4"].items():
             if key in section_4:

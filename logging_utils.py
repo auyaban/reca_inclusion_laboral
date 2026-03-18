@@ -12,6 +12,7 @@ LOG_FILE_MAP = {
     "excel": "excel.log",
     "drive": "drive.log",
     "supabase": "supabase.log",
+    "labs": "labs.log",
 }
 
 
@@ -211,3 +212,7 @@ def log_drive_event(message, level="INFO"):
 
 def log_supabase_event(message, level="INFO"):
     log_event("supabase", message, level=level)
+
+
+def log_labs_event(message, level="INFO"):
+    log_event("labs", message, level=level)

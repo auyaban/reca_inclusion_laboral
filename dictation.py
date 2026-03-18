@@ -215,6 +215,15 @@ class DictationResult:
     error_message: str = ""
 
 
+@dataclass
+class EdgeFunctionResult:
+    ok: bool
+    payload: dict | None = None
+    elapsed_ms: int = 0
+    error_code: str = ""
+    error_message: str = ""
+
+
 def _claim_global_recording(handle_id: str) -> bool:
     global _ACTIVE_RECORDING_ID
     with _ACTIVE_RECORDING_LOCK:
@@ -222,6 +231,12 @@ def _claim_global_recording(handle_id: str) -> bool:
             return False
         _ACTIVE_RECORDING_ID = handle_id
         return True
+
+
+def claim_recording(handle: RecordingHandle) -> bool:
+    if handle is None:
+        return False
+    return _claim_global_recording(handle.id)
 
 
 def _release_global_recording(handle_id: str) -> None:
@@ -253,16 +268,23 @@ def _stop_handle_if_needed(handle: RecordingHandle):
         handle._stopped = True
 
 
-def _post_audio_to_edge(handle: RecordingHandle, jwt_token: str) -> DictationResult:
+def _post_audio_request(
+    handle: RecordingHandle,
+    jwt_token: str,
+    *,
+    function_name: Optional[str] = None,
+    language: Optional[str] = None,
+    extra_fields: Optional[dict] = None,
+) -> EdgeFunctionResult:
     started = _now()
     if not os.path.exists(handle.file_path):
-        return DictationResult(ok=False, error_code="audio_missing", error_message="No se encontro el audio.")
+        return EdgeFunctionResult(ok=False, error_code="audio_missing", error_message="No se encontro el audio.")
 
     size_bytes = os.path.getsize(handle.file_path)
     if size_bytes <= 0:
-        return DictationResult(ok=False, error_code="audio_empty", error_message="El audio grabado esta vacio.")
+        return EdgeFunctionResult(ok=False, error_code="audio_empty", error_message="El audio grabado esta vacio.")
     if size_bytes > (MAX_AUDIO_MB * 1024 * 1024):
-        return DictationResult(
+        return EdgeFunctionResult(
             ok=False,
             error_code="audio_too_large",
             error_message=f"El audio supera el limite de {MAX_AUDIO_MB}MB.",
@@ -271,15 +293,15 @@ def _post_audio_to_edge(handle: RecordingHandle, jwt_token: str) -> DictationRes
     try:
         supabase_url, supabase_key = _load_supabase_credentials(".env")
     except Exception as exc:
-        return DictationResult(
+        return EdgeFunctionResult(
             ok=False,
             error_code="supabase_config",
             error_message=f"No se pudo cargar configuracion Supabase: {exc}",
         )
 
     cfg = _read_config()
-    fn_name = cfg.get("function_name") or DEFAULT_FUNCTION_NAME
-    language = cfg.get("language") or DEFAULT_LANGUAGE
+    fn_name = str(function_name or cfg.get("function_name") or DEFAULT_FUNCTION_NAME).strip() or DEFAULT_FUNCTION_NAME
+    request_language = str(language or cfg.get("language") or DEFAULT_LANGUAGE).strip() or DEFAULT_LANGUAGE
     url = f"{supabase_url.rstrip('/')}/functions/v1/{fn_name}"
 
     with open(handle.file_path, "rb") as in_file:
@@ -288,8 +310,12 @@ def _post_audio_to_edge(handle: RecordingHandle, jwt_token: str) -> DictationRes
     fields = {
         "form_id": handle.form_id,
         "field_id": handle.field_id,
-        "language": language,
+        "language": request_language,
     }
+    for key, value in (extra_fields or {}).items():
+        if value is None:
+            continue
+        fields[str(key)] = str(value)
     body, boundary = _encode_multipart(
         fields=fields,
         file_field="audio_file",
@@ -309,7 +335,7 @@ def _post_audio_to_edge(handle: RecordingHandle, jwt_token: str) -> DictationRes
             raw = response.read().decode("utf-8", errors="replace")
         payload = json.loads(raw) if raw else {}
     except Exception as exc:
-        return DictationResult(
+        return EdgeFunctionResult(
             ok=False,
             elapsed_ms=int((_now() - started) * 1000),
             error_code="edge_request_failed",
@@ -317,22 +343,39 @@ def _post_audio_to_edge(handle: RecordingHandle, jwt_token: str) -> DictationRes
         )
 
     ok = bool(payload.get("ok", False))
-    text = str(payload.get("text") or "")
-    if not ok or not text.strip():
+    if not ok:
         err = payload.get("error")
         message = ""
         if isinstance(err, dict):
             message = str(err.get("message") or "").strip()
         if not message:
-            message = str(payload.get("message") or "No se recibio transcripcion.")
-        return DictationResult(
+            message = str(payload.get("message") or "La Edge Function no devolvio una respuesta valida.")
+        return EdgeFunctionResult(
             ok=False,
             elapsed_ms=int((_now() - started) * 1000),
             error_code=str((err or {}).get("code") if isinstance(err, dict) else "transcription_failed"),
             error_message=message,
         )
 
-    return DictationResult(ok=True, text=text, elapsed_ms=int((_now() - started) * 1000))
+    return EdgeFunctionResult(
+        ok=True,
+        payload=payload if isinstance(payload, dict) else {},
+        elapsed_ms=int((_now() - started) * 1000),
+    )
+
+
+def _post_audio_to_edge(handle: RecordingHandle, jwt_token: str) -> DictationResult:
+    response = _post_audio_request(handle, jwt_token)
+    payload = response.payload or {}
+    text = str(payload.get("text") or "").strip()
+    if not response.ok or not text:
+        return DictationResult(
+            ok=False,
+            elapsed_ms=response.elapsed_ms,
+            error_code=response.error_code or "transcription_failed",
+            error_message=response.error_message or "No se recibio transcripcion.",
+        )
+    return DictationResult(ok=True, text=text, elapsed_ms=response.elapsed_ms)
 
 
 def stop_and_transcribe(handle: RecordingHandle, jwt_token: str) -> DictationResult:
@@ -352,6 +395,42 @@ def stop_and_transcribe(handle: RecordingHandle, jwt_token: str) -> DictationRes
         )
 
     result = _post_audio_to_edge(handle, token)
+    if result.ok:
+        _safe_remove(handle.file_path)
+    _release_global_recording(handle.id)
+    return result
+
+
+def stop_and_submit_audio(
+    handle: RecordingHandle,
+    jwt_token: str,
+    *,
+    function_name: str,
+    language: Optional[str] = None,
+    extra_fields: Optional[dict] = None,
+) -> EdgeFunctionResult:
+    try:
+        _stop_handle_if_needed(handle)
+    except Exception as exc:
+        _release_global_recording(handle.id)
+        return EdgeFunctionResult(ok=False, error_code="record_stop_failed", error_message=str(exc))
+
+    token = str(jwt_token or "").strip()
+    if not token:
+        _release_global_recording(handle.id)
+        return EdgeFunctionResult(
+            ok=False,
+            error_code="missing_session",
+            error_message="No hay sesion valida para usar dictado.",
+        )
+
+    result = _post_audio_request(
+        handle,
+        token,
+        function_name=function_name,
+        language=language,
+        extra_fields=extra_fields,
+    )
     if result.ok:
         _safe_remove(handle.file_path)
     _release_global_recording(handle.id)

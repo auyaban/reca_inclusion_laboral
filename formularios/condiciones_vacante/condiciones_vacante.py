@@ -5,9 +5,11 @@ import re
 import shutil
 import unicodedata
 
+from google_sheets_client import read_sheet_values
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
     format_checkbox_symbol,
+    write_checkbox_symbol,
     sanitize_logo_error_cells,
     autofit_rows,
     clear_written_rows,
@@ -26,6 +28,10 @@ SHEET_NAME = "3. REVISIÓN DE LAS CONDICIONES"
 FORM_CACHE = {}
 SECTION_1_CACHE = {}
 _DISABILITY_DICT = None
+
+OFFICIAL_DICTIONARY_SPREADSHEET_ID = "1pMGkp7TKiCeNvRAE1Cu9zVmlSVYSAI9Kuq9YRbhckW8"
+OFFICIAL_DICTIONARY_SHEET = "caracterizacion"
+OFFICIAL_DICTIONARY_RANGE = f"'{OFFICIAL_DICTIONARY_SHEET}'!A52:B73"
 
 
 SECTION_1 = {
@@ -1049,15 +1055,34 @@ def _normalize_key(text):
     return text.upper()
 
 
-def get_disability_descriptions():
-    global _DISABILITY_DICT
-    if _DISABILITY_DICT is not None:
-        return _DISABILITY_DICT
+def _looks_like_disability_heading(text):
+    normalized = _normalize_key(text)
+    if not normalized or normalized.startswith('"') or re.match(r"^\d", normalized):
+        return False
+    return normalized == normalized.upper() and (
+        "DISCAPACIDAD" in normalized or "TEA" in normalized or "AUTISMO" in normalized
+    )
+
+
+def _load_disability_descriptions_from_sheet():
+    rows = read_sheet_values(OFFICIAL_DICTIONARY_SPREADSHEET_ID, OFFICIAL_DICTIONARY_RANGE)
+    entries = {}
+    for row in rows or []:
+        if not row:
+            continue
+        key = str(row[0] or "").strip()
+        description = str(row[1] or "").strip() if len(row) > 1 else ""
+        if not key:
+            continue
+        entries[_normalize_key(key)] = _fix_text(description)
+    return entries
+
+
+def _load_disability_descriptions_from_text():
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     path = os.path.join(base_dir, "Diccionario.txt")
     if not os.path.exists(path):
-        _DISABILITY_DICT = {}
-        return _DISABILITY_DICT
+        return {}
     try:
         raw = open(path, "r", encoding="utf-8").read()
     except UnicodeDecodeError:
@@ -1081,16 +1106,16 @@ def get_disability_descriptions():
         if not stripped:
             continue
         cleaned = _fix_text(stripped)
+        if _looks_like_disability_heading(cleaned):
+            flush()
+            current_key = cleaned
+            current_lines = []
+            continue
         if '"' in cleaned and not cleaned.startswith('"'):
             key_part, desc_part = cleaned.split('"', 1)
             flush()
             current_key = key_part.strip()
             current_lines = [desc_part.rstrip('"')]
-            continue
-        if cleaned == cleaned.upper() and cleaned.startswith("DISCAPACIDAD"):
-            flush()
-            current_key = cleaned
-            current_lines = []
             continue
         if current_key is None:
             current_key = cleaned
@@ -1098,7 +1123,21 @@ def get_disability_descriptions():
             continue
         current_lines.append(cleaned)
     flush()
-    _DISABILITY_DICT = entries
+    return entries
+
+
+def get_disability_descriptions():
+    global _DISABILITY_DICT
+    if _DISABILITY_DICT is not None:
+        return _DISABILITY_DICT
+    try:
+        entries = _load_disability_descriptions_from_sheet()
+        if entries:
+            _DISABILITY_DICT = entries
+            return _DISABILITY_DICT
+    except Exception:
+        pass
+    _DISABILITY_DICT = _load_disability_descriptions_from_text()
     return _DISABILITY_DICT
 
 
@@ -1180,7 +1219,7 @@ def _write_section_with_ws(ws, section_id, payload):
                     _log_excel(
                         f"WRITE section={section_id} cell={cell} key={key} checkbox_symbol={symbol!r}"
                     )
-                    ws_write(ws, cell, symbol)
+                    write_checkbox_symbol(ws, cell, value)
                 else:
                     _log_excel(
                         f"WRITE section={section_id} cell={cell} key={key} value={value!r}"

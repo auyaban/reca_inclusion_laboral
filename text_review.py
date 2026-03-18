@@ -308,6 +308,11 @@ TEXT_REVIEW_FIELDS_BY_FORM = {
         ("section_5", "ajustes_recomendaciones"),
         ("section_5", "nota"),
     ],
+    "seleccion_incluyente_labs": [
+        ("section_2", "*", "desarrollo_actividad"),
+        ("section_5", "ajustes_recomendaciones"),
+        ("section_5", "nota"),
+    ],
     "contratacion_incluyente": [
         ("section_2", "*", "desarrollo_actividad"),
         ("section_6", "ajustes_recomendaciones"),

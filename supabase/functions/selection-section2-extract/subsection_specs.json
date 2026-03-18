@@ -1,0 +1,55 @@
+{
+  "warning": "Funcion experimental. Usa un solo audio por oferente y por subseccion. Si no estas segura de un dato, no lo inventes en voz alta.",
+  "subsections": {
+    "section_2_fields": {
+      "title": "2. Datos del oferente",
+      "script": "Por favor di algo asi: nombre, cedula, porcentaje del certificado, discapacidad, telefono, resultado del certificado, cargo, contacto de emergencia, parentesco, telefono de emergencia, fecha de nacimiento, pendiente otros oferentes, pension y firma de contrato.",
+      "examples": [
+        "Juan Perez, cedula 10203040, certificado 45 por ciento, discapacidad fisica, telefono 3001234567, resultado aprobado, cargo auxiliar logistico, contacto de emergencia Ana Perez madre 3105556677, fecha de nacimiento 12 de mayo de 1998, pendiente otros oferentes no, cuenta con pension no, firma de contrato en Bogota el 20 de marzo de 2026.",
+        "Maria Lopez, cedula 51880022, certificado 33 por ciento, trastorno de espectro autista, telefono 3019876543, resultado pendiente, cargo operaria de empaque, contacto de emergencia Luis Lopez hermano 3124442233, fecha de nacimiento 3 de agosto de 2001, pendiente otros oferentes por confirmar, cuenta con pension por confirmar.",
+        "Carlos Gomez, cedula 80770011, discapacidad auditiva hipoacusia, resultado no aprobado, cargo mensajero, telefono 3207771100, contacto de emergencia Rosa Gomez tia 3158881100, fecha de nacimiento 14 de febrero de 1994, cuenta con pension si, pension subsidiada."
+      ],
+      "prompt_fragment": "Extrae solo los datos cortos del oferente y del estado del proceso. numero nunca se dicta. edad se deriva localmente desde fecha_nacimiento. Si cuenta_pension es No, tipo_pension debe quedar vacio o null porque el desktop la convertira a No aplica. Si cuenta_pension es Por Confirmar, no inventes tipo_pension."
+    },
+    "section_3_desarrollo": {
+      "title": "3. Desarrollo de la actividad",
+      "script": "Por favor di algo asi: desarrollo, que se hizo, que se observo, que acuerdos quedaron y cualquier detalle util para el acta.",
+      "examples": [
+        "Se realizo entrevista individual con el oferente, se reviso experiencia previa, motivacion frente al cargo y apoyos iniciales requeridos. Se observa buena disposicion y comunicacion clara.",
+        "Se valido hoja de vida, experiencia en bodega y disponibilidad horaria. El oferente manifiesta interes en vacantes operativas y requiere instrucciones concretas al inicio.",
+        "Se explico el proceso de seleccion, tiempos de respuesta y posibles ajustes razonables. Quedo pendiente confirmar documentos y fecha de firma."
+      ],
+      "prompt_fragment": "Extrae un unico texto claro en desarrollo_actividad. No conviertas este bloque en listas de dropdowns."
+    },
+    "section_4_1_salud": {
+      "title": "4.1 Condiciones medicas y de salud",
+      "script": "Por favor di algo asi: medicamentos, alergias, restricciones y controles. Usa frases cortas como no requiere apoyo, no sabe, no aplica o si y el detalle.",
+      "examples": [
+        "Medicamentos: no requiere apoyo, conoce los medicamentos y conoce los horarios, toma losartan. Alergias: no requiere apoyo, no presenta alergias. Restricciones: nivel bajo, si tiene restricciones medicas y conoce su manejo, no cargar peso. Controles: nivel bajo, asiste a controles medicos con especialista y conoce el manejo, frecuencia trimestral, control neurologia.",
+        "Medicamentos: no aplica. Alergias: nivel medio, presenta alergias y sabe darle manejo, alergia a penicilina. Restricciones: no sabe si tiene restricciones medicas. Controles: no sabe si tiene controles medicos con especialista.",
+        "Medicamentos: nivel alto, un tercero conoce los medicamentos y los horarios. Alergias: no conoce si presenta alguna alergia. Restricciones: no aplica. Controles: no requiere apoyo, no aplica."
+      ],
+      "prompt_fragment": "Aplica los dropdowns exactos de medicamentos, alergias, restricciones y controles. Si el profesional dice no sabe, usa la opcion del dropdown que expresa desconocimiento. Conserva detalles clinicos breves en los campos *_nota."
+    },
+    "section_4_2_a_habilidades": {
+      "title": "4.2A Habilidades basicas de la vida diaria",
+      "script": "Por favor di algo asi: desplazamiento, ubicacion, dinero, presentacion personal, comunicacion escrita, comunicacion verbal y toma de decisiones. Usa frases naturales pero concretas.",
+      "examples": [
+        "Se desplaza de forma independiente con apoyo temporal, usa baston y se moviliza en Transmilenio. Se ubica en la ciudad usando Maps y por direcciones. Reconoce el dinero con apoyo familiar, maneja dinero con apoyo ocasional y usa dinero fisico y plastico. Presentacion personal acorde al contexto. Comunicacion escrita: conoce pero no maneja apoyos. Comunicacion verbal: no requiere apoyo. Toma decisiones pero en ocasiones requiere el apoyo de un tercero, consulta a la madre.",
+        "No requiere apoyo para desplazamiento, camina y usa bicicleta. Se ubica de manera autonoma y por puntos de referencia. Maneja el dinero de manera autonoma y usa dinero fisico, plastico y digital. No requiere apoyo en presentacion personal ni en toma de decisiones.",
+        "No se desplaza de manera independiente, requiere acompanamiento de un tercero y vehiculo especial. Requiere acompanamiento para ubicarse. Solo reconoce el dinero pero no lo sabe manejar. Presenta oportunidades de mejora en vestuario. No conoce ni maneja apoyos de comunicacion verbal ni escrita."
+      ],
+      "prompt_fragment": "Extrae solo las habilidades de desplazamiento a toma de decisiones. Cuando aparezcan apoyos, selecciona la opcion exacta del dropdown. Si hay detalle adicional como 'usa baston' o 'consulta a la madre', guardalo en la nota correspondiente."
+    },
+    "section_4_2_b_actividades": {
+      "title": "4.2B Actividades, apoyos y discriminacion",
+      "script": "Por favor di algo asi: vida diaria, instrumentales, laborales y discriminacion. Si solo hay algunas opciones en Si, di tambien 'lo demas no' para que el sistema pueda marcar el resto en No.",
+      "examples": [
+        "Vida diaria: requiere apoyo en algunas actividades, solo alimentacion; lo demas no. Instrumentales: si necesita apoyo en finanzas y cocina; lo demas no. Actividades laborales: requiere apoyo en algunas actividades, complementarios medicos si, lo demas no. Discriminacion: ha sufrido discriminacion en algunos contextos, acoso laboral si, violencia fisica no, vulneracion de derechos no, violencia psicosocial no.",
+        "Vida diaria: no requiere apoyo en sus actividades de la vida diaria. Instrumentales: no aplica. Actividades laborales: no requiere apoyo en sus actividades laborales. Discriminacion: no ha sufrido discriminacion.",
+        "Vida diaria: requiere apoyo en la mayoria de actividades de la vida diaria, crianza no aplica, comunicacion si, ayudas tecnicas si, alimentacion si, movilidad funcional si, higiene y aseo si. Instrumentales: requiere apoyo en todas las actividades instrumentales. Discriminacion: ha sufrido discriminacion en repetidas ocasiones, violencia fisica si y cuenta con apoyo, vulneracion de derechos si y no cuenta con apoyo."
+      ],
+      "prompt_fragment": "Este bloque permite inferencia explicita. Si el profesional dice 'solo X' o 'lo demas no', marca X en Si y el resto del subgrupo en No. Si solo enumera algunos elementos positivos sin decir 'lo demas no', deja los no mencionados en null. Nunca inventes negativos."
+    }
+  }
+}

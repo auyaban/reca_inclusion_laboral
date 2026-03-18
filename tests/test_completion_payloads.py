@@ -105,6 +105,39 @@ class CompletionPayloadTests(unittest.TestCase):
         self.assertEqual(len(parsed["participantes"]), 2)
         self.assertEqual(parsed["participantes"][0]["cedula_usuario"], "123")
 
+    def test_builds_selection_labs_payload_with_same_normalizer(self) -> None:
+        result = completion_payloads.build_completion_payload(
+            "seleccion_incluyente_labs",
+            "Proceso de Seleccion Incluyente Labs",
+            {
+                "section_1": {
+                    "fecha_visita": "2026-03-17",
+                    "nombre_empresa": "Empresa Demo",
+                    "nit_empresa": "900123456",
+                    "modalidad": "Virtual",
+                    "profesional_asignado": "Leidy Novoa",
+                },
+                "section_2": [
+                    {
+                        "nombre_oferente": "Ana Perez",
+                        "cedula": "123",
+                        "discapacidad": "Auditiva",
+                        "cargo_oferente": "Auxiliar",
+                    }
+                ],
+                "section_6": [{"nombre": "Leidy Novoa", "cargo": "Profesional"}],
+            },
+            output_path=r"C:\tmp\seleccion_labs.xlsx",
+            session_id="session-labs",
+            app_version="2.0.0",
+        )
+
+        payload = result["payload_normalized"]
+        self.assertEqual(payload["form_id"], "seleccion_incluyente_labs")
+        self.assertEqual(payload["attachment"]["document_kind"], "inclusive_selection")
+        self.assertEqual(payload["parsed_raw"]["cargo_objetivo"], "Auxiliar")
+        self.assertEqual(result["source_item_key"], "seleccion_incluyente_labs:session-labs")
+
     def test_builds_sensibilizacion_payload_without_professional_field(self) -> None:
         result = completion_payloads.build_completion_payload(
             "sensibilizacion",

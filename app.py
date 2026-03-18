@@ -200,18 +200,70 @@ def _collect_flat_fields(fields):
 
 def _attach_autoexpand(widget, min_h=3, max_h=20):
     """Hace que un tk.Text crezca automáticamente al escribir, hasta max_h líneas."""
-    def _on_change(event=None):
-        if not widget.edit_modified():
-            return
+    def _resize(_event=None):
         widget.update_idletasks()
         try:
-            count = int(widget.count("1.0", "end", "displaylines") or min_h)
+            count = widget.count("1.0", "end-1c", "displaylines")
+            if isinstance(count, tuple):
+                count = count[0] if count else min_h
+            count = int(count or min_h)
         except Exception:
-            count = min_h
+            text = widget.get("1.0", "end-1c")
+            count = max(1, text.count("\n") + 1)
         new_h = max(min_h, min(count, max_h))
         widget.config(height=new_h)
-        widget.edit_modified(False)
-    widget.bind("<<Modified>>", _on_change)
+        try:
+            widget.edit_modified(False)
+        except Exception:
+            pass
+    widget.bind("<<Modified>>", lambda _event=None: widget.after_idle(_resize), add="+")
+    widget.bind("<KeyRelease>", lambda _event=None: widget.after_idle(_resize), add="+")
+    widget.bind("<<Paste>>", lambda _event=None: widget.after_idle(_resize), add="+")
+    widget.bind("<<Cut>>", lambda _event=None: widget.after_idle(_resize), add="+")
+    widget.after_idle(_resize)
+
+
+def _clear_local_resume_state(module):
+    """Limpia el caché local temporal. Solo los borradores deben restaurar una sesión."""
+    try:
+        if hasattr(module, "clear_form_cache"):
+            module.clear_form_cache()
+    except Exception:
+        pass
+    try:
+        if (
+            hasattr(module, "cache_file_exists")
+            and hasattr(module, "clear_cache_file")
+            and module.cache_file_exists()
+        ):
+            module.clear_cache_file()
+    except Exception:
+        pass
+
+
+def _collect_asistente_rows(rows):
+    """Normaliza filas de asistentes y descarta las vacías."""
+    values = []
+    for row in rows:
+        if not row:
+            continue
+        if len(row) >= 3:
+            _, nombre_widget, cargo_widget = row[:3]
+        elif len(row) >= 2:
+            nombre_widget, cargo_widget = row[:2]
+        else:
+            continue
+        try:
+            nombre = nombre_widget.get().strip()
+        except Exception:
+            nombre = ""
+        try:
+            cargo = cargo_widget.get().strip()
+        except Exception:
+            cargo = ""
+        if nombre or cargo:
+            values.append({"nombre": nombre, "cargo": cargo})
+    return values
 
 
 def _acquire_single_instance_mutex():
@@ -3516,21 +3568,9 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             self._show_section_1,
         ):
             return True
-        if not presentacion_programa.cache_file_exists():
-            return False
-        presentacion_programa.load_cache_from_file()
-        last_section = presentacion_programa.get_form_cache().get("_last_section")
-        if last_section == "section_1":
-            self._show_section_2()
-        elif last_section == "section_2":
-            self._show_section_3()
-        elif last_section in {"section_3", "section_3_item_8"}:
-            self._show_section_4()
-        elif last_section in {"section_4", "section_5"}:
-            self._show_section_5()
-        else:
-            self._show_section_1()
-        return True
+        if presentacion_programa.cache_file_exists():
+            _clear_local_resume_state(presentacion_programa)
+        return False
 
     def _build_header(self):
         header = tk.Frame(self, bg=COLOR_LIGHT_BG)
@@ -3835,6 +3875,11 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         self.section5_frame = asistentes_frame
         cached_asistentes = presentacion_programa.get_form_cache().get("section_5", [])
         self._render_section5_asistentes(cached_asistentes)
+        self._pending_autosave = lambda: _autosave_section(
+            presentacion_programa,
+            "section_5",
+            lambda: self._get_section5_asistentes_values(),
+        )
 
         _build_wizard_actions(
             section_frame,
@@ -6886,35 +6931,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
             self._show_section_1,
         ):
             return True
-        if not evaluacion_accesibilidad.cache_file_exists():
-            return False
-        evaluacion_accesibilidad.load_cache_from_file()
-        last_section = evaluacion_accesibilidad.get_form_cache().get("_last_section")
-        if last_section == "section_1":
-            self._show_section_2()
-        elif last_section == "section_2_1":
-            self._show_section_2_2()
-        elif last_section == "section_2_2":
-            self._show_section_2_3()
-        elif last_section == "section_2_3":
-            self._show_section_2_4()
-        elif last_section == "section_2_4":
-            self._show_section_2_5()
-        elif last_section == "section_2_5":
-            self._show_section_2_6()
-        elif last_section == "section_2_6":
-            self._show_section_3()
-        elif last_section == "section_3":
-            self._show_section_4()
-        elif last_section == "section_4":
-            self._show_section_5()
-        elif last_section == "section_5":
-            self._show_section_6()
-        elif last_section == "section_6":
-            self._show_section_7()
-        else:
-            self._show_section_8()
-        return True
+        if evaluacion_accesibilidad.cache_file_exists():
+            _clear_local_resume_state(evaluacion_accesibilidad)
+        return False
 
 
     def _build_header(self):
@@ -8908,29 +8927,9 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             self._show_section_1,
         ):
             return True
-        if not condiciones_vacante.cache_file_exists():
-            return False
-        condiciones_vacante.load_cache_from_file()
-        last_section = condiciones_vacante.get_form_cache().get("_last_section")
-        if last_section == "section_1":
-            self._show_section_2()
-        elif last_section == "section_2":
-            self._show_section_2_1()
-        elif last_section == "section_2_1":
-            self._show_section_3()
-        elif last_section == "section_3":
-            self._show_section_4()
-        elif last_section == "section_4":
-            self._show_section_5()
-        elif last_section == "section_5":
-            self._show_section_6()
-        elif last_section == "section_6":
-            self._show_section_7()
-        elif last_section in {"section_7", "section_8"}:
-            self._show_section_8()
-        else:
-            self._show_section_1()
-        return True
+        if condiciones_vacante.cache_file_exists():
+            _clear_local_resume_state(condiciones_vacante)
+        return False
 
     def _show_section_1(self):
         self._clear_section_container()
@@ -9875,6 +9874,11 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda: _autosave_section(
+            condiciones_vacante,
+            "section_8",
+            lambda: self._get_section8_asistentes_values(),
+        )
         ttk.Button(actions, text="Regresar", command=self._show_section_7).pack(side="left")
         ttk.Button(actions, text="Finalizar", command=self._confirm_section_8).pack(side="right")
 
@@ -10020,21 +10024,9 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             self._show_section_1,
         ):
             return True
-        if not module.cache_file_exists():
-            return False
-        module.load_cache_from_file()
-        last_section = module.get_form_cache().get("_last_section")
-        if last_section == "section_1":
-            self._show_section_2()
-        elif last_section == "section_2":
-            self._show_section_5()
-        elif last_section == "section_5":
-            self._show_section_5()
-        elif last_section == "section_6":
-            self._show_section_6()
-        else:
-            self._show_section_1()
-        return True
+        if module.cache_file_exists():
+            _clear_local_resume_state(module)
+        return False
 
     def _build_header(self):
         header = tk.Frame(self, bg=COLOR_LIGHT_BG)
@@ -11257,6 +11249,11 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             nombre_entry.insert(0, entry.get("nombre", ""))
             cargo_entry.delete(0, tk.END)
             cargo_entry.insert(0, entry.get("cargo", ""))
+        self._pending_autosave = lambda: _autosave_section(
+            self._seleccion_module,
+            "section_6",
+            lambda: _collect_asistente_rows(self.section6_rows),
+        )
 
         _build_wizard_actions(
             content,
@@ -11526,21 +11523,9 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             self._show_section_1,
         ):
             return True
-        if not contratacion_incluyente.cache_file_exists():
-            return False
-        contratacion_incluyente.load_cache_from_file()
-        last_section = contratacion_incluyente.get_form_cache().get("_last_section")
-        if last_section == "section_1":
-            self._show_section_2()
-        elif last_section == "section_2":
-            self._show_section_6()
-        elif last_section == "section_6":
-            self._show_section_6()
-        elif last_section == "section_7":
-            self._show_section_7()
-        else:
-            self._show_section_1()
-        return True
+        if contratacion_incluyente.cache_file_exists():
+            _clear_local_resume_state(contratacion_incluyente)
+        return False
 
     def _show_section_1(self):
         self._clear_section_container()
@@ -12295,6 +12280,11 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             nombre_entry.insert(0, entry.get("nombre", ""))
             cargo_entry.delete(0, tk.END)
             cargo_entry.insert(0, entry.get("cargo", ""))
+        self._pending_autosave = lambda: _autosave_section(
+            contratacion_incluyente,
+            "section_7",
+            lambda: _collect_asistente_rows(self.section7_rows),
+        )
 
         _build_wizard_actions(
             content,
@@ -12534,23 +12524,9 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
             self._show_section_1,
         ):
             return True
-        if not induccion_organizacional.cache_file_exists():
-            return False
-        induccion_organizacional.load_cache_from_file()
-        last_section = induccion_organizacional.get_form_cache().get("_last_section")
-        if last_section == "section_6":
-            self._show_section_6()
-        elif last_section == "section_5":
-            self._show_section_5()
-        elif last_section == "section_4":
-            self._show_section_4()
-        elif last_section == "section_3":
-            self._show_section_3()
-        elif last_section == "section_2":
-            self._show_section_2()
-        else:
-            self._show_section_1()
-        return True
+        if induccion_organizacional.cache_file_exists():
+            _clear_local_resume_state(induccion_organizacional)
+        return False
 
     def _show_section_1(self):
         self._clear_section_container()
@@ -12975,6 +12951,11 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda: _autosave_section(
+            induccion_organizacional,
+            "section_6",
+            lambda: _collect_asistente_rows(self.section6_rows),
+        )
         ttk.Button(actions, text="Regresar", command=self._show_section_5).pack(side="left")
         ttk.Button(actions, text="Agregar asistente", command=_add_row).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Eliminar ultimo", command=_remove_last).pack(side="left", padx=(8, 0))
@@ -13353,29 +13334,9 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
             self._show_section_1,
         ):
             return True
-        if not induccion_operativa.cache_file_exists():
-            return False
-        induccion_operativa.load_cache_from_file()
-        last_section = induccion_operativa.get_form_cache().get("_last_section")
-        if last_section == "section_9":
-            self._show_section_9()
-        elif last_section == "section_8":
-            self._show_section_8()
-        elif last_section == "section_7":
-            self._show_section_7()
-        elif last_section == "section_6":
-            self._show_section_6()
-        elif last_section == "section_5":
-            self._show_section_5()
-        elif last_section == "section_4":
-            self._show_section_4()
-        elif last_section == "section_3":
-            self._show_section_3()
-        elif last_section == "section_2":
-            self._show_section_2()
-        else:
-            self._show_section_1()
-        return True
+        if induccion_operativa.cache_file_exists():
+            _clear_local_resume_state(induccion_operativa)
+        return False
 
     def _build_search(self, parent):
         _section1_build_search(self, parent)
@@ -14025,6 +13986,11 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda: _autosave_section(
+            induccion_operativa,
+            "section_9",
+            lambda: _collect_asistente_rows(self.section9_rows),
+        )
         ttk.Button(actions, text="Regresar", command=self._show_section_8).pack(side="left")
         ttk.Button(actions, text="Agregar asistente", command=_add_row).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Eliminar ultimo", command=_remove_last).pack(side="left", padx=(8, 0))
@@ -14271,21 +14237,9 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
             self._show_section_1,
         ):
             return True
-        if not sensibilizacion.cache_file_exists():
-            return False
-        sensibilizacion.load_cache_from_file()
-        last_section = sensibilizacion.get_form_cache().get("_last_section")
-        if last_section == "section_5":
-            self._show_section_5()
-        elif last_section == "section_4":
-            self._show_section_4()
-        elif last_section == "section_3":
-            self._show_section_3()
-        elif last_section == "section_2":
-            self._show_section_2()
-        else:
-            self._show_section_1()
-        return True
+        if sensibilizacion.cache_file_exists():
+            _clear_local_resume_state(sensibilizacion)
+        return False
 
     def _build_search(self, parent):
         _section1_build_search(self, parent)
@@ -14550,6 +14504,11 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda: _autosave_section(
+            sensibilizacion,
+            "section_5",
+            lambda: _collect_asistente_rows(self.section5_rows),
+        )
         ttk.Button(actions, text="Regresar", command=self._show_section_4).pack(side="left")
         ttk.Button(actions, text="Agregar asistente", command=_add_row).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Eliminar ultimo", command=_remove_last).pack(side="left", padx=(8, 0))

@@ -4699,7 +4699,14 @@ class HubWindow(tk.Tk):
                 on_conflict=on_conflict,
             )
             return (result or {}).get("status") in {"synced", "queued"}
-        except Exception:
+        except Exception as exc:
+            _log_capture(f"[USAGE] _usage_upsert_sync failed table={table} err={exc}")
+            try:
+                _supabase_enqueue_upsert(table, [row], on_conflict=on_conflict)
+                _log_capture(f"[USAGE] enqueued as fallback table={table}")
+                return True
+            except Exception as q_exc:
+                _log_capture(f"[USAGE] enqueue_fallback failed table={table} err={q_exc}")
             return False
 
     def _should_track_usage(self):
@@ -4871,7 +4878,12 @@ class HubWindow(tk.Tk):
                 f"create_form_completion_record form={form_name} company={company_name} output={output_path}"
             )
         try:
-            self._usage_upsert_sync("formatos_finalizados_il", row, on_conflict="registro_id")
+            saved = self._usage_upsert_sync("formatos_finalizados_il", row, on_conflict="registro_id")
+            if not saved:
+                _log_capture(
+                    f"[USAGE] create_form_completion_record upsert returned False "
+                    f"registro_id={registro_id} form={form_name}"
+                )
         except Exception as exc:
             _log_capture(f"create_form_completion_record failed registro_id={registro_id} err={exc}")
         return registro_id
@@ -6598,12 +6610,7 @@ class HubWindow(tk.Tk):
                 if getattr(window, "_usage_finish_logged", False):
                     return
                 window._usage_finish_logged = True
-                try:
-                    self.track_form_finished(form_id)
-                except Exception as exc:
-                    _log_capture(
-                        f"[USAGE] track_form_finished_failed form={form_id} err={exc}"
-                    )
+                _log_capture(f"[USAGE] form_window_closed form={form_id}")
 
             def _tracked_destroy(*args, **kwargs):
                 _track_usage_finish_once()

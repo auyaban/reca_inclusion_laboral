@@ -1,4 +1,4 @@
-﻿import os
+import os
 import json
 import re
 import shutil
@@ -533,7 +533,7 @@ def get_empresa_by_nombre(nombre, env_path=".env"):
     return _map_company_row(data[0])
 
 
-def get_empresas_by_nombre_prefix(prefix, env_path=".env", limit=10):
+def get_empresas_by_nombre_prefix(prefix, env_path=".env", limit=50):
     if not prefix:
         return []
     prefix = " ".join(str(prefix).split())

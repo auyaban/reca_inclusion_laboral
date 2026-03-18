@@ -1,4 +1,4 @@
-﻿import os
+import os
 import re
 import shutil
 import json
@@ -1630,7 +1630,7 @@ def get_empresa_by_nombre(nombre, env_path=".env"):
     raise ValueError("Hay más de una empresa con ese nombre. Usa el NIT.")
 
 
-def get_empresas_by_nombre_prefix(prefix, env_path=".env", limit=10):
+def get_empresas_by_nombre_prefix(prefix, env_path=".env", limit=50):
     if not prefix:
         return []
     prefix = " ".join(str(prefix).split())

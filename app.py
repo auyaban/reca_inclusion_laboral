@@ -1,4 +1,4 @@
-﻿import threading
+import threading
 import re
 import os
 import time
@@ -166,6 +166,52 @@ WINDOW_CLASS_FORM_ID_MAP = {
     "SensibilizacionWindow": "sensibilizacion",
     "SeguimientosWindow": "seguimientos",
 }
+
+
+def _autosave_section(module, section_key, collect_fn):
+    """Guarda silenciosamente los datos de la sección actual al caché local.
+    Se llama al navegar hacia atrás para no perder el trabajo."""
+    try:
+        payload = collect_fn()
+        module.set_section_cache(section_key, payload)
+        module.save_cache_to_file()
+    except Exception:
+        pass
+
+
+def _collect_flat_fields(fields):
+    """Recolecta un dict plano de widgets {field_id: widget} en un payload."""
+    payload = {}
+    for field_id, widget in fields.items():
+        try:
+            if isinstance(widget, tk.BooleanVar):
+                payload[field_id] = widget.get()
+            elif isinstance(widget, tk.Text):
+                payload[field_id] = widget.get("1.0", tk.END).strip()
+            elif isinstance(widget, (ttk.Combobox, tk.Entry)):
+                payload[field_id] = widget.get().strip()
+            elif hasattr(widget, 'get'):
+                raw = widget.get()
+                payload[field_id] = raw.strip() if isinstance(raw, str) else raw
+        except Exception:
+            pass
+    return payload
+
+
+def _attach_autoexpand(widget, min_h=3, max_h=20):
+    """Hace que un tk.Text crezca automáticamente al escribir, hasta max_h líneas."""
+    def _on_change(event=None):
+        if not widget.edit_modified():
+            return
+        widget.update_idletasks()
+        try:
+            count = int(widget.count("1.0", "end", "displaylines") or min_h)
+        except Exception:
+            count = min_h
+        new_h = max(min_h, min(count, max_h))
+        widget.config(height=new_h)
+        widget.edit_modified(False)
+    widget.bind("<<Modified>>", _on_change)
 
 
 def _acquire_single_instance_mutex():
@@ -2058,13 +2104,13 @@ def _confirm_labs_experimental_warning(parent):
 
 
 def _section1_build_search(self, parent, include_tipo_visita=False):
-    search_w = 42
+    search_w = 58
     try:
         sw = int(self.winfo_screenwidth() or 0)
         if sw and sw <= 1366:
-            search_w = 32
+            search_w = 48
         elif sw and sw <= 1600:
-            search_w = 38
+            search_w = 52
     except Exception:
         pass
     frame = tk.Frame(parent, bg=COLOR_LIGHT_BG)
@@ -3472,14 +3518,6 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             return True
         if not presentacion_programa.cache_file_exists():
             return False
-        resume = messagebox.askyesno(
-            "Reanudar",
-            "Se encontró un formulario en progreso. ¿Deseas continuar donde lo dejaste?",
-        )
-        if not resume:
-            presentacion_programa.clear_cache_file()
-            presentacion_programa.clear_form_cache()
-            return False
         presentacion_programa.load_cache_from_file()
         last_section = presentacion_programa.get_form_cache().get("_last_section")
         if last_section == "section_1":
@@ -3521,6 +3559,13 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         self.section_container.pack(fill="both", expand=True, padx=FORM_PADX, pady=8)
 
     def _clear_section_container(self):
+        _fn = getattr(self, '_pending_autosave', None)
+        if callable(_fn):
+            try:
+                _fn()
+            except Exception:
+                pass
+            self._pending_autosave = None
         for child in self.section_container.winfo_children():
             child.destroy()
 
@@ -3728,6 +3773,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             wrap="word",
         )
         self.section4_text.pack(fill="x", pady=(6, 16))
+        _attach_autoexpand(self.section4_text, 10, 30)
 
         cached_notes = presentacion_programa.get_form_cache().get("section_4", {}).get(
             "acuerdos_observaciones"
@@ -3736,6 +3782,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             self.section4_text.delete("1.0", tk.END)
             self.section4_text.insert("1.0", cached_notes)
 
+        self._pending_autosave = lambda: _autosave_section(presentacion_programa, "section_4", lambda: {"acuerdos_observaciones": self.section4_text.get("1.0", tk.END).strip()})
         _build_wizard_actions(
             section_frame,
             back_command=self._show_section_3,
@@ -4143,6 +4190,11 @@ def _section1_update_nombre_suggestions(self):
     if len(prefix) < 2:
         entry["values"] = []
         return
+    cache = getattr(self, "_empresa_names_cache", None)
+    if cache:
+        pl = prefix.lower()
+        entry["values"] = [n for n in cache if n.lower().startswith(pl)][:50]
+        return
     lookup = getattr(self, "_empresa_lookup", None)
     if not lookup or not hasattr(lookup, "get_empresas_by_nombre_prefix"):
         return
@@ -4184,6 +4236,7 @@ class HubWindow(tk.Tk):
         self._form_event_ids = {}
         self._form_event_payloads = {}
         self._companies_all = []
+        self._empresa_names_cache = []
         self._companies_by_id = {}
         self._companies_tree = None
         self._companies_search_var = None
@@ -5859,6 +5912,7 @@ class HubWindow(tk.Tk):
         )
         comentarios_txt = tk.Text(frame, width=52, height=6, wrap="word")
         comentarios_txt.grid(row=2, column=1, sticky="w", pady=(0, 6))
+        _attach_autoexpand(comentarios_txt, 6, 20)
         comentarios_txt.insert(
             "1.0",
             company_row.get("comentarios_empresas")
@@ -6212,6 +6266,10 @@ class HubWindow(tk.Tk):
                     messagebox.showwarning("Base de Datos", f"No se pudo actualizar: {err}")
                     return
                 self._companies_all = rows
+                self._empresa_names_cache = sorted(
+                    {(r.get("nombre_empresa") or "").strip() for r in rows if (r.get("nombre_empresa") or "").strip()},
+                    key=str.lower,
+                )
                 self._render_companies()
                 self.show_toast("Base de datos actualizada")
 
@@ -6580,6 +6638,10 @@ class HubWindow(tk.Tk):
         except Exception as exc:
             self._companies_all = []
             messagebox.showwarning("Empresas", f"Error cargando empresas: {exc}")
+        self._empresa_names_cache = sorted(
+            {(r.get("nombre_empresa") or "").strip() for r in self._companies_all if (r.get("nombre_empresa") or "").strip()},
+            key=str.lower,
+        )
         self._companies_search_var.trace_add("write", self._render_companies)
         sort_combo.bind("<<ComboboxSelected>>", self._render_companies)
         tree.bind("<Double-1>", self._on_company_double_click)
@@ -6592,6 +6654,7 @@ class HubWindow(tk.Tk):
         form_name = str(form_meta.get("name") or form_id)
         window._form_id = form_id
         window._form_name = form_name
+        window._empresa_names_cache = getattr(self, "_empresa_names_cache", [])
         module = FORM_MODULE_MAP.get(form_id)
         if module and hasattr(module, "get_form_cache") and hasattr(module, "save_cache_to_file"):
             window._save_draft_command = lambda w=window: self._save_current_form_draft(w)
@@ -6825,14 +6888,6 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
             return True
         if not evaluacion_accesibilidad.cache_file_exists():
             return False
-        resume = messagebox.askyesno(
-            "Reanudar",
-            "Se encontró una evaluación en progreso. ¿Deseas continuar donde lo dejaste?",
-        )
-        if not resume:
-            evaluacion_accesibilidad.clear_cache_file()
-            evaluacion_accesibilidad.clear_form_cache()
-            return False
         evaluacion_accesibilidad.load_cache_from_file()
         last_section = evaluacion_accesibilidad.get_form_cache().get("_last_section")
         if last_section == "section_1":
@@ -6889,6 +6944,13 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         self.section_container.pack(fill="both", expand=True, padx=FORM_PADX, pady=8)
 
     def _clear_section_container(self):
+        _fn = getattr(self, '_pending_autosave', None)
+        if callable(_fn):
+            try:
+                _fn()
+            except Exception:
+                pass
+            self._pending_autosave = None
         for child in self.section_container.winfo_children():
             child.destroy()
 
@@ -7028,6 +7090,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda f=self.section2_1_fields: _autosave_section(evaluacion_accesibilidad, "section_2_1", lambda: self._collect_section_fields(f))
         ttk.Button(actions, text="Regresar", command=self._show_section_1).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_2_1).pack(side="right")
     def _show_section_2_2(self):
@@ -7226,6 +7289,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda f=self.section2_2_fields: _autosave_section(evaluacion_accesibilidad, "section_2_2", lambda: self._collect_section_fields(f))
         ttk.Button(actions, text="Regresar", command=self._show_section_2).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_2_2).pack(side="right")
     def _show_section_2_3(self):
@@ -7439,6 +7503,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda f=self.section2_3_fields: _autosave_section(evaluacion_accesibilidad, "section_2_3", lambda: self._collect_section_fields(f))
         ttk.Button(actions, text="Regresar", command=self._show_section_2_2).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_2_3).pack(side="right")
 
@@ -7570,6 +7635,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda f=self.section2_4_fields: _autosave_section(evaluacion_accesibilidad, "section_2_4", lambda: self._collect_section_fields(f))
         ttk.Button(actions, text="Regresar", command=self._show_section_2_3).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_2_4).pack(side="right")
 
@@ -7701,6 +7767,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda f=self.section2_5_fields: _autosave_section(evaluacion_accesibilidad, "section_2_5", lambda: self._collect_section_fields(f))
         ttk.Button(actions, text="Regresar", command=self._show_section_2_4).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_2_5).pack(side="right")
 
@@ -7790,6 +7857,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda f=self.section2_6_fields: _autosave_section(evaluacion_accesibilidad, "section_2_6", lambda: self._collect_section_fields(f))
         ttk.Button(actions, text="Regresar", command=self._show_section_2_5).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_2_6).pack(side="right")
 
@@ -7923,6 +7991,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda f=self.section3_fields: _autosave_section(evaluacion_accesibilidad, "section_3", lambda: self._collect_section_fields(f))
         ttk.Button(actions, text="Regresar", command=self._show_section_2_6).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_3).pack(side="right")
     def _confirm_section_2_5(self):
@@ -8036,6 +8105,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda f=self.section4_fields: _autosave_section(evaluacion_accesibilidad, "section_4", lambda: self._collect_section_fields(f))
         ttk.Button(actions, text="Regresar", command=self._show_section_3).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_4).pack(side="right")
     def _confirm_section_3(self):
@@ -8221,6 +8291,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda f=self.section5_fields: _autosave_section(evaluacion_accesibilidad, "section_5", lambda: self._collect_section_fields(f))
         ttk.Button(actions, text="Regresar", command=self._show_section_4).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_5).pack(side="right")
 
@@ -8260,12 +8331,14 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
             ).pack(anchor="w", pady=(6, 2))
             text_box = tk.Text(section_frame, height=4, wrap="word")
             text_box.pack(fill="x", pady=(0, 12))
+            _attach_autoexpand(text_box, 4, 15)
             self.section6_fields[field["id"]] = {"texto": text_box}
 
         self._prefill_section_fields("section_6", self.section6_fields)
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda f=self.section6_fields: _autosave_section(evaluacion_accesibilidad, "section_6", lambda: self._collect_section_fields(f))
         ttk.Button(actions, text="Regresar", command=self._show_section_5).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_6).pack(side="right")
 
@@ -8315,12 +8388,14 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
             ).pack(anchor="w", pady=(8, 2))
             text_box = tk.Text(section_frame, height=4, wrap="word")
             text_box.pack(fill="x", pady=(0, 12))
+            _attach_autoexpand(text_box, 4, 15)
             self.section7_fields[field["id"]] = {"texto": text_box}
 
         self._prefill_section_fields("section_7", self.section7_fields)
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda f=self.section7_fields: _autosave_section(evaluacion_accesibilidad, "section_7", lambda: self._collect_section_fields(f))
         ttk.Button(actions, text="Regresar", command=self._show_section_6).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_7).pack(side="right")
 
@@ -8379,6 +8454,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda: _autosave_section(evaluacion_accesibilidad, "section_8", lambda: [{"nombre": n.get().strip(), "cargo": c.get().strip()} for n, c in self.section8_entries])
         ttk.Button(actions, text="Regresar", command=self._show_section_7).pack(side="left")
         ttk.Button(actions, text="Finalizar", command=self._confirm_section_8).pack(side="right")
 
@@ -8803,6 +8879,13 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         self.section_container.pack(fill="both", expand=True, padx=FORM_PADX, pady=8)
 
     def _clear_section_container(self):
+        _fn = getattr(self, '_pending_autosave', None)
+        if callable(_fn):
+            try:
+                _fn()
+            except Exception:
+                pass
+            self._pending_autosave = None
         for child in self.section_container.winfo_children():
             child.destroy()
 
@@ -8826,14 +8909,6 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         ):
             return True
         if not condiciones_vacante.cache_file_exists():
-            return False
-        resume = messagebox.askyesno(
-            "Reanudar",
-            "Se encontró un formulario en progreso. ¿Deseas continuar donde lo dejaste?",
-        )
-        if not resume:
-            condiciones_vacante.clear_cache_file()
-            condiciones_vacante.clear_form_cache()
             return False
         condiciones_vacante.load_cache_from_file()
         last_section = condiciones_vacante.get_form_cache().get("_last_section")
@@ -9029,6 +9104,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
                 ).grid(row=0, column=0, sticky="w", padx=8, pady=6)
                 obs_text = tk.Text(obs_row, height=3, wrap="word")
                 obs_text.grid(row=0, column=1, sticky="we", padx=8, pady=6)
+                _attach_autoexpand(obs_text, 3, 12)
                 self.section2_fields["requiere_certificado_observaciones"] = obs_text
 
         competencias_frame = tk.Frame(content, bg=COLOR_LIGHT_BG)
@@ -9058,6 +9134,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda f=self.section2_fields: _autosave_section(condiciones_vacante, "section_2", lambda: _collect_flat_fields(f))
         ttk.Button(actions, text="Regresar", command=self._show_section_1).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_2).pack(side="right")
 
@@ -9176,6 +9253,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             elif field["type"] == "texto_largo":
                 widget = tk.Text(row, height=3, wrap="word")
                 widget.grid(row=0, column=1, sticky="we", padx=8, pady=8)
+                _attach_autoexpand(widget, 3, 12)
             else:
                 widget = tk.Entry(row, width=48)
                 widget.grid(row=0, column=1, sticky="w", padx=8, pady=8)
@@ -9186,6 +9264,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda f=self.section2_1_fields: _autosave_section(condiciones_vacante, "section_2_1", lambda: _collect_flat_fields(f))
         ttk.Button(actions, text="Regresar", command=self._show_section_2).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_2_1).pack(side="right")
 
@@ -9284,12 +9363,14 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             ).grid(row=0, column=0, sticky="w", padx=8, pady=6)
             obs_text = tk.Text(obs_row, height=3, wrap="word")
             obs_text.grid(row=0, column=1, sticky="we", padx=8, pady=6)
+            _attach_autoexpand(obs_text, 3, 12)
             self.section3_fields[category["observaciones_id"]] = obs_text
 
         self._prefill_section3_fields()
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda f=self.section3_fields: _autosave_section(condiciones_vacante, "section_3", lambda: _collect_flat_fields(f))
         ttk.Button(actions, text="Regresar", command=self._show_section_2_1).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_3).pack(side="right")
 
@@ -9404,6 +9485,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda f=self.section4_fields: _autosave_section(condiciones_vacante, "section_4", lambda: {field_id: widget.get().strip() for field_id, widget in f.items()})
         ttk.Button(actions, text="Regresar", command=self._show_section_3).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_4).pack(side="right")
 
@@ -9506,12 +9588,14 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
         obs_text = tk.Text(obs_row, height=4, wrap="word")
         obs_text.grid(row=0, column=1, sticky="we", padx=8, pady=6)
+        _attach_autoexpand(obs_text, 4, 15)
         self.section5_fields[condiciones_vacante.SECTION_5["observaciones"]["id"]] = obs_text
 
         self._prefill_section5_fields()
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda f=self.section5_fields: _autosave_section(condiciones_vacante, "section_5", lambda: _collect_flat_fields(f))
         ttk.Button(actions, text="Regresar", command=self._show_section_4).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_5).pack(side="right")
 
@@ -9607,6 +9691,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda: _autosave_section(condiciones_vacante, "section_6", lambda: [{"discapacidad": r["combo"].get().strip(), "descripcion": r["descripcion"].get("1.0", tk.END).strip()} for r in self.section6_rows if r["combo"].get().strip() or r["descripcion"].get("1.0", tk.END).strip()])
         ttk.Button(actions, text="Regresar", command=self._show_section_5).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_6).pack(side="right")
 
@@ -9716,6 +9801,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
         self.section7_text = tk.Text(section_frame, height=8, wrap="word")
         self.section7_text.pack(fill="x", padx=24, pady=(4, 12))
+        _attach_autoexpand(self.section7_text, 8, 25)
 
         cached = condiciones_vacante.get_form_cache().get("section_7", {})
         cached_text = cached.get(condiciones_vacante.SECTION_7["field_id"])
@@ -9725,6 +9811,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda: _autosave_section(condiciones_vacante, "section_7", lambda: {condiciones_vacante.SECTION_7["field_id"]: self.section7_text.get("1.0", tk.END).strip()})
         ttk.Button(actions, text="Regresar", command=self._show_section_6).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_7).pack(side="right")
 
@@ -9935,14 +10022,6 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             return True
         if not module.cache_file_exists():
             return False
-        resume = messagebox.askyesno(
-            "Reanudar",
-            "Se encontró un formulario en progreso. ¿Deseas continuar donde lo dejaste?",
-        )
-        if not resume:
-            module.clear_cache_file()
-            module.clear_form_cache()
-            return False
         module.load_cache_from_file()
         last_section = module.get_form_cache().get("_last_section")
         if last_section == "section_1":
@@ -9984,6 +10063,13 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         self.section_container.pack(fill="both", expand=True, padx=FORM_PADX, pady=8)
 
     def _clear_section_container(self):
+        _fn = getattr(self, '_pending_autosave', None)
+        if callable(_fn):
+            try:
+                _fn()
+            except Exception:
+                pass
+            self._pending_autosave = None
         for child in self.section_container.winfo_children():
             child.destroy()
 
@@ -10464,6 +10550,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 return ttk.Combobox(parent, values=meta.get("options", []), state="readonly", width=width)
             if meta.get("type") == "texto_largo":
                 w = tk.Text(parent, width=width, height=text_height, wrap="word")
+                _attach_autoexpand(w, text_height, 20)
                 return w
             if field_id == "cedula":
                 widget = ttk.Combobox(parent, values=self.cedula_options, state="normal", width=width)
@@ -11044,6 +11131,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             btn.grid(row=idx // 3, column=idx % 3, sticky="w", padx=(0, 8), pady=(0, 8))
         ajustes = tk.Text(content, height=8, width=TEXT_WIDE, wrap="word")
         ajustes.pack(fill="x", padx=4, pady=(0, 10))
+        _attach_autoexpand(ajustes, 8, 30)
         self.section5_fields["ajustes_recomendaciones"] = ajustes
 
         tk.Label(
@@ -11064,6 +11152,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             nota.delete(0, tk.END)
             nota.insert(0, cache.get("nota", ""))
 
+        self._pending_autosave = lambda f=self.section5_fields: _autosave_section(self._seleccion_module, "section_5", lambda: _collect_flat_fields(f))
         _build_wizard_actions(
             content,
             back_command=self._show_section_2,
@@ -11302,6 +11391,13 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         self.section_container.pack(fill="both", expand=True, padx=FORM_PADX, pady=8)
 
     def _clear_section_container(self):
+        _fn = getattr(self, '_pending_autosave', None)
+        if callable(_fn):
+            try:
+                _fn()
+            except Exception:
+                pass
+            self._pending_autosave = None
         for child in self.section_container.winfo_children():
             child.destroy()
 
@@ -11431,14 +11527,6 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         ):
             return True
         if not contratacion_incluyente.cache_file_exists():
-            return False
-        resume = messagebox.askyesno(
-            "Reanudar",
-            "Se encontró un formulario en progreso. ¿Deseas continuar donde lo dejaste?",
-        )
-        if not resume:
-            contratacion_incluyente.clear_cache_file()
-            contratacion_incluyente.clear_form_cache()
             return False
         contratacion_incluyente.load_cache_from_file()
         last_section = contratacion_incluyente.get_form_cache().get("_last_section")
@@ -11733,6 +11821,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 section4_frame.pack(fill="x", padx=8, pady=(0, 8))
                 fields["desarrollo_actividad"] = tk.Text(section4_frame, height=5, wrap="word")
                 fields["desarrollo_actividad"].pack(fill="x", padx=6, pady=6)
+                _attach_autoexpand(fields["desarrollo_actividad"], 5, 20)
                 self.section2_shared_desarrollo_widget = fields["desarrollo_actividad"]
 
             section51_frame = tk.LabelFrame(
@@ -12100,6 +12189,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         ).pack(anchor="w", pady=(8, 4))
         ajustes = tk.Text(content, height=6, width=TEXT_WIDE, wrap="word")
         ajustes.pack(fill="x", padx=4, pady=(0, 16))
+        _attach_autoexpand(ajustes, 6, 25)
         self.section6_fields["ajustes_recomendaciones"] = ajustes
 
         cache = contratacion_incluyente.get_form_cache().get("section_6", {})
@@ -12418,6 +12508,13 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
         self.section_container.pack(fill="both", expand=True, padx=FORM_PADX, pady=8)
 
     def _clear_section_container(self):
+        _fn = getattr(self, '_pending_autosave', None)
+        if callable(_fn):
+            try:
+                _fn()
+            except Exception:
+                pass
+            self._pending_autosave = None
         for child in self.section_container.winfo_children():
             child.destroy()
 
@@ -12438,14 +12535,6 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
         ):
             return True
         if not induccion_organizacional.cache_file_exists():
-            return False
-        resume = messagebox.askyesno(
-            "Reanudar",
-            "Se encontró un formulario en progreso. ¿Deseas continuar donde lo dejaste?",
-        )
-        if not resume:
-            induccion_organizacional.clear_cache_file()
-            induccion_organizacional.clear_form_cache()
             return False
         induccion_organizacional.load_cache_from_file()
         last_section = induccion_organizacional.get_form_cache().get("_last_section")
@@ -12726,6 +12815,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda f=self.section3_fields: _autosave_section(induccion_organizacional, "section_3", lambda: _collect_flat_fields(f))
         ttk.Button(actions, text="Regresar", command=self._show_section_2).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_3).pack(side="right")
 
@@ -12778,6 +12868,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
             )
             texto = tk.Text(card, width=95, height=8, wrap="word")
             texto.grid(row=1, column=1, sticky="we", padx=4, pady=4)
+            _attach_autoexpand(texto, 8, 25)
 
             medio.bind("<<ComboboxSelected>>", lambda _e, idx=i: _on_medio_change(idx))
 
@@ -12818,6 +12909,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
 
         self.section5_text = tk.Text(section_frame, width=120, height=10, wrap="word")
         self.section5_text.pack(fill="x", padx=FORM_PADX, pady=(0, 8))
+        _attach_autoexpand(self.section5_text, 10, 30)
 
         cache = induccion_organizacional.get_form_cache().get("section_5", {})
         if cache.get("observaciones"):
@@ -12825,6 +12917,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda: _autosave_section(induccion_organizacional, "section_5", lambda: {"observaciones": self.section5_text.get("1.0", tk.END).strip()})
         ttk.Button(actions, text="Regresar", command=self._show_section_4).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_5).pack(side="right")
 
@@ -13231,6 +13324,13 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         self.section_container.pack(fill="both", expand=True, padx=FORM_PADX, pady=8)
 
     def _clear_section_container(self):
+        _fn = getattr(self, '_pending_autosave', None)
+        if callable(_fn):
+            try:
+                _fn()
+            except Exception:
+                pass
+            self._pending_autosave = None
         for child in self.section_container.winfo_children():
             child.destroy()
 
@@ -13254,14 +13354,6 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         ):
             return True
         if not induccion_operativa.cache_file_exists():
-            return False
-        resume = messagebox.askyesno(
-            "Reanudar",
-            "Se encontró un formulario en progreso. ¿Deseas continuar donde lo dejaste?",
-        )
-        if not resume:
-            induccion_operativa.clear_cache_file()
-            induccion_operativa.clear_form_cache()
             return False
         induccion_operativa.load_cache_from_file()
         last_section = induccion_operativa.get_form_cache().get("_last_section")
@@ -13631,6 +13723,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda f=self.section3_fields: _autosave_section(induccion_operativa, "section_3", lambda: _collect_flat_fields(f))
         ttk.Button(actions, text="Regresar", command=self._show_section_2).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_3).pack(side="right")
 
@@ -13793,6 +13886,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda f=self.section5_fields: _autosave_section(induccion_operativa, "section_5", lambda: _collect_flat_fields(f))
         ttk.Button(actions, text="Regresar", command=self._show_section_4).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_5).pack(side="right")
 
@@ -13810,6 +13904,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         )
         self.section6_text = tk.Text(section_frame, width=120, height=8, wrap="word")
         self.section6_text.pack(fill="x", padx=FORM_PADX, pady=(0, 8))
+        _attach_autoexpand(self.section6_text, 8, 30)
 
         cached = induccion_operativa.get_form_cache().get("section_6", {})
         if cached.get("ajustes_requeridos"):
@@ -13865,6 +13960,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         ).pack(anchor="w", padx=FORM_PADX, pady=(8, 4))
         self.section8_text = tk.Text(section_frame, width=120, height=8, wrap="word")
         self.section8_text.pack(fill="x", padx=FORM_PADX, pady=(0, 8))
+        _attach_autoexpand(self.section8_text, 8, 30)
 
         cached = induccion_operativa.get_form_cache().get("section_8", {})
         if cached.get("observaciones_recomendaciones"):
@@ -13872,6 +13968,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda: _autosave_section(induccion_operativa, "section_8", lambda: {"observaciones_recomendaciones": self.section8_text.get("1.0", tk.END).strip()})
         ttk.Button(actions, text="Regresar", command=self._show_section_7).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_8).pack(side="right")
 
@@ -14149,6 +14246,13 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         self.section_container.pack(fill="both", expand=True, padx=FORM_PADX, pady=8)
 
     def _clear_section_container(self):
+        _fn = getattr(self, '_pending_autosave', None)
+        if callable(_fn):
+            try:
+                _fn()
+            except Exception:
+                pass
+            self._pending_autosave = None
         for child in self.section_container.winfo_children():
             child.destroy()
 
@@ -14168,14 +14272,6 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         ):
             return True
         if not sensibilizacion.cache_file_exists():
-            return False
-        resume = messagebox.askyesno(
-            "Reanudar",
-            "Se encontró un formulario en progreso. ¿Deseas continuar donde lo dejaste?",
-        )
-        if not resume:
-            sensibilizacion.clear_cache_file()
-            sensibilizacion.clear_form_cache()
             return False
         sensibilizacion.load_cache_from_file()
         last_section = sensibilizacion.get_form_cache().get("_last_section")
@@ -14371,6 +14467,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         )
         self.section3_text = tk.Text(section_frame, width=120, height=8, wrap="word")
         self.section3_text.pack(fill="x", padx=FORM_PADX, pady=(0, 8))
+        _attach_autoexpand(self.section3_text, 8, 30)
         cache = sensibilizacion.get_form_cache().get("section_3", {})
         if cache.get("observaciones"):
             self.section3_text.insert("1.0", cache.get("observaciones", ""))
@@ -15505,6 +15602,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         title_label.pack(side="left", anchor="w")
         text_widget = tk.Text(section, height=height, wrap="word")
         text_widget.pack(fill="x", padx=10, pady=(0, 10))
+        _attach_autoexpand(text_widget, height, 30)
         attach_dictation(
             text_widget,
             form_id="seguimientos",

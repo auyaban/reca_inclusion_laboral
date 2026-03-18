@@ -1,4 +1,4 @@
-﻿import os
+import os
 import json
 import time
 import re
@@ -471,7 +471,7 @@ def get_empresa_by_nombre(nombre, env_path=".env"):
     return evaluacion_accesibilidad.get_empresa_by_nombre(nombre, env_path=env_path)
 
 
-def get_empresas_by_nombre_prefix(prefix, env_path=".env", limit=10):
+def get_empresas_by_nombre_prefix(prefix, env_path=".env", limit=50):
     return evaluacion_accesibilidad.get_empresas_by_nombre_prefix(prefix, env_path=env_path, limit=limit)
 
 

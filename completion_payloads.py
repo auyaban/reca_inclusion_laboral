@@ -426,6 +426,10 @@ _STANDARD_NORMALIZERS: dict[str, Callable[..., dict[str, Any]]] = {
     "sensibilizacion": _normalize_sensibilizacion,
 }
 
+_NORMALIZER_FORM_ALIASES = {
+    "condiciones_vacante_labs": "condiciones_vacante",
+}
+
 
 def build_completion_payload(
     form_id: str,
@@ -437,7 +441,9 @@ def build_completion_payload(
     app_version: str,
     extra_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    normalizer = _STANDARD_NORMALIZERS.get(str(form_id or "").strip())
+    clean_form_id = _clean_text(form_id)
+    normalized_form_id = _NORMALIZER_FORM_ALIASES.get(clean_form_id, clean_form_id)
+    normalizer = _STANDARD_NORMALIZERS.get(normalized_form_id)
     if normalizer is None:
         raise ValueError(f"No existe normalizador de payload para '{form_id}'.")
 
@@ -453,7 +459,7 @@ def build_completion_payload(
     normalized.update(
         {
             "schema_version": PAYLOAD_SCHEMA_VERSION,
-            "form_id": _clean_text(form_id),
+            "form_id": clean_form_id,
             "form_name": _clean_text(form_name),
             "metadata": {
                 "session_id": _clean_text(session_id),
@@ -465,7 +471,7 @@ def build_completion_payload(
     )
     payload_raw = {
         "schema_version": PAYLOAD_SCHEMA_VERSION,
-        "form_id": _clean_text(form_id),
+        "form_id": clean_form_id,
         "form_name": _clean_text(form_name),
         "output_path": str(output_path or ""),
         "cache_snapshot": raw_cache,
@@ -479,7 +485,7 @@ def build_completion_payload(
     return {
         "payload_raw": payload_raw,
         "payload_normalized": normalized,
-        "source_item_key": f"{_clean_text(form_id)}:{_clean_text(session_id)}",
+        "source_item_key": f"{clean_form_id}:{_clean_text(session_id)}",
     }
 
 

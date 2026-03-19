@@ -94,6 +94,25 @@ Contraejemplos:
 
 ## 4.1 Condiciones medicas y de salud
 
+Para `section_4_1_salud`, la salida debe incluir ademas una capa semantica en `semantic.section_4_1_health`.
+
+Estados semanticos esperados:
+- `medications.support_level`: `none` | `low` | `medium` | `high` | `not applicable`
+- `medications.status`: `not taking` | `self managed` | `third party managed` | `unknown` | `not applicable`
+- `medications.schedule_status`: `self managed` | `third party managed` | `unknown` | `not applicable`
+- `allergies.support_level`: `none` | `low` | `medium` | `high` | `not applicable`
+- `allergies.status`: `none reported` | `self managed` | `unknown` | `described` | `not applicable`
+- `restrictions.support_level`: `none` | `low` | `medium` | `high` | `not applicable`
+- `restrictions.status`: `none reported` | `self managed` | `unknown` | `does not know management` | `not applicable`
+- `specialist_controls.support_level`: `none` | `low` | `medium` | `high` | `not applicable`
+- `specialist_controls.attendance`: `attends and self manages` | `attends` | `unknown` | `not applicable`
+- `specialist_controls.frequency`: `monthly` | `quarterly` | `semiannual` | `other` | `not applicable`
+- En los cuatro bloques, `details` guarda el detalle corto clinico.
+
+Regla operativa:
+- `semantic.section_4_1_health` es la fuente principal de interpretacion.
+- `candidate` puede ir en `null` cuando el dropdown exacto no sea totalmente obvio; el desktop hace la traduccion final.
+
 ### Medicamentos
 - `medicamentos_nivel_apoyo`
   - `0. No requiere apoyo.`

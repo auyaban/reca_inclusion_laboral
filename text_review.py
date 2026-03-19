@@ -334,6 +334,11 @@ TEXT_REVIEW_FIELDS_BY_FORM = {
     ],
 }
 
+TEXT_REVIEW_FORM_ALIASES = {
+    "condiciones_vacante_labs": "condiciones_vacante",
+    "seleccion_incluyente_labs": "seleccion_incluyente",
+}
+
 
 def _iter_path_targets(node, path_spec, current_path=()):
     if not path_spec:
@@ -355,7 +360,9 @@ def _iter_path_targets(node, path_spec, current_path=()):
 
 
 def extract_review_targets(form_id, cache_snapshot):
-    specs = TEXT_REVIEW_FIELDS_BY_FORM.get(str(form_id or "").strip(), [])
+    clean_form_id = str(form_id or "").strip()
+    review_form_id = TEXT_REVIEW_FORM_ALIASES.get(clean_form_id, clean_form_id)
+    specs = TEXT_REVIEW_FIELDS_BY_FORM.get(review_form_id, [])
     if not isinstance(cache_snapshot, dict):
         return []
     targets = []

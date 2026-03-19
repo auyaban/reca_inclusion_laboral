@@ -64,6 +64,36 @@ class CompletionPayloadTests(unittest.TestCase):
         self.assertEqual(parsed["cargo_objetivo"], "Operario logistico")
         self.assertEqual(parsed["total_vacantes"], "3")
 
+    def test_builds_vacancy_labs_payload_with_same_normalizer(self) -> None:
+        result = completion_payloads.build_completion_payload(
+            "condiciones_vacante_labs",
+            "Condiciones de Vacante Labs",
+            {
+                "section_1": {
+                    "fecha_visita": "2026-03-17",
+                    "nombre_empresa": "Empresa Demo",
+                    "nit_empresa": "900123456",
+                    "modalidad": "Presencial",
+                    "profesional_asignado": "Leidy Novoa",
+                },
+                "section_2": {
+                    "nombre_vacante": "Operario logistico",
+                    "numero_vacantes": "2",
+                },
+                "section_8": [{"nombre": "Leidy Novoa", "cargo": "Profesional"}],
+            },
+            output_path=r"C:\tmp\vacante_labs.xlsx",
+            session_id="session-vac-labs",
+            app_version="2.0.0",
+        )
+
+        payload = result["payload_normalized"]
+        self.assertEqual(payload["form_id"], "condiciones_vacante_labs")
+        self.assertEqual(payload["attachment"]["document_kind"], "vacancy_review")
+        self.assertEqual(payload["parsed_raw"]["cargo_objetivo"], "Operario logistico")
+        self.assertEqual(payload["parsed_raw"]["total_vacantes"], "2")
+        self.assertEqual(result["source_item_key"], "condiciones_vacante_labs:session-vac-labs")
+
     def test_builds_selection_payload_with_participants_and_unique_cargo(self) -> None:
         result = completion_payloads.build_completion_payload(
             "seleccion_incluyente",

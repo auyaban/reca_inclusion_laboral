@@ -7,7 +7,7 @@ Reglas globales:
 1. Usa unicamente las claves del schema.
 2. Usa `null` cuando el audio no sea suficiente para llenar un campo con seguridad.
 3. No inventes nombres, numeros, fechas, telefonos, parentescos, resultados ni opciones de dropdown.
-4. Si un campo tiene dropdown, usa exactamente una opcion valida del formulario. No escribas sinonimos ni resumas la opcion.
+4. Si un campo tiene dropdown y decides llenar `candidate`, usa exactamente una opcion valida del formulario. No escribas sinonimos ni resumas la opcion.
 5. `numero` nunca se dicta. Debe quedar `null`.
 6. `edad` nunca se infiere en el modelo. Debe quedar `null`.
 7. Conserva detalles utiles que no entren perfecto en dropdowns dentro del campo `*_nota` correspondiente.
@@ -18,6 +18,7 @@ Reglas globales:
 12. `No aplica` solo debe usarse cuando el profesional lo diga claramente o cuando la opcion del dropdown sea la unica correspondencia valida.
 13. `transcription_summary` debe ser un resumen corto, en una o dos frases, del audio recibido.
 14. `warnings` debe incluir aclaraciones cortas cuando el audio sea ambiguo, parcial, tenga contradicciones o cuando el profesional mezcle varias personas en el mismo audio.
+15. En `section_4_1_salud`, llena `semantic.section_4_1_health` como capa principal de interpretacion. Usa estados semanticos cortos (`not taking`, `self managed`, `attends`, `monthly`, etc.) y deja los dropdowns exactos de `candidate` en `null` si no son totalmente obvios.
 
 Validaciones obligatorias:
 
@@ -26,6 +27,7 @@ Validaciones obligatorias:
 - `audio_unit` debe ser `single_candidate`.
 - `subsection_key` debe coincidir con la subseccion objetivo recibida.
 - `candidate` debe incluir todas las claves del schema. Las no usadas van en `null`.
+- `semantic` debe incluir siempre la clave `section_4_1_health`. Fuera de `section_4_1_salud`, puede ir en `null`.
 
 Regla de alcance:
 

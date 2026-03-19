@@ -26,6 +26,12 @@ from tkcalendar import DateEntry
 from formularios.presentacion_programa import presentacion_programa
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.condiciones_vacante import condiciones_vacante
+from formularios.condiciones_vacante.voice_section2 import (
+    VOICE_FUNCTION_NAME as VACANCY_SECTION2_VOICE_FUNCTION,
+    get_subsection_spec as get_vacancy_section2_spec,
+    postprocess_extraction_payload as postprocess_vacancy_section2_extraction,
+    summarize_candidate_updates as summarize_vacancy_section2_updates,
+)
 from formularios.seleccion_incluyente import seleccion_incluyente
 from formularios.seleccion_incluyente_labs import seleccion_incluyente as seleccion_incluyente_labs
 from formularios.seleccion_incluyente_labs.voice_section2 import (
@@ -147,6 +153,7 @@ FORM_MODULE_MAP = {
     "presentacion_programa": presentacion_programa,
     "evaluacion_accesibilidad": evaluacion_accesibilidad,
     "condiciones_vacante": condiciones_vacante,
+    "condiciones_vacante_labs": condiciones_vacante,
     "seleccion_incluyente": seleccion_incluyente,
     "seleccion_incluyente_labs": seleccion_incluyente_labs,
     "contratacion_incluyente": contratacion_incluyente,
@@ -158,6 +165,7 @@ WINDOW_CLASS_FORM_ID_MAP = {
     "Section1Window": "presentacion_programa",
     "EvaluacionAccesibilidadWindow": "evaluacion_accesibilidad",
     "CondicionesVacanteWindow": "condiciones_vacante",
+    "CondicionesVacanteLabsWindow": "condiciones_vacante_labs",
     "SeleccionIncluyenteWindow": "seleccion_incluyente",
     "SeleccionIncluyenteLabsWindow": "seleccion_incluyente_labs",
     "ContratacionIncluyenteWindow": "contratacion_incluyente",
@@ -919,7 +927,7 @@ def _dpapi_decrypt_text(cipher_b64):
 
 
 def _load_saved_login_credentials():
-    payload = {"remember": True, "username": "", "password": ""}
+    payload = {"remember": True, "username": "", "password": "", "resolved_email": ""}
     path = _get_login_credentials_path()
     if not os.path.exists(path):
         return payload
@@ -936,10 +944,11 @@ def _load_saved_login_credentials():
     payload["remember"] = remember
     payload["username"] = username
     payload["password"] = password if remember else ""
+    payload["resolved_email"] = str(raw.get("resolved_email") or "").strip()
     return payload
 
 
-def _save_login_credentials(username, password):
+def _save_login_credentials(username, password, resolved_email=""):
     user = str(username or "").strip()
     pwd = str(password or "")
     cipher = _dpapi_encrypt_text(pwd)
@@ -950,6 +959,7 @@ def _save_login_credentials(username, password):
         "remember": True,
         "username": user,
         "password_enc": cipher,
+        "resolved_email": str(resolved_email or "").strip(),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
     path = _get_login_credentials_path()
@@ -1549,6 +1559,18 @@ def _password_candidates(password):
     if trimmed != raw:
         options.append(trimmed)
     return options
+
+
+def _is_invalid_credentials_exception(exc):
+    """Return True when Supabase rejects the email/password (401 / invalid_grant)."""
+    if exc is None:
+        return False
+    root = exc.__cause__ if isinstance(exc, RuntimeError) and exc.__cause__ else exc
+    if isinstance(root, urllib.error.HTTPError):
+        if int(getattr(root, "code", 0) or 0) in (400, 401, 422):
+            return True
+    text = str(exc).lower()
+    return "invalid login credentials" in text or "invalid_grant" in text or "email not confirmed" in text
 
 
 def _is_connectivity_exception(exc):
@@ -2155,6 +2177,88 @@ def _confirm_labs_experimental_warning(parent):
     return bool(accepted["value"])
 
 
+def _select_labs_flow(parent):
+    selected = {"value": ""}
+    modal = tk.Toplevel(parent)
+    modal.title("Labs")
+    modal.configure(bg=COLOR_LIGHT_BG)
+    modal.geometry("760x360")
+    modal.transient(parent)
+    modal.grab_set()
+    modal.resizable(False, False)
+
+    shell = tk.Frame(modal, bg=COLOR_LIGHT_BG, padx=24, pady=20)
+    shell.pack(fill="both", expand=True)
+
+    tk.Label(
+        shell,
+        text="Selecciona el flujo experimental",
+        font=("Arial", 18, "bold"),
+        fg=COLOR_PURPLE,
+        bg=COLOR_LIGHT_BG,
+    ).pack(anchor="w", pady=(0, 16))
+
+    options = tk.Frame(shell, bg=COLOR_LIGHT_BG)
+    options.pack(fill="both", expand=True)
+
+    def _build_option(title, description, form_id):
+        card = tk.Frame(
+            options,
+            bg="white",
+            bd=1,
+            relief="solid",
+            padx=14,
+            pady=14,
+        )
+        card.pack(fill="x", pady=(0, 10))
+        tk.Label(
+            card,
+            text=title,
+            font=("Arial", 12, "bold"),
+            bg="white",
+            fg="#222222",
+            anchor="w",
+        ).pack(fill="x")
+        tk.Label(
+            card,
+            text=description,
+            font=("Arial", 10),
+            bg="white",
+            fg="#444444",
+            justify="left",
+            wraplength=620,
+            anchor="w",
+        ).pack(fill="x", pady=(6, 10))
+
+        def _choose():
+            selected["value"] = form_id
+            modal.destroy()
+
+        ttk.Button(card, text="Abrir", command=_choose).pack(anchor="e")
+
+    _build_option(
+        "Seleccion Incluyente Labs",
+        "Flujo experimental completo de Seleccion Incluyente con dictado por subsecciones.",
+        "seleccion_incluyente_labs",
+    )
+    _build_option(
+        "Condiciones de Vacante",
+        "Abre la variante experimental de Condiciones de Vacante. El dictado actual esta en la seccion 2.",
+        "condiciones_vacante_labs",
+    )
+
+    actions = tk.Frame(shell, bg=COLOR_LIGHT_BG)
+    actions.pack(fill="x", pady=(8, 0))
+    ttk.Button(actions, text="Cancelar", command=modal.destroy).pack(side="right")
+
+    modal.protocol("WM_DELETE_WINDOW", modal.destroy)
+    try:
+        modal.wait_window()
+    except Exception:
+        pass
+    return str(selected["value"] or "").strip()
+
+
 def _section1_build_search(self, parent, include_tipo_visita=False):
     search_w = 58
     try:
@@ -2216,7 +2320,28 @@ def _section1_build_search(self, parent, include_tipo_visita=False):
     self.fields["nombre_busqueda"].grid(row=current_row, column=1, sticky="w")
     self.fields["nombre_busqueda"].bind(
         "<KeyRelease>",
-        lambda _event: _section1_update_nombre_suggestions(self),
+        lambda _event: _section1_update_nombre_suggestions(self, open_dropdown=True),
+    )
+    self.fields["nombre_busqueda"].bind(
+        "<<ComboboxSelected>>",
+        lambda _event: _section1_search_selected_company(self),
+    )
+    self.fields["nombre_busqueda"].bind(
+        "<Return>",
+        lambda _event: _section1_search_selected_company(self),
+    )
+    self.fields["nombre_busqueda"].bind(
+        "<ButtonRelease-1>",
+        lambda _event, widget=self.fields["nombre_busqueda"]: _restore_combobox_text_focus(widget),
+        add="+",
+    )
+    self.fields["nombre_busqueda"].bind(
+        "<Escape>",
+        lambda _event: _hide_empresa_autocomplete_popup(self),
+    )
+    self.fields["nombre_busqueda"].bind(
+        "<FocusOut>",
+        lambda _event: self.after(150, lambda: _hide_empresa_autocomplete_popup(self)),
     )
 
     search_name_btn = ttk.Button(
@@ -2930,6 +3055,11 @@ class LabsSection2VoiceDialog:
         candidate_index,
         form_id,
         session_provider,
+        spec=None,
+        function_name=None,
+        section_id="section_2",
+        record_label="Oferente",
+        ui_namespace="Labs",
     ):
         self.parent = parent
         self.subsection_key = str(subsection_key or "").strip()
@@ -2937,19 +3067,23 @@ class LabsSection2VoiceDialog:
         self.candidate_index = int(candidate_index)
         self.form_id = str(form_id or "").strip()
         self.session_provider = session_provider
+        self.function_name = str(function_name or SELECTION_SECTION2_VOICE_FUNCTION).strip() or SELECTION_SECTION2_VOICE_FUNCTION
+        self.section_id = str(section_id or "section_2").strip() or "section_2"
+        self.record_label = str(record_label or "Oferente").strip() or "Oferente"
+        self.ui_namespace = str(ui_namespace or "Labs").strip() or "Labs"
         self.result = None
         self._handle = None
         self._is_recording = False
         self._is_processing = False
         self._closed = False
         self._worker = None
-        self.spec = get_selection_labs_subsection_spec(self.subsection_key)
+        self.spec = dict(spec or get_selection_labs_subsection_spec(self.subsection_key))
         _log_labs(
             f"voice_dialog_open subsection={self.subsection_key} candidate_index={self.candidate_index}"
         )
 
         self.window = tk.Toplevel(parent)
-        self.window.title(f"Labs - {self.section_label}")
+        self.window.title(f"{self.ui_namespace} - {self.section_label}")
         self.window.configure(bg=COLOR_LIGHT_BG)
         self.window.geometry("760x560")
         self.window.transient(parent)
@@ -2961,7 +3095,7 @@ class LabsSection2VoiceDialog:
 
         tk.Label(
             container,
-            text=f"{self.section_label} - Oferente {self.candidate_index}",
+            text=f"{self.section_label} - {self.record_label} {self.candidate_index}",
             font=FONT_SECTION,
             bg=COLOR_LIGHT_BG,
             fg=COLOR_PURPLE,
@@ -2986,7 +3120,7 @@ class LabsSection2VoiceDialog:
 
         tk.Label(
             container,
-            text="Por favor di algo asi...",
+            text="Instruccion general",
             font=FONT_LABEL,
             bg=COLOR_LIGHT_BG,
             anchor="w",
@@ -3004,19 +3138,39 @@ class LabsSection2VoiceDialog:
 
         tk.Label(
             container,
-            text="Ejemplos",
+            text="Debes responder lo siguiente",
             font=FONT_LABEL,
             bg=COLOR_LIGHT_BG,
             anchor="w",
         ).pack(fill="x")
 
-        examples_text = tk.Text(container, height=14, wrap="word", bg="white")
+        questions_text = tk.Text(container, height=8, wrap="word", bg="white")
+        questions_text.pack(fill="x", pady=(4, 12))
+        questions = self.spec.get("questions") or []
+        questions_text.insert(
+            "1.0",
+            "\n".join(f"- {str(question).strip()}" for question in questions if str(question).strip()),
+        )
+        questions_text.configure(state="disabled")
+
+        tk.Label(
+            container,
+            text="Ejemplo breve",
+            font=FONT_LABEL,
+            bg=COLOR_LIGHT_BG,
+            anchor="w",
+        ).pack(fill="x")
+
+        examples_text = tk.Text(container, height=5, wrap="word", bg="white")
         examples_text.pack(fill="both", expand=True, pady=(4, 12))
         examples = self.spec.get("examples") or []
-        examples_text.insert(
-            "1.0",
-            "\n\n".join(f"- {str(example).strip()}" for example in examples if str(example).strip()),
-        )
+        first_example = ""
+        for example in examples:
+            text = str(example).strip()
+            if text:
+                first_example = f"- {text}"
+                break
+        examples_text.insert("1.0", first_example)
         examples_text.configure(state="disabled")
 
         actions = tk.Frame(container, bg=COLOR_LIGHT_BG)
@@ -3106,11 +3260,11 @@ class LabsSection2VoiceDialog:
             result = stop_and_submit_audio(
                 self._handle,
                 jwt,
-                function_name=SELECTION_SECTION2_VOICE_FUNCTION,
+                function_name=self.function_name,
                 language="es",
                 extra_fields={
                     "form_id": self.form_id,
-                    "section_id": "section_2",
+                    "section_id": self.section_id,
                     "subsection_key": self.subsection_key,
                     "candidate_index": str(self.candidate_index),
                 },
@@ -3138,7 +3292,7 @@ class LabsSection2VoiceDialog:
                 level="ERROR",
             )
             messagebox.showerror(
-                "Labs",
+                self.ui_namespace,
                 result.error_message or "No fue posible procesar el audio.",
                 parent=self.window,
             )
@@ -3180,11 +3334,24 @@ class LabsSection2VoiceDialog:
 
 
 class LabsSection2PreviewDialog:
-    def __init__(self, parent, *, section_label, candidate_index, transcription, preview_lines, warnings):
+    def __init__(
+        self,
+        parent,
+        *,
+        section_label,
+        candidate_index,
+        transcription,
+        preview_lines,
+        warnings,
+        record_label="Oferente",
+        ui_namespace="Labs",
+    ):
         self.parent = parent
         self.result = False
         self.window = tk.Toplevel(parent)
-        self.window.title(f"Preview Labs - {section_label}")
+        self.record_label = str(record_label or "Oferente").strip() or "Oferente"
+        self.ui_namespace = str(ui_namespace or "Labs").strip() or "Labs"
+        self.window.title(f"Preview {self.ui_namespace} - {section_label}")
         self.window.configure(bg=COLOR_LIGHT_BG)
         self.window.geometry("760x640")
         self.window.transient(parent)
@@ -3196,7 +3363,7 @@ class LabsSection2PreviewDialog:
 
         tk.Label(
             container,
-            text=f"Preview de autollenado - Oferente {candidate_index}",
+            text=f"Preview de autollenado - {self.record_label} {candidate_index}",
             font=FONT_SECTION,
             bg=COLOR_LIGHT_BG,
             fg=COLOR_PURPLE,
@@ -3523,6 +3690,7 @@ def get_forms():
         presentacion_programa.register_form(),
         evaluacion_accesibilidad.register_form(),
         condiciones_vacante.register_form(),
+        {"id": "condiciones_vacante_labs", "name": "Condiciones de Vacante Labs", "hidden": True},
         seleccion_incluyente.register_form(),
         seleccion_incluyente_labs.register_form(),
         contratacion_incluyente.register_form(),
@@ -4227,27 +4395,180 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         self._show_section_2()
 
 
-def _section1_update_nombre_suggestions(self):
+def _normalize_company_search_text(value):
+    text = unicodedata.normalize("NFD", str(value or "").strip())
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    return text.casefold()
+
+
+def _is_combobox_posted(widget):
+    """Return True if the ttk.Combobox dropdown is currently visible."""
+    try:
+        popdown = widget.tk.call("ttk::combobox::PopdownPath", widget)
+        return bool(widget.tk.call("winfo", "ismapped", popdown))
+    except Exception:
+        return False
+
+
+def _set_combobox_dropdown_open(widget, open_dropdown):
+    if not isinstance(widget, ttk.Combobox):
+        return
+    try:
+        if open_dropdown:
+            # Only call Post if the dropdown is not already visible.
+            # Calling Post when it is already open steals focus on every keystroke.
+            if not _is_combobox_posted(widget):
+                widget.tk.call("ttk::combobox::Post", widget)
+                _restore_combobox_text_focus(widget)
+        else:
+            widget.tk.call("ttk::combobox::Unpost", widget)
+            _restore_combobox_text_focus(widget)
+    except Exception:
+        pass
+
+
+def _restore_combobox_text_focus(widget, move_cursor_to_end=False):
+    if not isinstance(widget, ttk.Combobox):
+        return
+
+    def _apply_focus():
+        try:
+            widget.focus_set()
+            if move_cursor_to_end:
+                widget.icursor(tk.END)
+        except Exception:
+            pass
+
+    try:
+        widget.after(10, _apply_focus)
+    except Exception:
+        _apply_focus()
+
+
+def _filter_company_name_suggestions(options, prefix):
+    query = _normalize_company_search_text(prefix)
+    if not query:
+        return []
+    starts = []
+    contains = []
+    for option in options or []:
+        text = str(option or "").strip()
+        if not text:
+            continue
+        normalized = _normalize_company_search_text(text)
+        if normalized.startswith(query):
+            starts.append(text)
+        elif query in normalized:
+            contains.append(text)
+    return (starts + contains)[:50]
+
+
+def _show_empresa_autocomplete_popup(self, entry_widget, suggestions):
+    """Show (or update) a floating suggestion list below the entry widget."""
+    popup = getattr(self, "_empresa_ac_popup", None)
+
+    if popup is None or not popup.winfo_exists():
+        popup = tk.Toplevel(self)
+        popup.wm_overrideredirect(True)
+        popup.attributes("-topmost", True)
+        popup.withdraw()
+
+        outer = tk.Frame(popup, bd=1, relief="solid", bg="#aaaaaa")
+        outer.pack(fill="both", expand=True)
+
+        listbox = tk.Listbox(
+            outer,
+            height=8,
+            takefocus=False,
+            selectmode="browse",
+            font=FONT_LABEL,
+            activestyle="dotbox",
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        listbox.pack(fill="both", expand=True)
+
+        def _on_lb_select(event=None):
+            try:
+                idx = listbox.curselection()
+                if not idx:
+                    return
+                value = listbox.get(idx[0])
+                entry_widget.delete(0, tk.END)
+                entry_widget.insert(0, value)
+                _hide_empresa_autocomplete_popup(self)
+                entry_widget.focus_set()
+                _section1_search_selected_company(self)
+            except Exception:
+                pass
+
+        listbox.bind("<ButtonRelease-1>", _on_lb_select)
+        listbox.bind("<Return>", _on_lb_select)
+
+        self._empresa_ac_popup = popup
+        self._empresa_ac_listbox = listbox
+    else:
+        listbox = self._empresa_ac_listbox
+
+    listbox.delete(0, tk.END)
+    for s in suggestions:
+        listbox.insert(tk.END, s)
+
+    entry_widget.update_idletasks()
+    x = entry_widget.winfo_rootx()
+    y = entry_widget.winfo_rooty() + entry_widget.winfo_height()
+    w = max(entry_widget.winfo_width(), 200)
+    row_h = 20
+    h = min(len(suggestions), 8) * row_h + 4
+    popup.geometry(f"{w}x{h}+{x}+{y}")
+    popup.deiconify()
+    popup.lift()
+
+
+def _hide_empresa_autocomplete_popup(self):
+    popup = getattr(self, "_empresa_ac_popup", None)
+    if popup and popup.winfo_exists():
+        popup.withdraw()
+
+
+def _section1_search_selected_company(self):
+    entry = self.fields.get("nombre_busqueda")
+    if not entry:
+        return
+    value = str(entry.get() or "").strip()
+    if not value:
+        return
+    _hide_empresa_autocomplete_popup(self)
+    self._search_company("nombre")
+    _restore_combobox_text_focus(entry, move_cursor_to_end=True)
+
+
+def _section1_update_nombre_suggestions(self, open_dropdown=False):
     entry = self.fields.get("nombre_busqueda")
     if not entry:
         return
     prefix = entry.get().strip()
-    if len(prefix) < 2:
+    if not prefix:
         entry["values"] = []
+        _hide_empresa_autocomplete_popup(self)
         return
     cache = getattr(self, "_empresa_names_cache", None)
     if cache:
-        pl = prefix.lower()
-        entry["values"] = [n for n in cache if n.lower().startswith(pl)][:50]
-        return
-    lookup = getattr(self, "_empresa_lookup", None)
-    if not lookup or not hasattr(lookup, "get_empresas_by_nombre_prefix"):
-        return
-    try:
-        suggestions = lookup.get_empresas_by_nombre_prefix(prefix)
-    except Exception:
-        suggestions = []
+        suggestions = _filter_company_name_suggestions(cache, prefix)
+    else:
+        lookup = getattr(self, "_empresa_lookup", None)
+        if not lookup or not hasattr(lookup, "get_empresas_by_nombre_prefix"):
+            _hide_empresa_autocomplete_popup(self)
+            return
+        try:
+            suggestions = lookup.get_empresas_by_nombre_prefix(prefix)
+        except Exception:
+            suggestions = []
     entry["values"] = suggestions
+    if open_dropdown and suggestions:
+        _show_empresa_autocomplete_popup(self, entry, suggestions)
+    else:
+        _hide_empresa_autocomplete_popup(self)
 
 
 class HubWindow(tk.Tk):
@@ -4538,10 +4859,16 @@ class HubWindow(tk.Tk):
             return
         used_offline = False
         auth_exc = None
+        saved_creds = _load_saved_login_credentials()
+        cached_email = (
+            saved_creds.get("resolved_email", "")
+            if _normalize_login_value(saved_creds.get("username", "")) == username
+            else ""
+        )
         try:
             self.login_status.config(text="Validando credenciales...")
             self.update_idletasks()
-            user_row = self._authenticate_user(username, password)
+            user_row = self._authenticate_user(username, password, cached_email=cached_email)
         except Exception as exc:
             auth_exc = exc
             user_row = None
@@ -4591,7 +4918,11 @@ class HubWindow(tk.Tk):
         except Exception:
             pass
         if remember_enabled:
-            _save_login_credentials(username_input or username, password)
+            _save_login_credentials(
+                username_input or username,
+                password,
+                resolved_email=str((user_row or {}).get("_resolved_email") or ""),
+            )
         else:
             _clear_login_credentials()
         self.current_user = (user_row.get("usuario_login") or username).strip()
@@ -4607,36 +4938,58 @@ class HubWindow(tk.Tk):
         self._build_header()
         self._build_body()
 
-    def _authenticate_user(self, username, password):
+    def _authenticate_user(self, username, password, cached_email=""):
         username_norm = _normalize_login_value(username)
         if not username_norm:
             return None
         _clear_supabase_session()
-        try:
-            resolved = _supabase_rpc(
-                "resolve_login_email",
-                {"p_login": username_norm},
-                use_session=False,
-            )
-        except Exception as exc:
-            raise RuntimeError(str(exc)) from exc
 
-        if isinstance(resolved, str):
-            email = resolved.strip()
-        elif isinstance(resolved, dict):
-            email = str(
-                resolved.get("resolve_login_email")
-                or resolved.get("email")
-                or ""
-            ).strip()
-        else:
-            email = ""
+        def _resolve_email_fresh():
+            try:
+                resolved = _supabase_rpc(
+                    "resolve_login_email",
+                    {"p_login": username_norm},
+                    use_session=False,
+                )
+            except Exception as exc:
+                raise RuntimeError(str(exc)) from exc
+            if isinstance(resolved, str):
+                return resolved.strip()
+            if isinstance(resolved, dict):
+                return str(
+                    resolved.get("resolve_login_email")
+                    or resolved.get("email")
+                    or ""
+                ).strip()
+            return ""
+
+        email = str(cached_email or "").strip()
+        email_was_cached = bool(email)
+
+        if not email:
+            email = _resolve_email_fresh()
         if not email:
             return None
-        _supabase_auth_password_login(email, password)
+
+        try:
+            _supabase_auth_password_login(email, password)
+        except Exception as exc:
+            # If login failed and we used a cached email, retry with a fresh resolve
+            # in case the email changed since the cache was written.
+            if email_was_cached and _is_invalid_credentials_exception(exc):
+                _log_capture("[LOGIN] cached email rejected, re-resolving fresh")
+                email = _resolve_email_fresh()
+                if not email:
+                    return None
+                _supabase_auth_password_login(email, password)
+                email_was_cached = False  # signal caller to update cache
+            else:
+                raise
+
         profile = _supabase_rpc("get_my_profesional_profile", {})
         if isinstance(profile, dict) and profile.get("id"):
             profile["_auth_source"] = "jwt"
+            profile["_resolved_email"] = email
             return profile
         return None
 
@@ -6801,6 +7154,12 @@ class HubWindow(tk.Tk):
             _focus_window(window)
             self.track_form_open(form_meta["id"], form_meta["name"])
             return window
+        if form_meta["id"] == "condiciones_vacante_labs":
+            window = CondicionesVacanteLabsWindow(self)
+            self._bind_form_runtime(window, form_meta)
+            _focus_window(window)
+            self.track_form_open(form_meta["id"], form_meta["name"])
+            return window
         if form_meta["id"] == "seleccion_incluyente":
             window = SeleccionIncluyenteWindow(self)
             self._bind_form_runtime(window, form_meta)
@@ -6850,8 +7209,12 @@ class HubWindow(tk.Tk):
         if not _confirm_labs_experimental_warning(self):
             _log_labs("open_labs_flow cancelled_by_warning")
             return None
-        _log_labs("open_labs_flow accepted")
-        return self._open_form(_resolve_form_meta("seleccion_incluyente_labs"))
+        selected_form_id = _select_labs_flow(self)
+        if not selected_form_id:
+            _log_labs("open_labs_flow cancelled_by_selector", level="WARN")
+            return None
+        _log_labs(f"open_labs_flow accepted form_id={selected_form_id}")
+        return self._open_form(_resolve_form_meta(selected_form_id))
 
     def _ensure_toast(self):
         if self._toast_label is not None:
@@ -8853,9 +9216,12 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         self._show_section_2()
 
 class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
+    FORM_META_ID = "condiciones_vacante"
+    WINDOW_TITLE = "Condiciones de Vacante - Seccion 1"
+
     def __init__(self, parent):
         super().__init__(parent)
-        self.title("Condiciones de Vacante - Seccion 1")
+        self.title(self.WINDOW_TITLE)
         self.configure(bg=COLOR_LIGHT_BG)
         self.geometry("1000x700")
         _maximize_window(self)
@@ -8911,7 +9277,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
     def _maybe_resume_form(self):
         if _consume_pending_draft_restore(
             self,
-            "condiciones_vacante",
+            self.FORM_META_ID,
             condiciones_vacante,
             {
                 "section_1": self._show_section_1,
@@ -8930,6 +9296,12 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         if condiciones_vacante.cache_file_exists():
             _clear_local_resume_state(condiciones_vacante)
         return False
+
+    def _build_condiciones_section2_voice_banner(self, parent):
+        return None
+
+    def _get_condiciones_voice_ui_namespace(self):
+        return "Vacante"
 
     def _show_section_1(self):
         self._clear_section_container()
@@ -9059,6 +9431,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
         content = _build_scrollable_content(section_frame, self)
+        self._build_condiciones_section2_voice_banner(content)
 
         self.section2_fields = {}
         for field in condiciones_vacante.SECTION_2["fields"]:
@@ -9167,6 +9540,196 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             entry.insert(0, values[idx] if idx < len(values) else "")
             entry.configure(state="readonly")
 
+    def _apply_condiciones_section2_updates(self, updates):
+        for field_id, value in (updates or {}).items():
+            if value in (None, ""):
+                continue
+            widget = self.section2_fields.get(field_id)
+            if widget is None:
+                continue
+            if isinstance(widget, ttk.Combobox):
+                widget.set(str(value))
+            elif isinstance(widget, tk.Text):
+                widget.delete("1.0", tk.END)
+                widget.insert("1.0", str(value))
+            else:
+                widget.delete(0, tk.END)
+                widget.insert(0, str(value))
+        nivel = str((updates or {}).get("nivel_cargo") or "").strip()
+        if nivel:
+            self._populate_competencias(nivel)
+
+    def _on_condiciones_section2_dictation(self):
+        subsection_key = "section_2_vacancy"
+        section_label = "2. Caracteristicas de la vacante"
+        _log_labs(f"vacancy_dictation_open subsection={subsection_key}")
+        dialog = LabsSection2VoiceDialog(
+            self,
+            subsection_key=subsection_key,
+            section_label=section_label,
+            candidate_index=1,
+            form_id="condiciones_vacante",
+            session_provider=lambda: _supabase_get_access_token(".env"),
+            spec=get_vacancy_section2_spec(subsection_key),
+            function_name=VACANCY_SECTION2_VOICE_FUNCTION,
+            section_id="section_2",
+            record_label="Vacante",
+            ui_namespace=self._get_condiciones_voice_ui_namespace(),
+        )
+        response = dialog.show()
+        if not response:
+            _log_labs(
+                f"vacancy_dictation_cancelled subsection={subsection_key}",
+                level="WARN",
+            )
+            return
+
+        extraction = response.get("extraction") or {}
+        transcription = str(response.get("transcription") or "").strip()
+        try:
+            processed = postprocess_vacancy_section2_extraction(
+                extraction,
+                subsection_key=subsection_key,
+                candidate_index=1,
+            )
+        except Exception as exc:
+            _log_labs(
+                f"vacancy_dictation_invalid_structured_response subsection={subsection_key} detail={exc}",
+                level="ERROR",
+            )
+            messagebox.showerror(
+                "Vacante",
+                f"No fue posible interpretar la respuesta estructurada.\n\nDetalle: {exc}",
+                parent=self,
+            )
+            return
+
+        updates = processed.get("candidate") or {}
+        preview_lines = summarize_vacancy_section2_updates(updates, subsection_key=subsection_key)
+        warnings = []
+        for item in list(response.get("warnings") or []) + list(processed.get("warnings") or []):
+            text = str(item or "").strip()
+            if text and text not in warnings:
+                warnings.append(text)
+
+        preview = LabsSection2PreviewDialog(
+            self,
+            section_label=section_label,
+            candidate_index=1,
+            transcription=transcription,
+            preview_lines=preview_lines,
+            warnings=warnings,
+            record_label="Vacante",
+            ui_namespace=self._get_condiciones_voice_ui_namespace(),
+        )
+        if not preview.show():
+            _log_labs(
+                f"vacancy_preview_cancelled subsection={subsection_key} fields={','.join(sorted(updates.keys()))}",
+                level="WARN",
+            )
+            return
+        self._apply_condiciones_section2_updates(updates)
+        _log_labs(
+            f"vacancy_preview_applied subsection={subsection_key} fields={','.join(sorted(updates.keys()))} "
+            f"warnings={len(warnings)}"
+        )
+
+    def _build_condiciones_section2_1_voice_banner(self, parent):
+        return None
+
+    def _apply_condiciones_section2_1_updates(self, updates):
+        for field_id, value in (updates or {}).items():
+            if value in (None, ""):
+                continue
+            widget = self.section2_1_fields.get(field_id)
+            if widget is None:
+                continue
+            if isinstance(widget, ttk.Combobox):
+                widget.set(str(value))
+            elif isinstance(widget, tk.Text):
+                widget.delete("1.0", tk.END)
+                widget.insert("1.0", str(value))
+            elif isinstance(widget, tk.BooleanVar):
+                continue
+            else:
+                widget.delete(0, tk.END)
+                widget.insert(0, str(value))
+
+    def _on_condiciones_section2_1_dictation(self):
+        subsection_key = "section_2_1_schedule_experience"
+        section_label = "2.1 Horarios, experiencia, funciones y herramientas"
+        _log_labs(f"vacancy_dictation_open subsection={subsection_key}")
+        dialog = LabsSection2VoiceDialog(
+            self,
+            subsection_key=subsection_key,
+            section_label=section_label,
+            candidate_index=1,
+            form_id="condiciones_vacante",
+            session_provider=lambda: _supabase_get_access_token(".env"),
+            spec=get_vacancy_section2_spec(subsection_key),
+            function_name=VACANCY_SECTION2_VOICE_FUNCTION,
+            section_id="section_2_1",
+            record_label="Vacante",
+            ui_namespace=self._get_condiciones_voice_ui_namespace(),
+        )
+        response = dialog.show()
+        if not response:
+            _log_labs(
+                f"vacancy_dictation_cancelled subsection={subsection_key}",
+                level="WARN",
+            )
+            return
+
+        extraction = response.get("extraction") or {}
+        transcription = str(response.get("transcription") or "").strip()
+        try:
+            processed = postprocess_vacancy_section2_extraction(
+                extraction,
+                subsection_key=subsection_key,
+                candidate_index=1,
+            )
+        except Exception as exc:
+            _log_labs(
+                f"vacancy_dictation_invalid_structured_response subsection={subsection_key} detail={exc}",
+                level="ERROR",
+            )
+            messagebox.showerror(
+                "Vacante",
+                f"No fue posible interpretar la respuesta estructurada.\n\nDetalle: {exc}",
+                parent=self,
+            )
+            return
+
+        updates = processed.get("candidate") or {}
+        preview_lines = summarize_vacancy_section2_updates(updates, subsection_key=subsection_key)
+        warnings = []
+        for item in list(response.get("warnings") or []) + list(processed.get("warnings") or []):
+            text = str(item or "").strip()
+            if text and text not in warnings:
+                warnings.append(text)
+
+        preview = LabsSection2PreviewDialog(
+            self,
+            section_label=section_label,
+            candidate_index=1,
+            transcription=transcription,
+            preview_lines=preview_lines,
+            warnings=warnings,
+            record_label="Vacante",
+            ui_namespace=self._get_condiciones_voice_ui_namespace(),
+        )
+        if not preview.show():
+            _log_labs(
+                f"vacancy_preview_cancelled subsection={subsection_key} fields={','.join(sorted(updates.keys()))}",
+                level="WARN",
+            )
+            return
+        self._apply_condiciones_section2_1_updates(updates)
+        _log_labs(
+            f"vacancy_preview_applied subsection={subsection_key} fields={','.join(sorted(updates.keys()))} "
+            f"warnings={len(warnings)}"
+        )
+
     def _confirm_section_2(self):
         payload = {}
         for field_id, widget in self.section2_fields.items():
@@ -9193,6 +9756,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
         content = _build_scrollable_content(section_frame, self)
+        self._build_condiciones_section2_1_voice_banner(content)
 
         self.section2_1_fields = {}
 
@@ -9976,12 +10540,66 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             loading,
             form_name="Revision Condicion",
             company_name=company_name,
-            form_id="condiciones_vacante",
+            form_id=getattr(self, "_form_id", self.FORM_META_ID),
             worker_fn=lambda: _raise_finalize_stage(
                 "guardando el Excel",
                 condiciones_vacante.export_to_excel,
             ),
         )
+
+
+class CondicionesVacanteLabsWindow(CondicionesVacanteWindow):
+    FORM_META_ID = "condiciones_vacante_labs"
+    WINDOW_TITLE = "Condiciones de Vacante Labs - Seccion 1"
+
+    def _build_condiciones_section2_voice_banner(self, parent):
+        voice_box = tk.Frame(parent, bg="#FFF4E5", bd=1, relief="solid")
+        voice_box.pack(fill="x", pady=(0, 12))
+        tk.Label(
+            voice_box,
+            text=(
+                "Dictado experimental para esta seccion. Usa un solo audio y responde solo lo que este confirmado. "
+                "Salario, edad, pruebas y firma de contrato pueden decirse en lenguaje natural."
+            ),
+            bg="#FFF4E5",
+            fg="#7A4100",
+            justify="left",
+            wraplength=760,
+            padx=12,
+            pady=10,
+        ).pack(side="left", fill="x", expand=True)
+        ttk.Button(
+            voice_box,
+            text="Dictar seccion 2",
+            command=self._on_condiciones_section2_dictation,
+        ).pack(side="right", padx=10, pady=10)
+        return voice_box
+
+    def _get_condiciones_voice_ui_namespace(self):
+        return "Vacante Labs"
+
+    def _build_condiciones_section2_1_voice_banner(self, parent):
+        voice_box = tk.Frame(parent, bg="#FFF4E5", bd=1, relief="solid")
+        voice_box.pack(fill="x", pady=(0, 12))
+        tk.Label(
+            voice_box,
+            text=(
+                "Dictado experimental para esta subseccion. Aqui solo cubre horarios, experiencia, funciones y herramientas. "
+                "Los niveles educativos y la formacion academica siguen siendo manuales."
+            ),
+            bg="#FFF4E5",
+            fg="#7A4100",
+            justify="left",
+            wraplength=760,
+            padx=12,
+            pady=10,
+        ).pack(side="left", fill="x", expand=True)
+        ttk.Button(
+            voice_box,
+            text="Dictar 2.1",
+            command=self._on_condiciones_section2_1_dictation,
+        ).pack(side="right", padx=10, pady=10)
+        return voice_box
 
 
 class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
@@ -10155,6 +10773,9 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         if not cedula:
             return
         normalized = re.sub(r"\D+", "", cedula)
+        if len(normalized) > 10:
+            widget.delete(0, tk.END)
+            return
         if normalized and normalized != cedula:
             widget.delete(0, tk.END)
             widget.insert(0, normalized)
@@ -10528,9 +11149,15 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame.pack(fill="both", expand=True)
         self._load_cedula_options()
         content = _build_scrollable_content(section_frame, self)
+        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
+        remove_btn = None
 
         self.oferente_blocks = []
         self.oferente_frames = []
+        self.section2_shared_desarrollo_widget = None
+        self.section2_shared_desarrollo_frame = None
+        self.section2_shared_desarrollo_frame = None
+        self.section2_shared_desarrollo_proxy_fields = None
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
 
@@ -10568,7 +11195,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 widget.grid(row=row, column=col + 1, sticky="w", padx=6, pady=4)
                 if isinstance(widget, tk.Entry):
                     if field_id == "cedula":
-                        self._apply_numeric_entry(widget)
+                        self._apply_numeric_entry(widget, max_len=10)
                     if field_id == "certificado_porcentaje":
                         self._apply_decimal_entry(widget)
                     if field_id in {"telefono_oferente", "telefono_emergencia"}:
@@ -10704,12 +11331,9 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         remove_btn = None
 
         def _get_shared_desarrollo_value():
-            for entry_fields in self.oferente_blocks:
-                widget = entry_fields.get("desarrollo_actividad")
-                if isinstance(widget, tk.Text):
-                    value = widget.get("1.0", tk.END).strip()
-                    if value:
-                        return value
+            widget = getattr(self, "section2_shared_desarrollo_widget", None)
+            if isinstance(widget, tk.Text):
+                return widget.get("1.0", tk.END).strip()
             return ""
 
         def _set_text_widget_value(widget, value):
@@ -10727,10 +11351,8 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 shared_value = source_widget.get("1.0", tk.END).strip()
             else:
                 shared_value = _get_shared_desarrollo_value()
-            for entry_fields in self.oferente_blocks:
-                widget = entry_fields.get("desarrollo_actividad")
-                if widget is source_widget:
-                    continue
+            widget = getattr(self, "section2_shared_desarrollo_widget", None)
+            if isinstance(widget, tk.Text) and widget is not source_widget:
                 _set_text_widget_value(widget, shared_value)
 
         def _bind_shared_desarrollo(widget):
@@ -10744,11 +11366,77 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
         self._labs_section2_sync_desarrollo_widgets = _sync_desarrollo_widgets
 
+        def _refresh_shared_desarrollo_refs():
+            for entry_fields in self.oferente_blocks:
+                entry_fields["desarrollo_actividad"] = self.section2_shared_desarrollo_widget
+
+        def _create_shared_desarrollo_section(parent, *, after_widget=None, before_widget=None):
+            shared_value = _get_shared_desarrollo_value()
+            if self.section2_shared_desarrollo_frame is not None:
+                try:
+                    self.section2_shared_desarrollo_frame.destroy()
+                except Exception:
+                    pass
+            (
+                section3_frame,
+                section3_body,
+                section3_header,
+                section3_title,
+            ) = self._build_selection_subsection_shell(
+                parent,
+                "3. DESARROLLO DE LA ACTIVIDAD",
+                "section_3_desarrollo",
+            )
+            proxy_fields = {}
+            self._install_labs_subsection_button(
+                section3_header,
+                section3_title,
+                "section_3_desarrollo",
+                "3. Desarrollo de la actividad",
+                proxy_fields,
+            )
+            widget = _create_widget(
+                section3_body,
+                "desarrollo_actividad",
+                width=80,
+                text_height=6,
+            )
+            widget.pack(fill="x", padx=6, pady=6)
+            _bind_shared_desarrollo(widget)
+            if shared_value:
+                widget.insert("1.0", shared_value)
+            section3_frame.pack_forget()
+            pack_kwargs = {"fill": "x"}
+            if parent is content:
+                pack_kwargs["pady"] = (0, 8)
+                if before_widget is not None:
+                    pack_kwargs["before"] = before_widget
+            else:
+                pack_kwargs["padx"] = 8
+                pack_kwargs["pady"] = (0, 8)
+                if after_widget is not None:
+                    pack_kwargs["after"] = after_widget
+            section3_frame.pack(**pack_kwargs)
+            proxy_fields["desarrollo_actividad"] = widget
+            self.section2_shared_desarrollo_widget = widget
+            self.section2_shared_desarrollo_frame = section3_frame
+            self.section2_shared_desarrollo_proxy_fields = proxy_fields
+            _refresh_shared_desarrollo_refs()
+
+        def _reposition_shared_desarrollo_section():
+            if len(self.oferente_frames) <= 1 and self.oferente_frames:
+                first_block = self.oferente_frames[0]
+                anchor = getattr(first_block, "_section2_frame", None)
+                _create_shared_desarrollo_section(first_block, after_widget=anchor)
+                return
+            before_widget = self.oferente_frames[0] if self.oferente_frames else actions
+            _create_shared_desarrollo_section(content, before_widget=before_widget)
+
         def _add_oferente_block():
             idx = len(self.oferente_blocks) + 1
             block = tk.LabelFrame(
                 content,
-                text=f"Oferente {idx}",
+                text=f"Vinculado {idx}",
                 bg="white",
                 fg="#222222",
                 font=FONT_LABEL,
@@ -10764,6 +11452,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 "2. DATOS DEL OFERENTE",
                 "section_2_fields",
             )
+            block._section2_frame = section2_frame
             section2_body.grid_columnconfigure(1, weight=1)
             self._install_labs_subsection_button(
                 section2_header,
@@ -10825,23 +11514,6 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                     "<KeyRelease>",
                     lambda event, fw=fecha_widget, ew=edad_widget: self._format_birthdate(event, fw, ew),
                 )
-
-            section3_frame, section3_body, section3_header, section3_title = self._build_selection_subsection_shell(
-                block,
-                "3. DESARROLLO DE LA ACTIVIDAD",
-                "section_3_desarrollo",
-            )
-            self._install_labs_subsection_button(
-                section3_header,
-                section3_title,
-                "section_3_desarrollo",
-                "3. Desarrollo de la actividad",
-                fields,
-            )
-            fields["desarrollo_actividad"] = _create_widget(section3_body, "desarrollo_actividad", width=80, text_height=6)
-            fields["desarrollo_actividad"].pack(fill="x", padx=6, pady=6)
-            _set_text_widget_value(fields["desarrollo_actividad"], _get_shared_desarrollo_value())
-            _bind_shared_desarrollo(fields["desarrollo_actividad"])
 
             section41_frame, section41_body, section41_header, section41_title = self._build_selection_subsection_shell(
                 block,
@@ -11016,6 +11688,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             _update_remove_button_state()
             self.oferente_frames.append(block)
             _refresh_oferente_numbers()
+            _reposition_shared_desarrollo_section()
             _update_remove_button_state()
 
         def _remove_oferente_block():
@@ -11025,6 +11698,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             frame = self.oferente_frames.pop()
             frame.destroy()
             _refresh_oferente_numbers()
+            _reposition_shared_desarrollo_section()
             _update_remove_button_state()
 
         def _prefill_section_2():
@@ -11050,11 +11724,11 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
         _prefill_section_2()
 
-        ttk.Button(actions, text="Agregar oferente", command=_add_oferente_block).pack(
+        ttk.Button(actions, text="Agregar vinculado", command=_add_oferente_block).pack(
             side="left"
         )
         remove_btn = ttk.Button(
-            actions, text="Eliminar ultimo oferente", command=_remove_oferente_block
+            actions, text="Eliminar ultimo vinculado", command=_remove_oferente_block
         )
         remove_btn.pack(side="left", padx=8)
         _update_remove_button_state()
@@ -11065,17 +11739,16 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             side="right"
         )
     def _confirm_section_2(self):
+        shared_widget = getattr(self, "section2_shared_desarrollo_widget", None)
         shared_desarrollo = ""
-        for fields in self.oferente_blocks:
-            widget = fields.get("desarrollo_actividad")
-            if isinstance(widget, tk.Text):
-                shared_desarrollo = widget.get("1.0", tk.END).strip()
-                if shared_desarrollo:
-                    break
+        if isinstance(shared_widget, tk.Text):
+            shared_desarrollo = shared_widget.get("1.0", tk.END).strip()
         payload = []
         for fields in self.oferente_blocks:
             entry = {}
             for key, widget in fields.items():
+                if key == "desarrollo_actividad":
+                    continue
                 if isinstance(widget, ttk.Combobox):
                     entry[key] = widget.get().strip()
                 elif isinstance(widget, tk.Text):
@@ -11542,15 +12215,18 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         self._clear_section_container()
         self.header_title.config(text="2. DATOS DEL VINCULADO")
         self.header_subtitle.config(
-            text="Completa la información del oferente. Puedes agregar más oferentes."
+            text="Completa la información del vinculado. Puedes agregar más vinculados."
         )
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
         self._load_cedula_options()
         content = _build_scrollable_content(section_frame, self)
+        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
+        remove_btn = None
 
         self.oferente_blocks = []
         self.oferente_frames = []
+        self.section2_shared_desarrollo_frame = None
         self.section2_shared_desarrollo_widget = None
 
         def _add_fields_grid(parent, field_specs, columns=2):
@@ -11612,15 +12288,149 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             inner.pack(fill="x", padx=6, pady=(0, 6))
             return _add_fields_grid(inner, fields_def, columns=2)
 
+        def _current_template_variant():
+            if len(self.oferente_blocks) >= 2:
+                return contratacion_incluyente.TEMPLATE_VARIANT_GROUP_2_PLUS
+            return contratacion_incluyente.TEMPLATE_VARIANT_INDIVIDUAL
+
+        def _is_group_variant_ui():
+            return _current_template_variant() == contratacion_incluyente.TEMPLATE_VARIANT_GROUP_2_PLUS
+
+        def _section2_header_title():
+            if _is_group_variant_ui():
+                return "2. DESARROLLO DE LA ACTIVIDAD"
+            return "2. DATOS DEL VINCULADO"
+
+        def _section2_header_subtitle():
+            if _is_group_variant_ui():
+                return "Registra un único desarrollo de la actividad y luego completa los vinculados."
+            return "Completa la información del vinculado. Puedes agregar más vinculados."
+
+        def _shared_desarrollo_title():
+            if _is_group_variant_ui():
+                return "2. DESARROLLO DE LA ACTIVIDAD"
+            return "4. DESARROLLO DE LA ACTIVIDAD"
+
+        def _linked_section_title():
+            if _is_group_variant_ui():
+                return "3. DATOS DEL VINCULADO"
+            return "2. DATOS DEL VINCULADO"
+
+        def _additional_section_title():
+            if _is_group_variant_ui():
+                return "4. DATOS ADICIONALES"
+            return "3. DATOS ADICIONALES"
+
+        def _get_shared_desarrollo_value():
+            widget = getattr(self, "section2_shared_desarrollo_widget", None)
+            if isinstance(widget, tk.Text):
+                return widget.get("1.0", tk.END).strip()
+            return ""
+
+        def _set_text_widget_value(widget, value):
+            if not isinstance(widget, tk.Text):
+                return
+            current = widget.get("1.0", tk.END).strip()
+            if current == value:
+                return
+            widget.delete("1.0", tk.END)
+            if value:
+                widget.insert("1.0", value)
+
+        def _create_shared_desarrollo_section(parent, *, after_widget=None, before_widget=None):
+            shared_value = _get_shared_desarrollo_value()
+            current_frame = getattr(self, "section2_shared_desarrollo_frame", None)
+            if current_frame is not None:
+                try:
+                    current_frame.destroy()
+                except Exception:
+                    pass
+            frame = tk.LabelFrame(
+                parent,
+                text=_shared_desarrollo_title(),
+                bg="white",
+                fg="#222222",
+                font=FONT_LABEL,
+                padx=8,
+                pady=6,
+            )
+            text_widget = tk.Text(frame, height=5, wrap="word")
+            text_widget.pack(fill="x", padx=6, pady=6)
+            _attach_autoexpand(text_widget, 5, 20)
+            if shared_value:
+                text_widget.insert("1.0", shared_value)
+            pack_kwargs = {"fill": "x"}
+            if parent is content:
+                pack_kwargs["pady"] = (0, 8)
+                if before_widget is not None:
+                    pack_kwargs["before"] = before_widget
+            else:
+                pack_kwargs["padx"] = 8
+                pack_kwargs["pady"] = (0, 8)
+                if after_widget is not None:
+                    pack_kwargs["after"] = after_widget
+            frame.pack(**pack_kwargs)
+            self.section2_shared_desarrollo_frame = frame
+            self.section2_shared_desarrollo_widget = text_widget
+
+        def _reposition_shared_desarrollo_section():
+            if not self.oferente_frames:
+                return
+            if _is_group_variant_ui():
+                _create_shared_desarrollo_section(content, before_widget=self.oferente_frames[0])
+                return
+            first_block = self.oferente_frames[0]
+            anchor = getattr(first_block, "_section3_frame", None)
+            _create_shared_desarrollo_section(first_block, after_widget=anchor)
+
+        def _refresh_variant_dependent_options():
+            variant = _current_template_variant()
+            valid_values = {
+                "contrato_lee_observacion": contratacion_incluyente.get_section_2_field_options(
+                    "contrato_lee_observacion",
+                    variant,
+                ),
+            }
+            for fields in self.oferente_blocks:
+                for field_id, values in valid_values.items():
+                    widget = fields.get(field_id)
+                    if not isinstance(widget, ttk.Combobox):
+                        continue
+                    current = widget.get().strip()
+                    widget.configure(values=values)
+                    if current and current not in values:
+                        widget.set("")
+
+        def _refresh_section_titles():
+            self.header_title.config(text=_section2_header_title())
+            self.header_subtitle.config(text=_section2_header_subtitle())
+            for frame in self.oferente_frames:
+                section2_frame = getattr(frame, "_section2_frame", None)
+                if section2_frame is not None:
+                    section2_frame.configure(text=_linked_section_title())
+                section3_frame = getattr(frame, "_section3_frame", None)
+                if section3_frame is not None:
+                    section3_frame.configure(text=_additional_section_title())
+
+        def _refresh_layout():
+            _refresh_oferente_numbers()
+            _refresh_variant_dependent_options()
+            _refresh_section_titles()
+            _reposition_shared_desarrollo_section()
+            _update_remove_button_state()
+
         def _add_oferente_block():
             idx = len(self.oferente_blocks) + 1
             block = tk.Frame(content, bg="white", bd=1, relief="solid")
-            block.pack(fill="x", pady=8)
+            pack_kwargs = {"fill": "x", "pady": 8}
+            if actions.winfo_manager():
+                pack_kwargs["before"] = actions
+            block.pack(**pack_kwargs)
             self.oferente_frames.append(block)
 
             header = tk.Label(
                 block,
-                text=f"Oferente {idx}",
+                text=f"Vinculado {idx}",
                 font=FONT_LABEL,
                 bg="white",
                 fg="#222222",
@@ -11631,7 +12441,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
             section2_frame = tk.LabelFrame(
                 block,
-                text="2. DATOS DEL VINCULADO",
+                text=_linked_section_title(),
                 bg="white",
                 fg="#222222",
                 font=FONT_LABEL,
@@ -11639,6 +12449,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 pady=6,
             )
             section2_frame.pack(fill="x", padx=8, pady=(0, 8))
+            block._section2_frame = section2_frame
 
             row1 = tk.Frame(section2_frame, bg="white")
             row1.pack(fill="x", pady=(0, 6))
@@ -11726,7 +12537,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                             "id": "grupo_etnico_cual",
                             "label": "¿Cuál?",
                             "options": contratacion_incluyente.GRUPO_ETNICO_CUAL_OPTIONS,
-                            "width": 20,
+                            "width": 34,
                         },
                     ],
                     columns=3,
@@ -11769,7 +12580,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
             section3_frame = tk.LabelFrame(
                 block,
-                text="3. DATOS ADICIONALES",
+                text=_additional_section_title(),
                 bg="white",
                 fg="#222222",
                 font=FONT_LABEL,
@@ -11777,6 +12588,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 pady=6,
             )
             section3_frame.pack(fill="x", padx=8, pady=(0, 8))
+            block._section3_frame = section3_frame
             fields.update(
                 _add_fields_grid(
                     section3_frame,
@@ -11784,30 +12596,14 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                         {
                             "id": "tipo_contrato",
                             "label": "Tipo de contrato",
-                            "options": contratacion_incluyente.TIPO_CONTRATO_OPTIONS,
-                            "width": 24,
+                            "options": contratacion_incluyente.TIPO_CONTRATO_FIRMADO_OPTIONS,
+                            "width": 42,
                         },
                         {"id": "fecha_fin", "label": "Fecha de fin", "width": 14},
                     ],
                     columns=2,
                 )
             )
-
-            if idx == 1:
-                section4_frame = tk.LabelFrame(
-                    block,
-                    text="4. DESARROLLO DE LA ACTIVIDAD",
-                    bg="white",
-                    fg="#222222",
-                    font=FONT_LABEL,
-                    padx=8,
-                    pady=6,
-                )
-                section4_frame.pack(fill="x", padx=8, pady=(0, 8))
-                fields["desarrollo_actividad"] = tk.Text(section4_frame, height=5, wrap="word")
-                fields["desarrollo_actividad"].pack(fill="x", padx=6, pady=6)
-                _attach_autoexpand(fields["desarrollo_actividad"], 5, 20)
-                self.section2_shared_desarrollo_widget = fields["desarrollo_actividad"]
 
             section51_frame = tk.LabelFrame(
                 block,
@@ -11834,7 +12630,10 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                         {
                             "id": "contrato_lee_observacion",
                             "label": "Observación",
-                            "options": contratacion_incluyente.OBS_LECTURA_CONTRATO_OPTIONS,
+                            "options": contratacion_incluyente.get_section_2_field_options(
+                                "contrato_lee_observacion",
+                                _current_template_variant(),
+                            ),
                             "width": 50,
                         },
                         {"id": "contrato_lee_nota", "label": "Nota", "width": 50},
@@ -11882,7 +12681,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                         {
                             "id": "contrato_tipo_contrato",
                             "label": "Tipo de contrato",
-                            "options": contratacion_incluyente.TIPO_CONTRATO_OPTIONS,
+                            "options": contratacion_incluyente.CONTRATO_TIPO_CONTRATO_OPTIONS,
                             "width": 28,
                         },
                         {
@@ -12077,6 +12876,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 numero_widget.configure(state="readonly")
 
             self.oferente_blocks.append(fields)
+            _refresh_layout()
 
         def _refresh_oferente_numbers():
             for idx, fields in enumerate(self.oferente_blocks, start=1):
@@ -12101,8 +12901,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             self.oferente_blocks.pop()
             frame = self.oferente_frames.pop()
             frame.destroy()
-            _refresh_oferente_numbers()
-            _update_remove_button_state()
+            _refresh_layout()
 
         def _prefill_section_2():
             cache = contratacion_incluyente.get_form_cache().get("section_2", [])
@@ -12132,16 +12931,16 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 self.section2_shared_desarrollo_widget.delete("1.0", tk.END)
                 if shared_desarrollo:
                     self.section2_shared_desarrollo_widget.insert("1.0", shared_desarrollo)
+            _refresh_layout()
 
         _prefill_section_2()
 
-        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        ttk.Button(actions, text="Agregar oferente", command=_add_oferente_block).pack(
+        ttk.Button(actions, text="Agregar vinculado", command=_add_oferente_block).pack(
             side="left"
         )
         remove_btn = ttk.Button(
-            actions, text="Eliminar ultimo oferente", command=_remove_oferente_block
+            actions, text="Eliminar ultimo vinculado", command=_remove_oferente_block
         )
         remove_btn.pack(side="left", padx=8)
         _update_remove_button_state()
@@ -12154,7 +12953,10 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _show_section_6(self):
         self._clear_section_container()
-        self.header_title.config(text="6. AJUSTES RAZONABLES")
+        if contratacion_incluyente.is_group_variant():
+            self.header_title.config(text="5. AJUSTES RAZONABLES Y RECOMENDACIONES")
+        else:
+            self.header_title.config(text="6. AJUSTES RAZONABLES")
         self.header_subtitle.config(text="Completa ajustes razonables.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
@@ -12226,7 +13028,10 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _show_section_7(self):
         self._clear_section_container()
-        self.header_title.config(text="7. ASISTENTES")
+        if contratacion_incluyente.is_group_variant():
+            self.header_title.config(text="6. ASISTENTES")
+        else:
+            self.header_title.config(text="7. ASISTENTES")
         self.header_subtitle.config(text="Registra asistentes y agrega filas si aplica.")
 
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)

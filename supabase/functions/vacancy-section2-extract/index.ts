@@ -1,18 +1,17 @@
-import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { CONTRACT_PROMPT, SCHEMA, SUBSECTION_SPECS, SYSTEM_PROMPT } from "./assets.ts";
 
 const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 const TRANSCRIBE_MODEL =
-  Deno.env.get("OPENAI_SELECTION_TRANSCRIBE_MODEL") ?? "gpt-4o-mini-transcribe";
-const EXTRACT_MODEL = Deno.env.get("OPENAI_SELECTION_EXTRACT_MODEL") ?? "gpt-5.4-mini";
+  Deno.env.get("OPENAI_VACANCY_TRANSCRIBE_MODEL") ?? "gpt-4o-mini-transcribe";
+const EXTRACT_MODEL = Deno.env.get("OPENAI_VACANCY_EXTRACT_MODEL") ?? "gpt-5.4-mini";
 const DEFAULT_LANGUAGE = "es";
 const MAX_AUDIO_MB = Number(Deno.env.get("DICTATION_MAX_AUDIO_MB") ?? "25");
 const REQUESTS_PER_MINUTE = Number(Deno.env.get("DICTATION_RPM") ?? "12");
 const AUDIO_MINUTES_PER_HOUR = Number(Deno.env.get("DICTATION_AUDIO_MIN_PER_HOUR") ?? "60");
-const TRANSCRIBE_TIMEOUT_MS = Number(Deno.env.get("OPENAI_SELECTION_TRANSCRIBE_TIMEOUT_MS") ?? "45000");
-const EXTRACT_TIMEOUT_MS = Number(Deno.env.get("OPENAI_SELECTION_EXTRACT_TIMEOUT_MS") ?? "70000");
+const TRANSCRIBE_TIMEOUT_MS = Number(Deno.env.get("OPENAI_VACANCY_TRANSCRIBE_TIMEOUT_MS") ?? "45000");
+const EXTRACT_TIMEOUT_MS = Number(Deno.env.get("OPENAI_VACANCY_EXTRACT_TIMEOUT_MS") ?? "70000");
 
 type RateState = {
   reqWindowStart: number;
@@ -30,9 +29,9 @@ function json(status: number, payload: unknown) {
   });
 }
 
-function labsLog(level: "INFO" | "WARN" | "ERROR", message: string, extra?: Record<string, unknown>) {
-  const payload = extra && Object.keys(extra).length ? ` ${JSON.stringify(extra)}` : "";
-  console.log(`[LABS] [${level}] ${message}${payload}`);
+function log(level: "INFO" | "WARN" | "ERROR", message: string, extra?: Record<string, unknown>) {
+  const suffix = extra && Object.keys(extra).length ? ` ${JSON.stringify(extra)}` : "";
+  console.log(`[VACANCY_VOICE] [${level}] ${message}${suffix}`);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -151,14 +150,12 @@ function validateStructuredPayload(payload: unknown): string[] {
 }
 
 function buildInstructions(subsectionKey: string): string {
-  const subsection = SUBSECTION_SPECS?.subsections?.[subsectionKey];
+  const subsection = SUBSECTION_SPECS?.subsections?.[subsectionKey as keyof typeof SUBSECTION_SPECS.subsections];
   if (!subsection) {
     throw new Error(`Subseccion no soportada: ${subsectionKey}`);
   }
   const questions = Array.isArray(subsection.questions) ? subsection.questions : [];
   const examples = Array.isArray(subsection.examples) ? subsection.examples : [];
-  const questionText = questions.map((value: string) => `- ${value}`).join("\n");
-  const exampleText = examples.map((value: string) => `- ${value}`).join("\n");
   return [
     SYSTEM_PROMPT,
     "",
@@ -168,10 +165,10 @@ function buildInstructions(subsectionKey: string): string {
     `Guia para el profesional: ${String(subsection.script ?? "").trim()}`,
     "",
     "Preguntas que el audio deberia responder:",
-    questionText,
+    questions.map((value: string) => `- ${value}`).join("\n"),
     "",
-    "Ejemplos esperados:",
-    exampleText,
+    "Ejemplo breve:",
+    examples.map((value: string) => `- ${value}`).join("\n"),
     "",
     `Reglas especificas de la subseccion: ${String(subsection.prompt_fragment ?? "").trim()}`,
     "",
@@ -187,7 +184,7 @@ async function transcribeAudio(audio: File, language: string): Promise<string> {
   openaiForm.set("model", TRANSCRIBE_MODEL);
   openaiForm.set("language", language);
   openaiForm.set("response_format", "json");
-  openaiForm.set("file", audio, audio.name || "selection-section2.wav");
+  openaiForm.set("file", audio, audio.name || "vacancy-section2.wav");
 
   try {
     const upstream = await fetch("https://api.openai.com/v1/audio/transcriptions", {
@@ -225,14 +222,14 @@ async function transcribeAudio(audio: File, language: string): Promise<string> {
 
 async function extractStructuredJson(
   transcription: string,
+  sectionId: string,
   subsectionKey: string,
-  candidateIndex: number,
 ): Promise<Record<string, unknown>> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort("extraction_timeout"), EXTRACT_TIMEOUT_MS);
   const instructions = buildInstructions(subsectionKey);
   const input = [
-    `Contexto fijo: form_id=seleccion_incluyente_labs, section_id=section_2, subsection_key=${subsectionKey}, audio_unit=single_candidate, candidate_index=${candidateIndex}.`,
+    `Contexto fijo: form_id=condiciones_vacante, section_id=${sectionId}, subsection_key=${subsectionKey}, audio_unit=single_section.`,
     "",
     "Transcripcion de voz:",
     transcription,
@@ -254,7 +251,7 @@ async function extractStructuredJson(
         text: {
           format: {
             type: "json_schema",
-            name: "selection_section2_extract",
+            name: "vacancy_section2_extract",
             strict: true,
             schema: SCHEMA,
           },
@@ -262,7 +259,6 @@ async function extractStructuredJson(
       }),
       signal: controller.signal,
     });
-
     if (!upstream.ok) {
       let message = `OpenAI error ${upstream.status}`;
       try {
@@ -276,26 +272,12 @@ async function extractStructuredJson(
       }
       throw new Error(message);
     }
-
     const payload = await upstream.json();
-    const outputText = extractOutputText(payload);
-    if (!outputText) {
-      throw new Error("OpenAI no devolvio JSON estructurado.");
+    const text = extractOutputText(payload);
+    if (!text) {
+      throw new Error("La respuesta del modelo llego vacia.");
     }
-
-    let structured: unknown;
-    try {
-      structured = JSON.parse(outputText);
-    } catch {
-      throw new Error("La salida estructurada no se pudo parsear como JSON.");
-    }
-
-    const errors = validateStructuredPayload(structured);
-    if (errors.length) {
-      throw new Error(errors.join(" | "));
-    }
-
-    return structured as Record<string, unknown>;
+    return JSON.parse(text) as Record<string, unknown>;
   } catch (err) {
     if ((err as Error)?.name === "AbortError") {
       throw new Error(`Timeout de extraccion tras ${EXTRACT_TIMEOUT_MS}ms.`);
@@ -306,13 +288,9 @@ async function extractStructuredJson(
   }
 }
 
-serve(async (req: Request) => {
-  labsLog("INFO", "request_start", {
-    method: req.method,
-    content_type: req.headers.get("content-type") ?? "",
-  });
-  if (req.method !== "POST") {
-    return json(405, { ok: false, error: { code: "method_not_allowed", message: "Use POST." } });
+Deno.serve(async (request) => {
+  if (request.method !== "POST") {
+    return json(405, { ok: false, error: { code: "method_not_allowed", message: "Metodo no permitido." } });
   }
   if (!OPENAI_API_KEY) {
     return json(500, {
@@ -321,171 +299,117 @@ serve(async (req: Request) => {
     });
   }
 
-  const authHeader = req.headers.get("Authorization") ?? "";
-  if (!authHeader.toLowerCase().startsWith("bearer ")) {
+  const auth = request.headers.get("Authorization") ?? "";
+  const jwt = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+  if (!jwt) {
     return json(401, { ok: false, error: { code: "missing_auth", message: "JWT requerido." } });
   }
 
-  const jwt = authHeader.slice(7).trim();
-  let userKey = "";
+  let userId = "";
   try {
-    userKey = await resolveUserId(jwt);
+    userId = await resolveUserId(jwt);
   } catch (err) {
-    labsLog("WARN", "invalid_auth", {});
     return json(401, {
       ok: false,
-      error: { code: "invalid_auth", message: String((err as Error)?.message || "JWT invalido.") },
+      error: { code: "invalid_auth", message: (err as Error).message },
     });
   }
 
-  const contentType = req.headers.get("content-type") ?? "";
-  if (!contentType.toLowerCase().includes("multipart/form-data")) {
+  let form: FormData;
+  try {
+    form = await request.formData();
+  } catch {
     return json(400, {
       ok: false,
-      error: { code: "invalid_content_type", message: "Se requiere multipart/form-data." },
+      error: { code: "invalid_form", message: "No se pudo leer multipart/form-data." },
     });
   }
 
-  let formData: FormData;
-  try {
-    formData = await req.formData();
-  } catch {
-    return json(400, { ok: false, error: { code: "invalid_form", message: "Formulario invalido." } });
+  const audio = form.get("audio_file");
+  const formId = String(form.get("form_id") ?? "").trim();
+  const sectionId = String(form.get("section_id") ?? "").trim();
+  const subsectionKey = String(form.get("subsection_key") ?? "").trim();
+  if (!(audio instanceof File)) {
+    return json(400, { ok: false, error: { code: "missing_audio", message: "Falta audio_file." } });
   }
-  labsLog("INFO", "request_formdata_ok", {});
-
-  const formId = String(formData.get("form_id") ?? "").trim();
-  const sectionId = String(formData.get("section_id") ?? "").trim();
-  const subsectionKey = String(formData.get("subsection_key") ?? "").trim();
-  const candidateIndexRaw = String(formData.get("candidate_index") ?? "").trim();
-  const language = String(formData.get("language") ?? DEFAULT_LANGUAGE).trim() || DEFAULT_LANGUAGE;
-  const audio = formData.get("audio_file");
-
-  if (formId !== "seleccion_incluyente_labs") {
+  if (formId !== "condiciones_vacante") {
     return json(400, { ok: false, error: { code: "invalid_form_id", message: "form_id invalido." } });
   }
-  if (sectionId !== "section_2") {
-    return json(400, { ok: false, error: { code: "invalid_section_id", message: "section_id invalido." } });
-  }
-  if (!SUBSECTION_SPECS?.subsections?.[subsectionKey]) {
+  const validSectionId =
+    (subsectionKey === "section_2_vacancy" && sectionId === "section_2")
+    || (subsectionKey === "section_2_1_schedule_experience" && sectionId === "section_2_1");
+  if (!validSectionId) {
     return json(400, {
       ok: false,
-      error: { code: "invalid_subsection", message: "subsection_key invalido." },
+      error: { code: "invalid_section_or_subsection", message: "section_id o subsection_key invalido." },
     });
   }
 
-  const candidateIndex = Number(candidateIndexRaw);
-  if (!Number.isInteger(candidateIndex) || candidateIndex < 1) {
-    return json(400, {
-      ok: false,
-      error: { code: "invalid_candidate_index", message: "candidate_index debe ser un entero positivo." },
-    });
-  }
-
-  if (!(audio instanceof File)) {
-    return json(400, { ok: false, error: { code: "missing_audio", message: "audio_file es obligatorio." } });
-  }
-  if (!audio.size) {
+  if (audio.size <= 0) {
     return json(400, { ok: false, error: { code: "empty_audio", message: "El audio esta vacio." } });
   }
-
-  const maxBytes = MAX_AUDIO_MB * 1024 * 1024;
-  if (audio.size > maxBytes) {
+  if (audio.size > MAX_AUDIO_MB * 1024 * 1024) {
     return json(413, {
       ok: false,
-      error: { code: "audio_too_large", message: `Audio supera ${MAX_AUDIO_MB}MB.` },
+      error: { code: "audio_too_large", message: `El audio supera ${MAX_AUDIO_MB}MB.` },
     });
   }
 
-  const rateLimit = checkRateLimit(userKey, estimateAudioMinutesFromWavBytes(audio.size));
-  if (!rateLimit.ok) {
-    labsLog("WARN", "rate_limited", {
-      subsection_key: subsectionKey,
-      candidate_index: candidateIndex,
-    });
-    return json(429, { ok: false, error: { code: "rate_limited", message: rateLimit.reason } });
+  const estimatedMinutes = estimateAudioMinutesFromWavBytes(audio.size);
+  const rate = checkRateLimit(userId, estimatedMinutes);
+  if (!rate.ok) {
+    return json(429, { ok: false, error: { code: "rate_limited", message: rate.reason } });
   }
 
-  labsLog("INFO", "request_received", {
-    subsection_key: subsectionKey,
-    candidate_index: candidateIndex,
-    language,
-    audio_size: audio.size,
-    transcribe_model: TRANSCRIBE_MODEL,
-    extract_model: EXTRACT_MODEL,
-  });
+  const language = String(form.get("language") ?? DEFAULT_LANGUAGE).trim() || DEFAULT_LANGUAGE;
+  const started = Date.now();
 
-  let transcription = "";
   try {
-    transcription = await transcribeAudio(audio, language);
-  } catch (err) {
-    labsLog("ERROR", "transcription_failed", {
-      subsection_key: subsectionKey,
-      candidate_index: candidateIndex,
-      detail: String((err as Error)?.message || "Error de transcripcion."),
-    });
-    return json(502, {
-      ok: false,
-      error: { code: "openai_transcription_error", message: String((err as Error)?.message || "Error de transcripcion.") },
-    });
-  }
+    const transcription = await transcribeAudio(audio, language);
+    if (!transcription) {
+      return json(422, {
+        ok: false,
+        error: { code: "empty_transcription", message: "La transcripcion llego vacia." },
+      });
+    }
 
-  if (!transcription) {
-    labsLog("WARN", "empty_transcription", {
-      subsection_key: subsectionKey,
-      candidate_index: candidateIndex,
-    });
-    return json(422, {
-      ok: false,
-      error: { code: "empty_transcription", message: "OpenAI no devolvio texto." },
-    });
-  }
+    const extraction = await extractStructuredJson(transcription, sectionId, subsectionKey);
+    const validationErrors = validateStructuredPayload(extraction);
+    if (validationErrors.length) {
+      log("ERROR", "structured_payload_invalid", { validationErrors });
+      return json(502, {
+        ok: false,
+        error: {
+          code: "invalid_structured_payload",
+          message: `La respuesta estructurada no es valida: ${validationErrors.join(" | ")}`,
+        },
+        transcription,
+      });
+    }
 
-  labsLog("INFO", "transcription_ok", {
-    subsection_key: subsectionKey,
-    candidate_index: candidateIndex,
-    transcription_chars: transcription.length,
-  });
-
-  let extraction: Record<string, unknown>;
-  try {
-    extraction = await extractStructuredJson(transcription, subsectionKey, candidateIndex);
-  } catch (err) {
-    labsLog("ERROR", "extraction_failed", {
-      subsection_key: subsectionKey,
-      candidate_index: candidateIndex,
-      detail: String((err as Error)?.message || "Error de extraccion."),
-    });
-    return json(502, {
-      ok: false,
-      error: { code: "openai_extraction_error", message: String((err as Error)?.message || "Error de extraccion.") },
-      transcription,
-    });
-  }
-
-  const warnings = Array.isArray(extraction.warnings)
-    ? extraction.warnings.filter((item) => typeof item === "string")
-    : [];
-
-  labsLog("INFO", "extraction_ok", {
-    subsection_key: subsectionKey,
-    candidate_index: candidateIndex,
-    warnings: warnings.length,
-    candidate_fields: isRecord(extraction.candidate) ? Object.keys(extraction.candidate).length : 0,
-  });
-
-  return json(200, {
-    ok: true,
-    transcription,
-    extraction,
-    warnings,
-    usage: {
+    const usage = {
       transcribe_model: TRANSCRIBE_MODEL,
       extract_model: EXTRACT_MODEL,
-    },
-    debug: {
-      subsection_key: subsectionKey,
-      candidate_index: candidateIndex,
-    },
-  });
+      elapsed_ms: Date.now() - started,
+    };
+    log("INFO", "voice_submit_ok", { elapsed_ms: usage.elapsed_ms, userId });
+    return json(200, {
+      ok: true,
+      transcription,
+      extraction,
+      warnings: extraction.warnings ?? [],
+      usage,
+      debug: {
+        subsection_key: subsectionKey,
+        section_id: sectionId,
+      },
+    });
+  } catch (err) {
+    const message = (err as Error)?.message || "No fue posible procesar el audio.";
+    log("ERROR", "voice_submit_failed", { message, userId });
+    return json(502, {
+      ok: false,
+      error: { code: "openai_processing_error", message },
+    });
+  }
 });

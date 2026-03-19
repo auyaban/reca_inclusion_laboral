@@ -9,6 +9,7 @@
     "audio_unit",
     "transcription_summary",
     "warnings",
+    "semantic",
     "candidate"
   ],
   "properties": {
@@ -45,6 +46,210 @@
       "type": "array",
       "items": {
         "type": "string"
+      }
+    },
+    "semantic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "section_4_1_health"
+      ],
+      "properties": {
+        "section_4_1_health": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "medications",
+            "allergies",
+            "restrictions",
+            "specialist_controls"
+          ],
+          "properties": {
+            "medications": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": false,
+              "required": [
+                "support_level",
+                "status",
+                "schedule_status",
+                "details"
+              ],
+              "properties": {
+                "support_level": {
+                  "enum": [
+                    "none",
+                    "low",
+                    "medium",
+                    "high",
+                    "not applicable",
+                    null
+                  ]
+                },
+                "status": {
+                  "enum": [
+                    "not taking",
+                    "self managed",
+                    "third party managed",
+                    "unknown",
+                    "not applicable",
+                    null
+                  ]
+                },
+                "schedule_status": {
+                  "enum": [
+                    "self managed",
+                    "third party managed",
+                    "unknown",
+                    "not applicable",
+                    null
+                  ]
+                },
+                "details": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "allergies": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": false,
+              "required": [
+                "support_level",
+                "status",
+                "details"
+              ],
+              "properties": {
+                "support_level": {
+                  "enum": [
+                    "none",
+                    "low",
+                    "medium",
+                    "high",
+                    "not applicable",
+                    null
+                  ]
+                },
+                "status": {
+                  "enum": [
+                    "none reported",
+                    "self managed",
+                    "unknown",
+                    "described",
+                    "not applicable",
+                    null
+                  ]
+                },
+                "details": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "restrictions": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": false,
+              "required": [
+                "support_level",
+                "status",
+                "details"
+              ],
+              "properties": {
+                "support_level": {
+                  "enum": [
+                    "none",
+                    "low",
+                    "medium",
+                    "high",
+                    "not applicable",
+                    null
+                  ]
+                },
+                "status": {
+                  "enum": [
+                    "none reported",
+                    "self managed",
+                    "unknown",
+                    "does not know management",
+                    "not applicable",
+                    null
+                  ]
+                },
+                "details": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "specialist_controls": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": false,
+              "required": [
+                "support_level",
+                "attendance",
+                "frequency",
+                "details"
+              ],
+              "properties": {
+                "support_level": {
+                  "enum": [
+                    "none",
+                    "low",
+                    "medium",
+                    "high",
+                    "not applicable",
+                    null
+                  ]
+                },
+                "attendance": {
+                  "enum": [
+                    "attends and self manages",
+                    "attends",
+                    "unknown",
+                    "not applicable",
+                    null
+                  ]
+                },
+                "frequency": {
+                  "enum": [
+                    "monthly",
+                    "quarterly",
+                    "semiannual",
+                    "other",
+                    "not applicable",
+                    null
+                  ]
+                },
+                "details": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        }
       }
     },
     "candidate": {

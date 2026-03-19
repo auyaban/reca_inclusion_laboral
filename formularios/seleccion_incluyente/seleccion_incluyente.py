@@ -234,7 +234,7 @@ SECTION_2 = {
         {"id": "telefono_oferente", "label": "Teléfono oferente", "type": "texto"},
         {
             "id": "resultado_certificado",
-            "label": "Resultado certificado",
+            "label": "Resultado",
             "type": "lista",
             "options": ["Aprobado", "No aprobado", "Pendiente"],
         },

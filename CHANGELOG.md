@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.1 - 2026-03-19
+
+Esta version hace un ajuste pequeno de interfaz en `Seleccion Incluyente`.
+
+### Cambios principales
+
+- En la seccion de oferentes, el campo visible `Resultado certificado` ahora se muestra como `Resultado`.
+
+### Como afecta a los usuarios
+
+- No cambia el funcionamiento del formato, el mapeo a Excel ni la informacion guardada.
+- Solo simplifica el texto visible en pantalla para que coincida mejor con el uso diario.
+
 ## 1.2.0 - 2026-03-19
 
 Esta version consolida una actualizacion grande de los flujos de Inclusion Laboral. El foco estuvo en hacer mas estable el trabajo diario, mejorar el soporte para procesos grupales y dejar mas confiable el diligenciamiento por voz donde ya estaba habilitado.

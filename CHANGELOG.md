@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.2.2 - 2026-03-25
+
+Esta version corrige errores de cierre y acceso que estaban afectando a usuarios en la app instalada.
+
+### Cambios principales
+
+- Los formularios ahora resuelven templates y recursos desde el bundle instalado, no solo desde rutas de desarrollo.
+- `Seleccion Incluyente` y `Contratacion Incluyente` ahora toleran variaciones razonables en nombres de templates grupales para evitar fallos por nombres no exactos.
+- La generacion de archivos Excel ahora endurece nombres y rutas de salida para evitar errores de Windows como `WinError 3`.
+- El inicio de sesion ya no se bloquea si la consulta de perfil sobre `profesionales` falla por permisos; la app entra con un perfil minimo degradado.
+
+### Como afecta a los usuarios
+
+- Los formatos que antes no finalizaban por templates no encontrados vuelven a poder cerrarse desde la app instalada.
+- Los cierres que fallaban por rutas invalidas o demasiado largas en Windows ahora tienen fallback automatico.
+- Los usuarios autenticados ya no quedan bloqueados al iniciar sesion por una restriccion de lectura sobre `profesionales`.
+
 ## 1.2.1 - 2026-03-19
 
 Esta version hace un ajuste pequeno de interfaz en `Seleccion Incluyente`.

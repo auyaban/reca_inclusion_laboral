@@ -14,12 +14,14 @@ from formularios.common import (
     autofit_rows,
     clear_written_rows,
     ws_write,
+    _build_process_output_path,
     _get_desktop_dir,
     _next_available_file_path,
     _normalize_text,
     _sanitize_filename,
 )
 from logging_utils import log_excel_event
+from version_info import resource_path
 
 
 FORM_NAME = "Condiciones de Vacante"
@@ -350,14 +352,13 @@ def clear_form_cache():
 
 
 def _find_template_path():
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    templates_dir = os.path.join(base_dir, "templates")
-    if not os.path.isdir(templates_dir):
+    templates_dir = resource_path("templates")
+    if not templates_dir.is_dir():
         raise FileNotFoundError("No existe la carpeta templates.")
     for name in os.listdir(templates_dir):
         normalized = _normalize_text(name).replace("_", "")
         if "revision" in normalized and "condicion" in normalized and normalized.endswith(".xlsx"):
-            return os.path.join(templates_dir, name)
+            return os.fspath(templates_dir / name)
     raise FileNotFoundError("No se encontró el template de revision de condiciones.")
 
 
@@ -384,16 +385,9 @@ def _ensure_output_path():
     if output_path and os.path.exists(output_path):
         return output_path
     template_path = _find_template_path()
-    desktop = _get_desktop_dir()
     empresa_nombre = SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
-    safe_company = _sanitize_filename(empresa_nombre)
-    if not safe_company:
-        safe_company = "Empresa"
-    output_dir = os.path.join(desktop, "Formatos Inclusion Laboral", safe_company)
-    os.makedirs(output_dir, exist_ok=True)
     process_name = "Revision de las Condiciones de la Vacante"
-    output_name = f"{process_name} - {safe_company}.xlsx"
-    output_path = _next_available_file_path(os.path.join(output_dir, output_name))
+    output_path = _build_process_output_path(empresa_nombre, process_name)
     if not os.path.exists(output_path):
         shutil.copy2(template_path, output_path)
     FORM_CACHE["_output_path"] = output_path
@@ -1079,8 +1073,7 @@ def _load_disability_descriptions_from_sheet():
 
 
 def _load_disability_descriptions_from_text():
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    path = os.path.join(base_dir, "Diccionario.txt")
+    path = resource_path("Diccionario.txt")
     if not os.path.exists(path):
         return {}
     try:

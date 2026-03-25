@@ -12,6 +12,7 @@ from . import seccion_5
 from . import seccion_6_7
 from . import seccion_8
 from formularios.common import (
+    _build_process_output_path,
     _get_desktop_dir,
     _next_available_file_path,
     _normalize_text,
@@ -23,6 +24,7 @@ from formularios.common import (
     _supabase_get,
 )
 from logging_utils import log_excel_event
+from version_info import resource_path
 
 FORM_NAME = "Evaluacion de Accesibilidad"
 SHEET_NAME = "2. EVALUACIÓN DE ACCESIBILIDAD"
@@ -212,9 +214,8 @@ def clear_form_cache():
 
 
 def _find_template_path():
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    templates_dir = os.path.join(base_dir, "templates")
-    if not os.path.isdir(templates_dir):
+    templates_dir = resource_path("templates")
+    if not templates_dir.is_dir():
         raise FileNotFoundError("No existe la carpeta templates.")
     for name in os.listdir(templates_dir):
         normalized = _normalize_text(name).replace("_", "")
@@ -223,7 +224,7 @@ def _find_template_path():
             and "accesibilidad" in normalized
             and normalized.endswith(".xlsx")
         ):
-            return os.path.join(templates_dir, name)
+            return os.fspath(templates_dir / name)
     raise FileNotFoundError("No se encontró el template de evaluacion.")
 
 
@@ -246,13 +247,9 @@ def _ensure_output_path():
     if output_path and os.path.exists(output_path):
         return output_path
     template_path = _find_template_path()
-    desktop = _get_desktop_dir()
     output_base_name = build_output_base_name()
-    safe_company = _get_safe_company_name()
-    output_dir = os.path.join(desktop, "Formatos Inclusion Laboral", safe_company)
-    os.makedirs(output_dir, exist_ok=True)
-    output_name = f"{output_base_name}.xlsx"
-    output_path = _next_available_file_path(os.path.join(output_dir, output_name))
+    empresa_nombre = (FORM_CACHE.get("section_1") or {}).get("nombre_empresa") or "Empresa"
+    output_path = _build_process_output_path(empresa_nombre, output_base_name)
     if not os.path.exists(output_path):
         shutil.copy2(template_path, output_path)
     FORM_CACHE["_output_path"] = output_path

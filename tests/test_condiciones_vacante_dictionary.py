@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import mock_open, patch
 
 from formularios.condiciones_vacante import condiciones_vacante as cv
@@ -51,6 +53,23 @@ TEA / AUTISMO
                 result = cv.get_disability_descriptions()
 
         self.assertEqual(result, expected)
+
+    def test_text_dictionary_loader_uses_bundle_path_when_meipass_is_set(self) -> None:
+        sample = """
+TEA / AUTISMO
+"1. Anticipar tareas
+2. Anticipar cambios"
+""".strip()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle_root = Path(tmpdir)
+            (bundle_root / "Diccionario.txt").write_text(sample, encoding="utf-8")
+
+            with patch("version_info.sys._MEIPASS", str(bundle_root), create=True):
+                entries = cv._load_disability_descriptions_from_text()
+
+        self.assertIn(cv.normalize_disability_key("TEA / AUTISMO"), entries)
+        self.assertIn("Anticipar tareas", entries[cv.normalize_disability_key("TEA / AUTISMO")])
 
 
 if __name__ == "__main__":

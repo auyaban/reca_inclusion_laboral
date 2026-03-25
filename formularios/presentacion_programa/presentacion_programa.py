@@ -6,6 +6,7 @@ import time
 from formularios.common import (
     format_checkbox_symbol,
     write_checkbox_symbol,
+    _build_process_output_path,
     _get_desktop_dir,
     _next_available_file_path,
     _normalize_text,
@@ -17,6 +18,7 @@ from formularios.common import (
     _supabase_get,
 )
 from logging_utils import log_excel_event
+from version_info import resource_path
 
 FORM_NAME = "Presentacion/Reactivacion del programa de inclusion laboral"
 
@@ -675,16 +677,15 @@ def _log_excel(message, output_path=None):
 
 
 def _find_template_path(tipo_visita=None):
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    templates_dir = os.path.join(base_dir, "templates")
-    if not os.path.isdir(templates_dir):
+    templates_dir = resource_path("templates")
+    if not templates_dir.is_dir():
         raise FileNotFoundError("No existe la carpeta templates.")
     visit_type = (tipo_visita or "").strip().lower()
     keyword = "reactivacion" if visit_type == "reactivacion" else "presentacion"
     for name in os.listdir(templates_dir):
         normalized = _normalize_text(name)
         if keyword in normalized and normalized.endswith(".xlsx"):
-            return os.path.join(templates_dir, name)
+            return os.fspath(templates_dir / name)
     raise FileNotFoundError("No se encontró el template correspondiente.")
 
 
@@ -701,18 +702,11 @@ def export_to_excel(cache=None):
     tipo_visita = _normalize_text(tipo_visita_raw)
     template_path = _find_template_path(tipo_visita=tipo_visita)
 
-    desktop = _get_desktop_dir()
     empresa_nombre = section_1.get("nombre_empresa") or "Empresa"
-    safe_company = _sanitize_filename(empresa_nombre)
-    if not safe_company:
-        safe_company = "Empresa"
-    output_dir = os.path.join(desktop, "Formatos Inclusion Laboral", safe_company)
-    os.makedirs(output_dir, exist_ok=True)
 
     prefix = "Reactivacion" if tipo_visita == "reactivacion" else "Presentacion"
     process_name = f"{prefix} del Programa de Inclusion Laboral"
-    output_name = f"{process_name} - {safe_company}.xlsx"
-    output_path = _next_available_file_path(os.path.join(output_dir, output_name))
+    output_path = _build_process_output_path(empresa_nombre, process_name)
     shutil.copy2(template_path, output_path)
     _log_excel(f"START export_all output={output_path}", output_path)
 

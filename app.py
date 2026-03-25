@@ -1573,6 +1573,38 @@ def _is_invalid_credentials_exception(exc):
     return "invalid login credentials" in text or "invalid_grant" in text or "email not confirmed" in text
 
 
+def _is_profile_permission_exception(exc):
+    if exc is None:
+        return False
+    root = exc.__cause__ if isinstance(exc, RuntimeError) and exc.__cause__ else exc
+    if isinstance(root, urllib.error.HTTPError):
+        if int(getattr(root, "code", 0) or 0) in (401, 403):
+            return True
+    text = str(exc).lower()
+    return (
+        "permission denied" in text
+        or "42501" in text
+        or "profesionales" in text
+    ) and ("http 401" in text or "http 403" in text or "permission denied" in text)
+
+
+def _build_degraded_profesional_profile(username, email=""):
+    username_norm = _normalize_login_value(username)
+    display_name = str(username or "").strip()
+    if not display_name and email:
+        display_name = str(email).split("@", 1)[0].strip()
+    if not display_name:
+        display_name = username_norm or "Usuario"
+    return {
+        "id": None,
+        "usuario_login": username_norm,
+        "nombre_profesional": display_name,
+        "programa": "",
+        "auth_password_temp": False,
+        "_profile_fallback": True,
+    }
+
+
 def _is_connectivity_exception(exc):
     if exc is None:
         return False
@@ -4928,7 +4960,8 @@ class HubWindow(tk.Tk):
         self.current_user = (user_row.get("usuario_login") or username).strip()
         self.current_user_profile = user_row
         try:
-            self._normalize_profesional_asignado()
+            if not bool((user_row or {}).get("_profile_fallback")):
+                self._normalize_profesional_asignado()
         except Exception:
             pass
         self._start_usage_session()
@@ -4986,7 +5019,18 @@ class HubWindow(tk.Tk):
             else:
                 raise
 
-        profile = _supabase_rpc("get_my_profesional_profile", {})
+        try:
+            profile = _supabase_rpc("get_my_profesional_profile", {})
+        except Exception as exc:
+            if _is_profile_permission_exception(exc):
+                _log_capture(
+                    f"[LOGIN] profile fallback user={username_norm!r} reason={exc}"
+                )
+                profile = _build_degraded_profesional_profile(username_norm, email=email)
+                profile["_auth_source"] = "jwt_profile_fallback"
+                profile["_resolved_email"] = email
+                return profile
+            raise
         if isinstance(profile, dict) and profile.get("id"):
             profile["_auth_source"] = "jwt"
             profile["_resolved_email"] = email

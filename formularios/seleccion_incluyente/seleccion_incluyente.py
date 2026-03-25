@@ -7,6 +7,7 @@ from functools import lru_cache
 
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
+    _build_process_output_path,
     _get_desktop_dir,
     _next_available_file_path,
     _normalize_cedula,
@@ -23,6 +24,7 @@ from formularios.common import (
     _supabase_upsert_with_queue,
 )
 from logging_utils import log_excel_event
+from version_info import resource_path
 
 FORM_ID = "seleccion_incluyente"
 FORM_NAME = "Proceso de Seleccion Incluyente"
@@ -1299,15 +1301,23 @@ def _find_first_row_by_texts(ws, *texts):
 
 
 def _find_template_path(template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    templates_dir = os.path.join(base_dir, "templates")
-    if not os.path.isdir(templates_dir):
+    def _filename_key(value):
+        return "".join(ch for ch in _normalize_text(value) if ch.isalnum())
+
+    templates_dir = resource_path("templates")
+    if not templates_dir.is_dir():
         raise FileNotFoundError("No existe la carpeta templates.")
     filename = TEMPLATE_FILENAME_BY_VARIANT.get(template_variant)
     if filename:
-        exact_path = os.path.join(templates_dir, filename)
-        if os.path.exists(exact_path):
-            return exact_path
+        exact_path = templates_dir / filename
+        if exact_path.exists():
+            return os.fspath(exact_path)
+        expected_key = _filename_key(filename)
+        for name in os.listdir(templates_dir):
+            if name.startswith("~$") or not name.lower().endswith(".xlsx"):
+                continue
+            if _filename_key(name) == expected_key:
+                return os.fspath(templates_dir / name)
         if template_variant != TEMPLATE_VARIANT_INDIVIDUAL:
             raise FileNotFoundError(
                 f"No se encontró el template '{filename}' para seleccion incluyente."
@@ -1317,7 +1327,7 @@ def _find_template_path(template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
             continue
         normalized = _normalize_text(name).replace("_", "")
         if "seleccion" in normalized and "incluyente" in normalized and normalized.endswith(".xlsx"):
-            return os.path.join(templates_dir, name)
+            return os.fspath(templates_dir / name)
     raise FileNotFoundError("No se encontró el template de seleccion incluyente.")
 
 
@@ -1491,16 +1501,9 @@ def _log_excel(message):
 
 def _ensure_output_path(template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
     template_path = _find_template_path(template_variant=template_variant)
-    desktop = _get_desktop_dir()
     empresa_nombre = SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
-    safe_company = _sanitize_filename(empresa_nombre)
-    if not safe_company:
-        safe_company = "Empresa"
-    output_dir = os.path.join(desktop, "Formatos Inclusion Laboral", safe_company)
-    os.makedirs(output_dir, exist_ok=True)
     process_name = "Proceso de Seleccion Incluyente"
-    output_name = f"{process_name} - {safe_company}.xlsx"
-    output_path = _next_available_file_path(os.path.join(output_dir, output_name))
+    output_path = _build_process_output_path(empresa_nombre, process_name)
     shutil.copy2(template_path, output_path)
     FORM_CACHE["_output_path"] = output_path
     return output_path

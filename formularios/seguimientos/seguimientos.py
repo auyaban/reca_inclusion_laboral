@@ -23,6 +23,7 @@ from google_sheets_client import (
     read_sheet_values,
     )
 import drive_upload
+from version_info import resource_path
 
 
 FORM_ID = "seguimientos"
@@ -355,15 +356,14 @@ def _get_roots():
 
 
 def _find_template_path():
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    templates_dir = os.path.join(base_dir, "templates")
-    if not os.path.isdir(templates_dir):
+    templates_dir = resource_path("templates")
+    if not templates_dir.is_dir():
         raise FileNotFoundError("No existe la carpeta templates.")
     for name in os.listdir(templates_dir):
         if name.startswith("~$"):
             continue
         if name.lower().endswith(".xlsx") and "seguimiento" in name.lower():
-            return os.path.join(templates_dir, name)
+            return os.fspath(templates_dir / name)
     raise FileNotFoundError("No se encontró el template de seguimientos.")
 
 

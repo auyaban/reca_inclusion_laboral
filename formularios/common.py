@@ -1271,10 +1271,43 @@ def _get_desktop_dir():
     return os.getcwd()
 
 
-def _sanitize_filename(value):
+_WINDOWS_RESERVED_BASENAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+_WINDOWS_OUTPUT_PATH_SOFT_LIMIT = 220
+
+
+def _sanitize_filename(value, default="Empresa", max_length=80):
     safe = re.sub(r"[\\/:*?\"<>|]+", " ", str(value or ""))
-    safe = re.sub(r"\s+", " ", safe).strip()
-    return safe or "Empresa"
+    safe = re.sub(r"\s+", " ", safe).strip().strip(".")
+    if not safe:
+        safe = str(default or "Empresa").strip() or "Empresa"
+
+    stem, ext = os.path.splitext(safe)
+    stem = stem.strip().strip(".")
+    ext = ext.rstrip(" .")
+    if not stem:
+        stem = str(default or "Empresa").strip() or "Empresa"
+    if os.name == "nt" and stem.upper() in _WINDOWS_RESERVED_BASENAMES:
+        stem = f"{stem}_"
+
+    try:
+        max_length_int = max(1, int(max_length))
+    except Exception:
+        max_length_int = 80
+
+    if ext:
+        max_stem_len = max(1, max_length_int - len(ext))
+        stem = stem[:max_stem_len].rstrip(" .") or (str(default or "Empresa").strip() or "Empresa")
+        safe = f"{stem}{ext}"
+    else:
+        safe = stem[:max_length_int].rstrip(" .") or (str(default or "Empresa").strip() or "Empresa")
+    return safe
 
 
 def _next_available_file_path(path):
@@ -1285,6 +1318,63 @@ def _next_available_file_path(path):
         candidate = f"{base} ({index}){ext}"
         index += 1
     return candidate
+
+
+def _build_process_output_path(company_name, process_name, extension=".xlsx", root_folder="Formatos Inclusion Laboral"):
+    safe_company = _sanitize_filename(company_name, default="Empresa", max_length=48)
+    safe_process = _sanitize_filename(process_name, default="Formato", max_length=48)
+    extension = str(extension or ".xlsx").strip() or ".xlsx"
+    if not extension.startswith("."):
+        extension = f".{extension}"
+    output_name = f"{safe_process} - {safe_company}{extension}"
+
+    roots = []
+    desktop = _get_desktop_dir()
+    if desktop:
+        roots.append(os.path.join(desktop, root_folder))
+    local_app_data = os.getenv("LOCALAPPDATA")
+    if local_app_data:
+        roots.append(os.path.join(local_app_data, "RECA", "outputs", root_folder))
+    roots.append(os.path.join(os.getcwd(), root_folder))
+
+    seen = set()
+    deduped_roots = []
+    for root in roots:
+        root_text = str(root or "").strip()
+        if not root_text:
+            continue
+        key = os.path.normcase(root_text)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped_roots.append(root_text)
+
+    for root in deduped_roots:
+        try:
+            os.makedirs(root, exist_ok=True)
+        except Exception:
+            continue
+        output_dir = os.path.join(root, safe_company)
+        candidate = os.path.join(output_dir, output_name)
+        if os.name == "nt":
+            try:
+                if len(os.path.abspath(candidate)) >= _WINDOWS_OUTPUT_PATH_SOFT_LIMIT:
+                    continue
+            except Exception:
+                continue
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except Exception:
+            continue
+        return _next_available_file_path(candidate)
+
+    fallback_root = deduped_roots[-1] if deduped_roots else os.getcwd()
+    fallback_company = _sanitize_filename(company_name, default="Empresa", max_length=24)
+    fallback_process = _sanitize_filename(process_name, default="Formato", max_length=24)
+    fallback_output_dir = os.path.join(fallback_root, fallback_company)
+    os.makedirs(fallback_output_dir, exist_ok=True)
+    fallback_name = f"{fallback_process} - {fallback_company}{extension}"
+    return _next_available_file_path(os.path.join(fallback_output_dir, fallback_name))
 
 
 def format_checkbox_symbol(value):

@@ -1077,9 +1077,11 @@ def _load_disability_descriptions_from_text():
     if not os.path.exists(path):
         return {}
     try:
-        raw = open(path, "r", encoding="utf-8").read()
+        with open(path, "r", encoding="utf-8") as handle:
+            raw = handle.read()
     except UnicodeDecodeError:
-        raw = open(path, "r", encoding="latin-1").read()
+        with open(path, "r", encoding="latin-1") as handle:
+            raw = handle.read()
     raw = raw.replace("\r\n", "\n")
     entries = {}
     current_key = None

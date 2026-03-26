@@ -1067,6 +1067,16 @@ def _resolve_form_meta(form_id):
     return {"id": str(form_id or ""), "name": str(form_id or "")}
 
 
+def _form_supports_drafts(form_meta_or_id):
+    if isinstance(form_meta_or_id, dict):
+        value = form_meta_or_id.get("supports_drafts")
+    else:
+        value = _resolve_form_meta(form_meta_or_id).get("supports_drafts")
+    if value is None:
+        return True
+    return bool(value)
+
+
 def _iter_widget_paths(root):
     def _walk(node, prefix=""):
         children = list(node.winfo_children())
@@ -1125,7 +1135,29 @@ def _set_widget_value_from_snapshot(widget, value):
             widget.insert("1.0", str(value or ""))
             return True
         if isinstance(widget, ttk.Combobox):
-            widget.set(str(value or ""))
+            resolved = str(value or "")
+            alias_map = getattr(widget, "_snapshot_value_aliases", None)
+            if isinstance(alias_map, dict):
+                direct = alias_map.get(resolved)
+                if direct is None:
+                    direct = next(
+                        (
+                            alias_value
+                            for alias_key, alias_value in alias_map.items()
+                            if str(alias_key).casefold() == resolved.casefold()
+                        ),
+                        None,
+                    )
+                if direct is not None:
+                    resolved = str(direct or "")
+            values = [str(item) for item in (widget.cget("values") or []) if str(item).strip()]
+            if values:
+                exact = next((item for item in values if item == resolved), None)
+                if exact is None:
+                    exact = next((item for item in values if item.casefold() == resolved.casefold()), None)
+                if exact is not None:
+                    resolved = exact
+            widget.set(resolved)
             return True
         if isinstance(widget, (tk.Entry, DateEntry)):
             state = str(widget.cget("state") or "")
@@ -1204,6 +1236,9 @@ def _get_draft_save_command(window):
     form_id = getattr(window, "_form_id", "") or WINDOW_CLASS_FORM_ID_MAP.get(window.__class__.__name__, "")
     if not form_id:
         return None
+    form_meta = _resolve_form_meta(form_id)
+    if not _form_supports_drafts(form_meta):
+        return None
     module = FORM_MODULE_MAP.get(form_id)
     hub = getattr(window, "master", None)
     if (
@@ -1214,7 +1249,6 @@ def _get_draft_save_command(window):
         or not hasattr(module, "save_cache_to_file")
     ):
         return None
-    form_meta = _resolve_form_meta(form_id)
     window._form_id = form_id
     window._form_name = str(form_meta.get("name") or form_id)
     window._save_draft_command = lambda w=window, h=hub: h._save_current_form_draft(w)
@@ -2393,7 +2427,14 @@ def _section1_build_search(self, parent, include_tipo_visita=False):
     self.status_label.grid(row=current_row + 1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
 
-def _section1_build_groups(self, parent, groups, labels, modalidad_options=None):
+def _section1_build_groups(
+    self,
+    parent,
+    groups,
+    labels,
+    modalidad_options=None,
+    modalidad_aliases=None,
+):
     readonly_w = ENTRY_W_XL
     try:
         sw = int(self.winfo_screenwidth() or 0)
@@ -2436,6 +2477,8 @@ def _section1_build_groups(self, parent, groups, labels, modalidad_options=None)
         state="readonly",
         width=ENTRY_W_MED,
     )
+    if modalidad_aliases:
+        self.fields["modalidad"]._snapshot_value_aliases = dict(modalidad_aliases)
     self.fields["modalidad"].grid(row=0, column=3, sticky="w")
 
     for title, color, field_ids in groups:
@@ -6466,6 +6509,11 @@ class HubWindow(tk.Tk):
     def _persist_form_draft(self, window, *, allow_empty=False, silent=False, toast_text=""):
         form_id = getattr(window, "_form_id", "") or ""
         form_name = getattr(window, "_form_name", "") or form_id
+        form_meta = _resolve_form_meta(form_id)
+        if not _form_supports_drafts(form_meta):
+            if not silent:
+                messagebox.showinfo("Guardar", "Este formulario no tiene guardado disponible.")
+            return False
         module = FORM_MODULE_MAP.get(form_id)
         if not module:
             if not silent:
@@ -6592,6 +6640,9 @@ class HubWindow(tk.Tk):
     def _schedule_window_draft_autosave(self, window, delay_ms=250):
         if not window or not window.winfo_exists():
             return
+        form_id = getattr(window, "_form_id", "") or WINDOW_CLASS_FORM_ID_MAP.get(window.__class__.__name__, "")
+        if form_id and not _form_supports_drafts(form_id):
+            return
         after_id = getattr(window, "_draft_autosave_after_id", None)
         if after_id:
             try:
@@ -6614,6 +6665,9 @@ class HubWindow(tk.Tk):
             window._draft_autosave_after_id = None
 
     def _install_form_autosave_bindings(self, window):
+        form_id = getattr(window, "_form_id", "") or WINDOW_CLASS_FORM_ID_MAP.get(window.__class__.__name__, "")
+        if form_id and not _form_supports_drafts(form_id):
+            return
         sticky_bar = getattr(window, "_sticky_actions_bar", None)
         for _path, widget in _iter_widget_paths(window):
             if sticky_bar and _is_descendant_of(widget, sticky_bar):
@@ -6732,6 +6786,16 @@ class HubWindow(tk.Tk):
 
     def _open_draft_entry(self, draft):
         form_id = str(draft.get("form_id") or "")
+        form_meta = next((item for item in get_forms() if item.get("id") == form_id), None)
+        if not form_meta:
+            messagebox.showerror("Borradores", "No se encontró el formulario en el HUB.")
+            return
+        if not _form_supports_drafts(form_meta):
+            messagebox.showinfo(
+                "Borradores",
+                "Este formulario ya no admite borradores automáticos. Abre el caso desde el flujo principal.",
+            )
+            return
         module = FORM_MODULE_MAP.get(form_id)
         if not module:
             messagebox.showerror("Borradores", "El formulario de este borrador ya no está disponible.")
@@ -6739,11 +6803,6 @@ class HubWindow(tk.Tk):
         cache_snapshot = draft.get("cache")
         if not isinstance(cache_snapshot, dict) or not cache_snapshot:
             messagebox.showerror("Borradores", "El borrador no tiene datos válidos.")
-            return
-
-        form_meta = next((item for item in get_forms() if item.get("id") == form_id), None)
-        if not form_meta:
-            messagebox.showerror("Borradores", "No se encontró el formulario en el HUB.")
             return
         self._pending_draft_restore = {
             "form_id": form_id,
@@ -7094,11 +7153,17 @@ class HubWindow(tk.Tk):
             return
         form_id = str(form_meta.get("id") or "")
         form_name = str(form_meta.get("name") or form_id)
+        supports_drafts = _form_supports_drafts(form_meta)
         window._form_id = form_id
         window._form_name = form_name
         window._empresa_names_cache = getattr(self, "_empresa_names_cache", [])
         module = FORM_MODULE_MAP.get(form_id)
-        if module and hasattr(module, "get_form_cache") and hasattr(module, "save_cache_to_file"):
+        if (
+            supports_drafts
+            and module
+            and hasattr(module, "get_form_cache")
+            and hasattr(module, "save_cache_to_file")
+        ):
             window._save_draft_command = lambda w=window: self._save_current_form_draft(w)
         else:
             window._save_draft_command = None
@@ -7146,13 +7211,14 @@ class HubWindow(tk.Tk):
                         _log_capture(
                             f"[DICTATION] attach_wrapper_failed form={form_id} section={section} err={exc}"
                         )
-                    try:
-                        self._install_form_autosave_bindings(window)
-                        self._schedule_window_draft_autosave(window, delay_ms=250)
-                    except Exception as exc:
-                        _log_capture(
-                            f"[DRAFT] autosave_wrapper_failed form={form_id} section={section} err={exc}"
-                        )
+                    if supports_drafts:
+                        try:
+                            self._install_form_autosave_bindings(window)
+                            self._schedule_window_draft_autosave(window, delay_ms=250)
+                        except Exception as exc:
+                            _log_capture(
+                                f"[DRAFT] autosave_wrapper_failed form={form_id} section={section} err={exc}"
+                            )
                     return result
 
                 _wrapped._section_wrapped = True
@@ -7171,13 +7237,14 @@ class HubWindow(tk.Tk):
             _log_capture(
                 f"[DICTATION] attach_initial_failed form={form_id} section={getattr(window, '_current_section', 'section_1')} err={exc}"
             )
-        try:
-            self._install_form_autosave_bindings(window)
-            self._schedule_window_draft_autosave(window, delay_ms=350)
-        except Exception as exc:
-            _log_capture(
-                f"[DRAFT] autosave_initial_failed form={form_id} section={getattr(window, '_current_section', 'section_1')} err={exc}"
-            )
+        if supports_drafts:
+            try:
+                self._install_form_autosave_bindings(window)
+                self._schedule_window_draft_autosave(window, delay_ms=350)
+            except Exception as exc:
+                _log_capture(
+                    f"[DRAFT] autosave_initial_failed form={form_id} section={getattr(window, '_current_section', 'section_1')} err={exc}"
+                )
 
     def _open_form(self, form_meta):
         if form_meta["id"] == "presentacion_programa":
@@ -7322,7 +7389,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
             {
                 "section_1": self._show_section_1,
                 "section_2": self._show_section_2,
-                "section_2_1": self._show_section_2_1,
+                "section_2_1": self._show_section_2,
                 "section_2_2": self._show_section_2_2,
                 "section_2_3": self._show_section_2_3,
                 "section_2_4": self._show_section_2_4,
@@ -8531,7 +8598,11 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda f=self.section4_fields: _autosave_section(evaluacion_accesibilidad, "section_4", lambda: self._collect_section_fields(f))
+        self._pending_autosave = lambda: _autosave_section(
+            evaluacion_accesibilidad,
+            "section_4",
+            self._collect_section4_payload,
+        )
         ttk.Button(actions, text="Regresar", command=self._show_section_3).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_4).pack(side="right")
     def _confirm_section_3(self):
@@ -8604,14 +8675,17 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         self.section4_desc.insert("1.0", descripcion)
         self.section4_desc.configure(state="disabled")
 
-
-    def _confirm_section_4(self):
+    def _collect_section4_payload(self):
         nivel = self.section4_level_var.get().strip()
         descripcion = evaluacion_accesibilidad.SECTION_4["descriptions"].get(nivel, "")
-        payload = {
+        return {
             "nivel_accesibilidad": nivel,
             "descripcion": descripcion,
         }
+
+
+    def _confirm_section_4(self):
+        payload = self._collect_section4_payload()
         try:
             evaluacion_accesibilidad.confirm_section_4(payload)
         except Exception as exc:
@@ -9145,6 +9219,14 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         _section1_build_search(self, parent)
 
     def _build_groups(self, parent):
+        modalidad_options = next(
+            (
+                list(field.get("options") or [])
+                for field in evaluacion_accesibilidad.SECTION_1.get("fields", [])
+                if field.get("id") == "modalidad"
+            ),
+            ["Virtual", "Presencial", "Mixto", "No aplica"],
+        )
         groups = [
             ('Información de Empresa', COLOR_GROUP_EMPRESA, ['nombre_empresa', 'direccion_empresa', 'correo_1', 'contacto_empresa', 'telefono_empresa', 'cargo', 'ciudad_empresa', 'sede_empresa', 'caja_compensacion']),
             ('Información de Compensar', COLOR_GROUP_COMPENSAR, ['asesor']),
@@ -9168,7 +9250,8 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
             parent,
             groups,
             labels,
-            modalidad_options=["Presencial", "Virtual", "Mixta", "No aplica"],
+            modalidad_options=modalidad_options,
+            modalidad_aliases={"Mixta": "Mixto"},
         )
 
     def _build_actions(self, parent):
@@ -11187,8 +11270,10 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _show_section_2(self):
         self._clear_section_container()
-        self.header_title.config(text="2. DATOS DEL OFERENTE")
-        self.header_subtitle.config(text="Registra datos del oferente.")
+        self.header_title.config(text="2. DESARROLLO DE LA ACTIVIDAD")
+        self.header_subtitle.config(
+            text="Registra el desarrollo de la actividad y luego completa el o los oferentes."
+        )
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
         self._load_cedula_options()
@@ -11356,6 +11441,11 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
         def _refresh_oferente_numbers():
             for idx, fields in enumerate(self.oferente_blocks, start=1):
+                if idx - 1 < len(self.oferente_frames):
+                    try:
+                        self.oferente_frames[idx - 1].configure(text=f"Oferente {idx}")
+                    except Exception:
+                        pass
                 numero_widget = fields.get("numero")
                 if not numero_widget:
                     continue
@@ -11428,7 +11518,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 section3_title,
             ) = self._build_selection_subsection_shell(
                 parent,
-                "3. DESARROLLO DE LA ACTIVIDAD",
+                "2. DESARROLLO DE LA ACTIVIDAD",
                 "section_3_desarrollo",
             )
             proxy_fields = {}
@@ -11436,7 +11526,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 section3_header,
                 section3_title,
                 "section_3_desarrollo",
-                "3. Desarrollo de la actividad",
+                "2. Desarrollo de la actividad",
                 proxy_fields,
             )
             widget = _create_widget(
@@ -11468,11 +11558,6 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             _refresh_shared_desarrollo_refs()
 
         def _reposition_shared_desarrollo_section():
-            if len(self.oferente_frames) <= 1 and self.oferente_frames:
-                first_block = self.oferente_frames[0]
-                anchor = getattr(first_block, "_section2_frame", None)
-                _create_shared_desarrollo_section(first_block, after_widget=anchor)
-                return
             before_widget = self.oferente_frames[0] if self.oferente_frames else actions
             _create_shared_desarrollo_section(content, before_widget=before_widget)
 
@@ -11480,7 +11565,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             idx = len(self.oferente_blocks) + 1
             block = tk.LabelFrame(
                 content,
-                text=f"Vinculado {idx}",
+                text=f"Oferente {idx}",
                 bg="white",
                 fg="#222222",
                 font=FONT_LABEL,
@@ -11493,7 +11578,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
             section2_frame, section2_body, section2_header, section2_title = self._build_selection_subsection_shell(
                 block,
-                "2. DATOS DEL OFERENTE",
+                "3. DATOS DEL OFERENTE",
                 "section_2_fields",
             )
             block._section2_frame = section2_frame
@@ -11502,7 +11587,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 section2_header,
                 section2_title,
                 "section_2_fields",
-                "2. Datos del oferente",
+                "3. Datos del oferente",
                 fields,
             )
 
@@ -11768,11 +11853,11 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
         _prefill_section_2()
 
-        ttk.Button(actions, text="Agregar vinculado", command=_add_oferente_block).pack(
+        ttk.Button(actions, text="Agregar oferente", command=_add_oferente_block).pack(
             side="left"
         )
         remove_btn = ttk.Button(
-            actions, text="Eliminar ultimo vinculado", command=_remove_oferente_block
+            actions, text="Eliminar ultimo oferente", command=_remove_oferente_block
         )
         remove_btn.pack(side="left", padx=8)
         _update_remove_button_state()
@@ -12257,9 +12342,9 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _show_section_2(self):
         self._clear_section_container()
-        self.header_title.config(text="2. DATOS DEL VINCULADO")
+        self.header_title.config(text="2. DESARROLLO DE LA ACTIVIDAD")
         self.header_subtitle.config(
-            text="Completa la información del vinculado. Puedes agregar más vinculados."
+            text="Registra un único desarrollo de la actividad y luego completa el o los vinculados."
         )
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
@@ -12333,9 +12418,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             return _add_fields_grid(inner, fields_def, columns=2)
 
         def _current_template_variant():
-            if len(self.oferente_blocks) >= 2:
-                return contratacion_incluyente.TEMPLATE_VARIANT_GROUP_2_PLUS
-            return contratacion_incluyente.TEMPLATE_VARIANT_INDIVIDUAL
+            return contratacion_incluyente.TEMPLATE_VARIANT_GROUP_2_PLUS
 
         def _is_group_variant_ui():
             return _current_template_variant() == contratacion_incluyente.TEMPLATE_VARIANT_GROUP_2_PLUS
@@ -12445,6 +12528,75 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                     if current and current not in values:
                         widget.set("")
 
+        def _resolve_observacion_by_nivel(nivel_value, observation_values):
+            nivel_norm = _normalize_ascii_text(nivel_value or "").lower()
+            if not nivel_norm:
+                return ""
+            if nivel_norm.startswith("0."):
+                for option in observation_values:
+                    if _normalize_ascii_text(option).lower().startswith("0."):
+                        return option
+                for option in observation_values:
+                    if "no aplica" in _normalize_ascii_text(option).lower():
+                        return option
+                return ""
+            if "no aplica" in nivel_norm:
+                for option in observation_values:
+                    if "no aplica" in _normalize_ascii_text(option).lower():
+                        return option
+                for option in observation_values:
+                    if _normalize_ascii_text(option).lower().startswith("0."):
+                        return option
+                return ""
+            for prefix in ("1.", "2.", "3."):
+                if nivel_norm.startswith(prefix) or nivel_norm == prefix[:1]:
+                    for option in observation_values:
+                        if _normalize_ascii_text(option).lower().startswith(prefix):
+                            return option
+                    return ""
+            return ""
+
+        def _bind_nivel_apoyo_observaciones(fields_map):
+            nivel_widget = None
+            observation_widgets = []
+            for field_id, widget in fields_map.items():
+                if field_id.endswith("_nivel_apoyo") and isinstance(widget, ttk.Combobox):
+                    nivel_widget = widget
+                elif field_id.endswith("_observacion") and isinstance(widget, ttk.Combobox):
+                    values = tuple(widget.cget("values"))
+                    normalized_values = [_normalize_ascii_text(value).lower() for value in values]
+                    if any(value.startswith(("0.", "1.", "2.", "3.")) for value in normalized_values) or any(
+                        "no aplica" in value for value in normalized_values
+                    ):
+                        observation_widgets.append(widget)
+            if nivel_widget is None or not observation_widgets:
+                return
+
+            def _sync_from_nivel(_event=None):
+                target_value = nivel_widget.get().strip()
+                if not target_value:
+                    return
+                for observation_widget in observation_widgets:
+                    resolved = _resolve_observacion_by_nivel(
+                        target_value,
+                        tuple(observation_widget.cget("values")),
+                    )
+                    if resolved:
+                        observation_widget.set(resolved)
+
+            nivel_widget._nivel_apoyo_observacion_sync = _sync_from_nivel
+            nivel_widget.bind("<<ComboboxSelected>>", _sync_from_nivel, add="+")
+            nivel_widget.bind("<FocusOut>", _sync_from_nivel, add="+")
+            for observation_widget in observation_widgets:
+                observation_widget.bind("<<ComboboxSelected>>", _sync_from_nivel, add="+")
+                observation_widget.bind("<FocusOut>", _sync_from_nivel, add="+")
+            _sync_from_nivel()
+
+        def _add_apoyo_question_block(parent, title, fields_def):
+            block_fields = _add_question_block(parent, title, fields_def)
+            _bind_nivel_apoyo_observaciones(block_fields)
+            return block_fields
+
         def _refresh_section_titles():
             self.header_title.config(text=_section2_header_title())
             self.header_subtitle.config(text=_section2_header_subtitle())
@@ -12480,6 +12632,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 fg="#222222",
             )
             header.pack(anchor="w", padx=10, pady=(8, 4))
+            block._header_label = header
 
             fields = {}
 
@@ -12661,7 +12814,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             section51_frame.pack(fill="x", padx=8, pady=(0, 8))
 
             fields.update(
-                _add_question_block(
+                _add_apoyo_question_block(
                     section51_frame,
                     "¿El vinculado lee el contrato de forma independiente?",
                     [
@@ -12685,7 +12838,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 )
             )
             fields.update(
-                _add_question_block(
+                _add_apoyo_question_block(
                     section51_frame,
                     "¿El contrato fue comprendido por el vinculado?",
                     [
@@ -12706,7 +12859,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 )
             )
             fields.update(
-                _add_question_block(
+                _add_apoyo_question_block(
                     section51_frame,
                     "¿Es claro para el vinculado el tipo de contrato a firmar?",
                     [
@@ -12745,7 +12898,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 )
             )
             fields.update(
-                _add_question_block(
+                _add_apoyo_question_block(
                     section51_frame,
                     "Explicación de las condiciones salariales",
                     [
@@ -12799,7 +12952,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             ]
             for label, key_prefix in prestaciones:
                 fields.update(
-                    _add_question_block(
+                    _add_apoyo_question_block(
                         section52_frame,
                         label,
                         [
@@ -12832,7 +12985,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             section53_frame.pack(fill="x", padx=8, pady=(0, 8))
 
             fields.update(
-                _add_question_block(
+                _add_apoyo_question_block(
                     section53_frame,
                     "¿El vinculado tiene claro el conducto regular?",
                     [
@@ -12871,7 +13024,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 )
             )
             fields.update(
-                _add_question_block(
+                _add_apoyo_question_block(
                     section53_frame,
                     "¿El vinculado tiene claras las causales de finalización de contrato?",
                     [
@@ -12892,7 +13045,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 )
             )
             fields.update(
-                _add_question_block(
+                _add_apoyo_question_block(
                     section53_frame,
                     "¿El vinculado conoce las rutas de atención y/o denuncia?",
                     [
@@ -12924,6 +13077,10 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
         def _refresh_oferente_numbers():
             for idx, fields in enumerate(self.oferente_blocks, start=1):
+                if idx - 1 < len(self.oferente_frames):
+                    header_widget = getattr(self.oferente_frames[idx - 1], "_header_label", None)
+                    if header_widget is not None:
+                        header_widget.configure(text=f"Vinculado {idx}")
                 numero_widget = fields.get("numero")
                 if numero_widget:
                     numero_widget.configure(state="normal")
@@ -12966,6 +13123,10 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                     else:
                         widget.delete(0, tk.END)
                         widget.insert(0, value)
+                for widget in fields.values():
+                    sync_fn = getattr(widget, "_nivel_apoyo_observacion_sync", None)
+                    if callable(sync_fn):
+                        sync_fn()
             shared_desarrollo = ""
             for entry in cache:
                 shared_desarrollo = (entry.get("desarrollo_actividad") or "").strip()
@@ -12997,10 +13158,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _show_section_6(self):
         self._clear_section_container()
-        if contratacion_incluyente.is_group_variant():
-            self.header_title.config(text="5. AJUSTES RAZONABLES Y RECOMENDACIONES")
-        else:
-            self.header_title.config(text="6. AJUSTES RAZONABLES")
+        self.header_title.config(text="5. AJUSTES RAZONABLES Y RECOMENDACIONES")
         self.header_subtitle.config(text="Completa ajustes razonables.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
@@ -13072,10 +13230,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _show_section_7(self):
         self._clear_section_container()
-        if contratacion_incluyente.is_group_variant():
-            self.header_title.config(text="6. ASISTENTES")
-        else:
-            self.header_title.config(text="7. ASISTENTES")
+        self.header_title.config(text="6. ASISTENTES")
         self.header_subtitle.config(text="Registra asistentes y agrega filas si aplica.")
 
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)

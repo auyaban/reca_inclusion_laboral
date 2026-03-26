@@ -9,14 +9,14 @@ from formularios.contratacion_incluyente import contratacion_incluyente as contr
 
 
 class ContratacionIncluyenteTemplateTests(unittest.TestCase):
-    def test_resolve_template_variant_uses_group_format_for_two_or_more_vinculados(self) -> None:
+    def test_resolve_template_variant_uses_group_layout_for_one_or_more_vinculados(self) -> None:
         self.assertEqual(
             contratacion._resolve_template_variant([]),
             contratacion.TEMPLATE_VARIANT_INDIVIDUAL,
         )
         self.assertEqual(
             contratacion._resolve_template_variant([{"numero": "1"}]),
-            contratacion.TEMPLATE_VARIANT_INDIVIDUAL,
+            contratacion.TEMPLATE_VARIANT_GROUP_2_PLUS,
         )
         self.assertEqual(
             contratacion._resolve_template_variant([{"numero": "1"}, {"numero": "2"}]),
@@ -29,7 +29,7 @@ class ContratacionIncluyenteTemplateTests(unittest.TestCase):
         self.assertTrue(os.path.exists(individual))
         self.assertTrue(os.path.exists(group))
         self.assertTrue(individual.lower().endswith("contratacion_incluyente.xlsx"))
-        self.assertTrue(group.lower().endswith("contratacion_incluyente_grupal_2_4.xlsx"))
+        self.assertTrue(group.lower().endswith("contratacion_incluyente.xlsx"))
 
     def test_sheet_name_by_variant_matches_real_workbooks(self) -> None:
         for variant in (
@@ -90,6 +90,13 @@ class ContratacionIncluyenteTemplateTests(unittest.TestCase):
         self.assertEqual(mapping["telefono_oferente"][1] + third_offset, 127)
         self.assertEqual(mapping["contacto_emergencia"][1] + third_offset, 130)
         self.assertEqual(mapping["rutas_atencion_nivel_apoyo"][1] + third_offset, 173)
+
+    def test_group_block_rows_expand_from_single_template_block(self) -> None:
+        self.assertEqual(contratacion._section_2_group_block_start_row(0), 19)
+        self.assertEqual(contratacion._section_2_group_block_start_row(1), 71)
+        self.assertEqual(contratacion._section_2_group_block_start_row(2), 123)
+        self.assertEqual(contratacion._section_2_group_insert_row(1), 71)
+        self.assertEqual(contratacion._section_2_group_insert_row(2), 123)
 
     def test_section_7_base_rows_change_by_template_variant(self) -> None:
         self.assertEqual(

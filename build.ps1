@@ -32,7 +32,7 @@ $installerConfig = @"
 #define GithubRepoName "$repoName"
 #define InstallerAssetName "$installerAsset"
 "@
-Set-Content -Path (Join-Path $root "installer_config.iss") -Value $installerConfig -Encoding UTF8
+Set-Content -Path (Join-Path $root "installer_config.local.iss") -Value $installerConfig -Encoding UTF8
 
 $pyiArgs = @(
     "--noconfirm",

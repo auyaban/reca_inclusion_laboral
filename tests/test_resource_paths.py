@@ -26,7 +26,7 @@ class ResourcePathTests(unittest.TestCase):
             bundle_root = Path(tmpdir)
             templates_dir = bundle_root / "templates"
             templates_dir.mkdir(parents=True, exist_ok=True)
-            expected = templates_dir / "contratacion_incluyente_grupal_2_4.xlsx"
+            expected = templates_dir / "contratacion_incluyente.xlsx"
             expected.write_bytes(b"")
 
             with patch("version_info.sys._MEIPASS", str(bundle_root), create=True):
@@ -41,7 +41,7 @@ class ResourcePathTests(unittest.TestCase):
             bundle_root = Path(tmpdir)
             templates_dir = bundle_root / "templates"
             templates_dir.mkdir(parents=True, exist_ok=True)
-            expected = templates_dir / "seleccion incluyente grupal 2-4.xlsx"
+            expected = templates_dir / "seleccion_incluyente.xlsx"
             expected.write_bytes(b"")
 
             with patch("version_info.sys._MEIPASS", str(bundle_root), create=True):

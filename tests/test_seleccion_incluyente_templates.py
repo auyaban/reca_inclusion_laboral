@@ -7,11 +7,11 @@ from formularios.seleccion_incluyente import seleccion_incluyente as si
 
 
 class SeleccionIncluyenteTemplateTests(unittest.TestCase):
-    def test_resolve_template_variant_uses_group_format_for_two_or_more_offerentes(self) -> None:
+    def test_resolve_template_variant_uses_group_layout_for_one_or_more_offerentes(self) -> None:
         self.assertEqual(si._resolve_template_variant([]), si.TEMPLATE_VARIANT_INDIVIDUAL)
         self.assertEqual(
             si._resolve_template_variant([{"numero": "1"}]),
-            si.TEMPLATE_VARIANT_INDIVIDUAL,
+            si.TEMPLATE_VARIANT_GROUP_2_PLUS,
         )
         self.assertEqual(
             si._resolve_template_variant([{"numero": "1"}, {"numero": "2"}]),
@@ -59,7 +59,14 @@ class SeleccionIncluyenteTemplateTests(unittest.TestCase):
     def test_group_template_file_exists(self) -> None:
         path = si._find_template_path(si.TEMPLATE_VARIANT_GROUP_2_PLUS)
         self.assertTrue(os.path.exists(path))
-        self.assertTrue(path.lower().endswith("seleccion_incluyente_grupal_2_4.xlsx"))
+        self.assertTrue(path.lower().endswith("seleccion_incluyente.xlsx"))
+
+    def test_group_block_rows_expand_from_single_template_block(self) -> None:
+        self.assertEqual(si._section_2_group_block_start_row(0), 16)
+        self.assertEqual(si._section_2_group_block_start_row(1), 77)
+        self.assertEqual(si._section_2_group_block_start_row(2), 138)
+        self.assertEqual(si._section_2_group_insert_row(1), 77)
+        self.assertEqual(si._section_2_group_insert_row(2), 138)
 
     def test_group_export_title_for_offerentes_uses_expected_ranges(self) -> None:
         self.assertEqual(
@@ -103,13 +110,13 @@ class SeleccionIncluyenteTemplateTests(unittest.TestCase):
         )
         self.assertEqual(value, "Pensión régimen especial (fuerzas militares)")
 
-    def test_normalize_excel_dropdown_value_maps_transport_with_accents(self) -> None:
+    def test_normalize_excel_dropdown_value_maps_transport_using_canonical_template_text(self) -> None:
         value = si.normalize_excel_dropdown_value(
             "desplazamiento_transporte",
             "Vehiculo especial.",
             template_variant=si.TEMPLATE_VARIANT_GROUP_2_PLUS,
         )
-        self.assertEqual(value, "Vehículo especial.")
+        self.assertEqual(value, "Vehiculo especial.")
 
     def test_normalize_excel_dropdown_value_preserves_raw_when_no_match(self) -> None:
         value = si.normalize_excel_dropdown_value(

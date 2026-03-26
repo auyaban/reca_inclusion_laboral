@@ -154,6 +154,28 @@ SECTION_1_SUPABASE_MAP = {
 
 FORM_CACHE = {}
 SECTION_1_CACHE = {}
+MODALIDAD_ALIASES = {
+    "mixta": "Mixto",
+}
+
+
+def normalize_modalidad(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    direct = MODALIDAD_ALIASES.get(text.casefold())
+    if direct is not None:
+        return direct
+    options = next(
+        (
+            [str(item) for item in field.get("options", [])]
+            for field in SECTION_1.get("fields", [])
+            if field.get("id") == "modalidad"
+        ),
+        [],
+    )
+    exact = next((item for item in options if item.casefold() == text.casefold()), None)
+    return exact or text
 
 
 def _get_cache_dir():
@@ -194,9 +216,13 @@ def load_cache_from_file():
     with open(path, "r", encoding="utf-8") as handle:
         payload = json.load(handle) or {}
     data = payload.get("data") or {}
+    section_1 = dict(data.get("section_1") or {})
+    if "modalidad" in section_1:
+        section_1["modalidad"] = normalize_modalidad(section_1.get("modalidad"))
+        data = dict(data)
+        data["section_1"] = section_1
     FORM_CACHE.clear()
     FORM_CACHE.update(data)
-    section_1 = data.get("section_1") or {}
     SECTION_1_CACHE.clear()
     SECTION_1_CACHE.update(section_1)
     return True
@@ -1661,7 +1687,10 @@ def confirm_section_1(company_data, user_inputs):
     for field in SECTION_1["fields"]:
         field_id = field["id"]
         if field["source"] == "input":
-            payload[field_id] = user_inputs.get(field_id)
+            value = user_inputs.get(field_id)
+            if field_id == "modalidad":
+                value = normalize_modalidad(value)
+            payload[field_id] = value
         else:
             payload[field_id] = company_data.get(field_id)
     SECTION_1_CACHE.update(payload)

@@ -143,7 +143,7 @@ SECTION_2_GROUP_FIRST_BLOCK_START_ROW = 16
 SECTION_2_GROUP_SECOND_BLOCK_START_ROW = 77
 TEMPLATE_FILENAME_BY_VARIANT = {
     TEMPLATE_VARIANT_INDIVIDUAL: "seleccion_incluyente.xlsx",
-    TEMPLATE_VARIANT_GROUP_2_PLUS: "seleccion_incluyente_grupal_2_4.xlsx",
+    TEMPLATE_VARIANT_GROUP_2_PLUS: "seleccion_incluyente.xlsx",
 }
 
 AJUSTES_ENTREVISTA_TEMPLATES = {
@@ -1279,9 +1279,23 @@ def _get_section_2_entries(payload=None):
 
 def _resolve_template_variant(section_2_payload=None):
     total_oferentes = len(_get_section_2_entries(section_2_payload))
-    if total_oferentes >= 2:
+    if total_oferentes >= 1:
         return TEMPLATE_VARIANT_GROUP_2_PLUS
     return TEMPLATE_VARIANT_INDIVIDUAL
+
+
+def _section_2_group_block_start_row(entry_index):
+    return SECTION_2_GROUP_FIRST_BLOCK_START_ROW + (
+        SECTION_2_GROUP_BLOCK_HEIGHT * entry_index
+    )
+
+
+def _section_2_group_insert_row(entry_index):
+    if entry_index <= 0:
+        raise ValueError("entry_index debe ser mayor que 0 para bloques adicionales.")
+    return SECTION_2_GROUP_SECOND_BLOCK_START_ROW + (
+        SECTION_2_GROUP_BLOCK_HEIGHT * (entry_index - 1)
+    )
 
 
 def _find_first_row_by_texts(ws, *texts):
@@ -1809,12 +1823,12 @@ def _write_section_2_group(ws, oferentes):
         )
         ws_write(ws, SECTION_2_GROUP_SHARED_ACTIVITY_CELL, shared_desarrollo)
 
-    if len(oferentes) > 2:
-        for idx in range(2, len(oferentes)):
-            insert_at = SECTION_2_GROUP_FIRST_BLOCK_START_ROW + (SECTION_2_GROUP_BLOCK_HEIGHT * idx)
+    if len(oferentes) > 1:
+        for idx in range(1, len(oferentes)):
+            insert_at = _section_2_group_insert_row(idx)
             _insert_person_block(
                 ws,
-                SECTION_2_GROUP_SECOND_BLOCK_START_ROW,
+                SECTION_2_GROUP_FIRST_BLOCK_START_ROW,
                 SECTION_2_GROUP_BLOCK_HEIGHT,
                 insert_at,
             )
@@ -1824,7 +1838,7 @@ def _write_section_2_group(ws, oferentes):
 
     for idx, entry in enumerate(oferentes):
         row_offset = SECTION_2_GROUP_BLOCK_HEIGHT * idx
-        title_row = SECTION_2_GROUP_FIRST_BLOCK_START_ROW + row_offset
+        title_row = _section_2_group_block_start_row(idx)
         ws_write(ws, f"A{title_row}", f"OFERENTE {idx + 1}")
         _log_excel(
             f"WRITE section=section_2 cell=A{title_row} key=oferente_titulo value={'OFERENTE ' + str(idx + 1)!r}"

@@ -19,6 +19,7 @@ from formularios.common import (
     _next_available_file_path,
     _normalize_text,
     _sanitize_filename,
+    _supabase_patch_with_queue,
 )
 from logging_utils import log_excel_event
 from version_info import resource_path
@@ -552,10 +553,60 @@ def confirm_section_7(payload):
 def confirm_section_8(payload):
     if payload is None:
         raise ValueError("section_8 requerida")
-    set_section_cache("section_8", payload)
+    normalized = _normalize_section_8_payload(payload)
+    tamano_field_id = SECTION_8["tamano_field_id"]
+    tamano_value = normalized.get(tamano_field_id, "")
+    if not tamano_value:
+        raise ValueError("Selecciona el tamano de la empresa.")
+    if tamano_value not in set(SECTION_8.get("tamano_options") or []):
+        raise ValueError("Selecciona un tamano de empresa valido.")
+    _sync_company_size_to_supabase(tamano_value)
+    set_section_cache("section_8", normalized)
     FORM_CACHE["_last_section"] = "section_8"
     save_cache_to_file()
-    return payload
+    return normalized
+
+
+def _normalize_section_8_payload(payload):
+    tamano_field_id = SECTION_8["tamano_field_id"]
+    if isinstance(payload, dict):
+        tamano_value = str(payload.get(tamano_field_id) or "").strip()
+        asistentes = payload.get("asistentes") or []
+    elif isinstance(payload, list):
+        tamano_value = ""
+        asistentes = payload
+    else:
+        raise ValueError("section_8 requerida")
+
+    normalized_asistentes = []
+    for item in asistentes:
+        if not isinstance(item, dict):
+            continue
+        normalized_asistentes.append(
+            {
+                "nombre": str(item.get("nombre") or "").strip(),
+                "cargo": str(item.get("cargo") or "").strip(),
+            }
+        )
+
+    return {
+        tamano_field_id: tamano_value,
+        "asistentes": normalized_asistentes,
+    }
+
+
+def _sync_company_size_to_supabase(tamano_value):
+    nit_empresa = str(SECTION_1_CACHE.get("nit_empresa") or "").strip()
+    if not nit_empresa:
+        raise ValueError("No hay NIT de empresa para actualizar el tamano.")
+
+    result = _supabase_patch_with_queue(
+        "empresas",
+        {"nit_empresa": nit_empresa},
+        {"tamaño": tamano_value},
+    )
+    if result.get("status") == "synced" and not result.get("data"):
+        raise RuntimeError("No se encontro la empresa para guardar el tamano.")
 
 
 SECTION_2 = {
@@ -993,6 +1044,8 @@ SECTION_7_TEMPLATE_BUTTONS = [
 SECTION_8 = {
     "title": "8. ASISTENTES",
     "rows": 3,
+    "tamano_field_id": "tamano_empresa",
+    "tamano_options": ["Menos de 50", "Mas de 51"],
     "nombres": [
         "Sandra Milena Pachón Rojas",
         "Sara Zambrano",
@@ -1174,12 +1227,14 @@ def _write_section_with_ws(ws, section_id, payload):
         return
 
     if section_id == "section_8":
-        if not payload:
+        section8_payload = _normalize_section_8_payload(payload) if payload else {}
+        asistentes = section8_payload.get("asistentes") or []
+        if not asistentes:
             return
         row_title = _find_row_by_text(ws, "8.ASISTENTES")
         start_row = row_title + 1
         base_rows = EXCEL_MAPPING["section_8"].get("rows", 3)
-        total = len(payload)
+        total = len(asistentes)
         if total > base_rows:
             insert_at = start_row + base_rows
             template_row = start_row + base_rows - 1
@@ -1187,7 +1242,7 @@ def _write_section_with_ws(ws, section_id, payload):
                 ws.Rows(insert_at).Insert()
                 ws.Rows(template_row).Copy(ws.Rows(insert_at))
                 insert_at += 1
-        for idx, entry in enumerate(payload):
+        for idx, entry in enumerate(asistentes):
             row = start_row + idx
             nombre = entry.get("nombre", "")
             cargo = entry.get("cargo", "")

@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import shutil
@@ -27,6 +28,7 @@ SHEET_NAME = "7. INDUCCION OPERATIVA"
 
 FORM_CACHE = {}
 SECTION_1_CACHE = {}
+SECTION_HISTORY_LIMIT = 10
 
 SECTION_1 = {
     "title": "1. DATOS GENERALES",
@@ -576,10 +578,44 @@ def clear_form_cache():
     SECTION_1_CACHE.clear()
 
 
-def set_section_cache(section_id, payload):
+def _record_section_history(section_id, payload, source="manual"):
+    if not section_id or str(section_id).startswith("_"):
+        return
+    if not _has_meaningful_values(payload):
+        return
+    history_root = FORM_CACHE.setdefault("_section_history", {})
+    if not isinstance(history_root, dict):
+        history_root = {}
+        FORM_CACHE["_section_history"] = history_root
+    entries = history_root.setdefault(section_id, [])
+    if not isinstance(entries, list):
+        entries = []
+        history_root[section_id] = entries
+    snapshot = copy.deepcopy(payload)
+    if entries:
+        last_entry = entries[-1] if isinstance(entries[-1], dict) else {}
+        if last_entry.get("payload") == snapshot:
+            return
+    entries.append(
+        {
+            "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "source": str(source or "manual").strip() or "manual",
+            "payload": snapshot,
+        }
+    )
+    if len(entries) > SECTION_HISTORY_LIMIT:
+        del entries[:-SECTION_HISTORY_LIMIT]
+
+
+def set_section_cache(section_id, payload, *, source="manual"):
     if not section_id:
         raise ValueError("section_id requerido")
-    FORM_CACHE[section_id] = payload if payload is not None else {}
+    normalized_payload = payload if payload is not None else {}
+    FORM_CACHE[section_id] = normalized_payload
+    FORM_CACHE["_last_saved_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    FORM_CACHE["_last_saved_section"] = section_id
+    FORM_CACHE["_last_saved_source"] = str(source or "manual").strip() or "manual"
+    _record_section_history(section_id, normalized_payload, source=source)
 
 
 def get_form_cache():
@@ -941,11 +977,41 @@ def _write_section_9(ws, payload):
             ws_write(ws, f"L{row}", cargo)
 
 
+def _has_meaningful_values(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if str(key or "").startswith("_"):
+                continue
+            if _has_meaningful_values(item):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_has_meaningful_values(item) for item in value)
+    return str(value or "").strip() != ""
+
+
+def _validate_cache_before_export():
+    section_3 = FORM_CACHE.get("section_3", {})
+    if _has_meaningful_values(section_3):
+        return
+    later_sections_have_data = any(
+        _has_meaningful_values(FORM_CACHE.get(section_id))
+        for section_id in ("section_4", "section_5", "section_6", "section_7", "section_8", "section_9")
+    )
+    if later_sections_have_data:
+        raise RuntimeError(
+            "La seccion 3 quedo vacia en el cache. Se cancelo la exportacion para evitar "
+            "generar un Excel incompleto. Revisa la seccion 3 antes de finalizar."
+        )
+    raise RuntimeError("La seccion 3 no tiene informacion diligenciada. Revisa esa seccion antes de finalizar.")
+
+
 def export_to_excel(clear_cache=True):
     clear_written_rows()
     output_path = _ensure_output_path()
     if not FORM_CACHE.get("section_1") and cache_file_exists():
         load_cache_from_file()
+    _validate_cache_before_export()
     try:
         import win32com.client as win32
     except ImportError as exc:

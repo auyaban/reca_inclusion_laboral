@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 from zoneinfo import ZoneInfo
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import tkinter as tk
 from tkinter import ttk, messagebox
 from tkcalendar import DateEntry
@@ -122,10 +122,16 @@ DEFAULT_EMPRESA_ESTADOS = [
 _MOJIBAKE_PATTERNS = ("Ã", "Â", "â€", "ï¿½", "\ufffd", "Ð", "Ñ")
 _ENCODING_CHECK_DONE = False
 DRAFTS_FILE_NAME = "form_drafts_il.json"
+COMPLETED_FORMS_FILE_NAME = "completed_forms_il.json"
 OFFLINE_AUTH_FILE_NAME = "offline_auth_users.json"
 LOGIN_CREDENTIALS_FILE_NAME = "login_credentials.json"
 DRIVE_UPLOAD_QUEUE_FILE_NAME = "drive_upload_queue.json"
 DRIVE_UPLOAD_FAILED_FILE_NAME = "drive_upload_failed.json"
+COMPLETED_FORMS_RETENTION_DAYS = 30
+COMPLETED_FORM_ID_ALIASES = {
+    "condiciones_vacante_labs": "condiciones_vacante",
+    "seleccion_incluyente_labs": "seleccion_incluyente",
+}
 _USAGE_EXEMPT_LOGINS_CACHE = None
 _DRIVE_UPLOAD_LOCK = threading.RLock()
 _DRIVE_UPLOAD_QUEUE = []
@@ -181,28 +187,80 @@ def _autosave_section(module, section_key, collect_fn):
     Se llama al navegar hacia atrás para no perder el trabajo."""
     try:
         payload = collect_fn()
-        module.set_section_cache(section_key, payload)
+        existing_payload = {}
+        if hasattr(module, "get_form_cache"):
+            try:
+                existing_payload = (module.get_form_cache() or {}).get(section_key)
+            except Exception:
+                existing_payload = {}
+        if (
+            _cache_snapshot_has_meaningful_values(existing_payload)
+            and not _cache_snapshot_has_meaningful_values(payload)
+        ):
+            module_id = (
+                getattr(module, "FORM_ID", "")
+                or getattr(module, "FORM_NAME", "")
+                or getattr(module, "__name__", module.__class__.__name__)
+            )
+            _log_capture(
+                f"[AUTOSAVE] preserve_existing_data form={module_id} section={section_key} "
+                "reason=empty_payload_after_collect"
+            )
+            return
+        try:
+            module.set_section_cache(section_key, payload, source="autosave")
+        except TypeError:
+            module.set_section_cache(section_key, payload)
         module.save_cache_to_file()
     except Exception:
         pass
 
 
 def _collect_flat_fields(fields):
-    """Recolecta un dict plano de widgets {field_id: widget} en un payload."""
+    """Recolecta widgets o estructuras anidadas de widgets en un payload."""
+    missing = object()
+
+    def _collect_value(value):
+        if isinstance(value, dict):
+            nested_payload = {}
+            for nested_key, nested_value in value.items():
+                collected = _collect_value(nested_value)
+                if collected is not missing:
+                    nested_payload[nested_key] = collected
+            return nested_payload
+        if isinstance(value, list):
+            nested_items = []
+            for nested_value in value:
+                collected = _collect_value(nested_value)
+                if collected is not missing:
+                    nested_items.append(collected)
+            return nested_items
+        if isinstance(value, tuple):
+            nested_items = []
+            for nested_value in value:
+                collected = _collect_value(nested_value)
+                if collected is not missing:
+                    nested_items.append(collected)
+            return tuple(nested_items)
+        try:
+            if isinstance(value, tk.Variable):
+                return value.get()
+            if isinstance(value, tk.Text):
+                return value.get("1.0", tk.END).strip()
+            if isinstance(value, (ttk.Combobox, tk.Entry)):
+                return value.get().strip()
+            if hasattr(value, "get"):
+                raw = value.get()
+                return raw.strip() if isinstance(raw, str) else raw
+        except Exception:
+            return missing
+        return missing
+
     payload = {}
     for field_id, widget in fields.items():
-        try:
-            if isinstance(widget, tk.BooleanVar):
-                payload[field_id] = widget.get()
-            elif isinstance(widget, tk.Text):
-                payload[field_id] = widget.get("1.0", tk.END).strip()
-            elif isinstance(widget, (ttk.Combobox, tk.Entry)):
-                payload[field_id] = widget.get().strip()
-            elif hasattr(widget, 'get'):
-                raw = widget.get()
-                payload[field_id] = raw.strip() if isinstance(raw, str) else raw
-        except Exception:
-            pass
+        value = _collect_value(widget)
+        if value is not missing:
+            payload[field_id] = value
     return payload
 
 
@@ -374,6 +432,10 @@ def _get_drafts_path():
     return os.path.join(_get_local_cache_dir(), DRAFTS_FILE_NAME)
 
 
+def _get_completed_forms_path():
+    return os.path.join(_get_local_cache_dir(), COMPLETED_FORMS_FILE_NAME)
+
+
 def _get_offline_auth_path():
     return os.path.join(_get_local_cache_dir(), OFFLINE_AUTH_FILE_NAME)
 
@@ -402,6 +464,223 @@ def _get_colombia_now():
         return datetime.now(ZoneInfo("America/Bogota"))
     except Exception:
         return datetime.now()
+
+
+def _parse_completed_datetime(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _prune_completed_forms_entries(entries, *, now=None):
+    if not isinstance(entries, list):
+        return []
+    current = now or _get_colombia_now()
+    cutoff_ts = current.timestamp() - (COMPLETED_FORMS_RETENTION_DAYS * 86400)
+    kept = []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        dt = _parse_completed_datetime(
+            item.get("finalizado_at_iso")
+            or item.get("payload_generated_at")
+            or item.get("finalizado_at_colombia")
+        )
+        if dt is None or dt.timestamp() >= cutoff_ts:
+            kept.append(item)
+    kept.sort(
+        key=lambda item: (
+            _parse_completed_datetime(
+                item.get("finalizado_at_iso")
+                or item.get("payload_generated_at")
+                or item.get("finalizado_at_colombia")
+            ).timestamp()
+            if _parse_completed_datetime(
+                item.get("finalizado_at_iso")
+                or item.get("payload_generated_at")
+                or item.get("finalizado_at_colombia")
+            )
+            else 0.0
+        ),
+        reverse=True,
+    )
+    return kept
+
+
+def _load_completed_forms_store():
+    path = _get_completed_forms_path()
+    if not os.path.exists(path):
+        return {"version": 1, "users": {}}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle) or {}
+    except Exception:
+        return {"version": 1, "users": {}}
+    if not isinstance(data, dict):
+        return {"version": 1, "users": {}}
+    users = data.get("users")
+    if not isinstance(users, dict):
+        data["users"] = {}
+        users = data["users"]
+    changed = False
+    for login, entries in list(users.items()):
+        pruned = _prune_completed_forms_entries(entries)
+        if pruned != entries:
+            users[login] = pruned
+            changed = True
+    data.setdefault("version", 1)
+    if changed:
+        try:
+            _atomic_write_json_file(path, data)
+        except Exception:
+            pass
+    return data
+
+
+def _save_completed_forms_store(data):
+    payload = dict(data or {})
+    users = payload.get("users")
+    if not isinstance(users, dict):
+        users = {}
+        payload["users"] = users
+    for login, entries in list(users.items()):
+        users[login] = _prune_completed_forms_entries(entries)
+    payload.setdefault("version", 1)
+    _atomic_write_json_file(_get_completed_forms_path(), payload)
+
+
+def _normalize_completed_form_id(form_id):
+    raw = str(form_id or "").strip()
+    return COMPLETED_FORM_ID_ALIASES.get(raw, raw)
+
+
+def _extract_completed_payload_raw(entry):
+    payload_raw = entry.get("payload_raw")
+    if isinstance(payload_raw, dict):
+        return payload_raw
+    if isinstance(payload_raw, str):
+        try:
+            parsed = json.loads(payload_raw)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _resolve_completed_restore_form_meta(entry):
+    payload_raw = _extract_completed_payload_raw(entry)
+    raw_form_id = payload_raw.get("form_id") or entry.get("form_id") or ""
+    form_id = _normalize_completed_form_id(raw_form_id)
+    if not form_id or form_id not in FORM_MODULE_MAP:
+        return None
+    form_meta = _resolve_form_meta(form_id)
+    if not isinstance(form_meta, dict):
+        return None
+    if bool(form_meta.get("hidden")):
+        return None
+    return form_meta
+
+
+def _store_completed_form_locally(row):
+    if not isinstance(row, dict):
+        return
+    user_login = str(row.get("usuario_login") or "").strip().lower()
+    if not user_login:
+        return
+    payload_raw = row.get("payload_raw")
+    if not isinstance(payload_raw, dict):
+        return
+    cache_snapshot = payload_raw.get("cache_snapshot")
+    if not isinstance(cache_snapshot, dict) or not cache_snapshot:
+        return
+    data = _load_completed_forms_store()
+    users = data.setdefault("users", {})
+    entries = users.setdefault(user_login, [])
+    if not isinstance(entries, list):
+        entries = []
+        users[user_login] = entries
+    entry = {
+        "registro_id": str(row.get("registro_id") or "").strip(),
+        "source_item_key": str(row.get("source_item_key") or "").strip(),
+        "form_id": str(payload_raw.get("form_id") or "").strip(),
+        "form_name": str(row.get("nombre_formato") or "").strip(),
+        "company_name": str(row.get("nombre_empresa") or "").strip(),
+        "output_path": str(row.get("path_formato") or "").strip(),
+        "upload_status": str(row.get("upload_status") or "").strip(),
+        "finalizado_at_iso": str(row.get("finalizado_at_iso") or "").strip(),
+        "finalizado_at_colombia": str(row.get("finalizado_at_colombia") or "").strip(),
+        "payload_generated_at": str(row.get("payload_generated_at") or "").strip(),
+        "payload_raw": copy.deepcopy(payload_raw),
+    }
+    existing = None
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        if entry["registro_id"] and str(item.get("registro_id") or "") == entry["registro_id"]:
+            existing = item
+            break
+        if entry["source_item_key"] and str(item.get("source_item_key") or "") == entry["source_item_key"]:
+            existing = item
+            break
+    if existing is None:
+        entries.append(entry)
+    else:
+        existing.clear()
+        existing.update(entry)
+    _save_completed_forms_store(data)
+
+
+def _sync_completed_forms_from_remote(user_login):
+    login = str(user_login or "").strip().lower()
+    if not login:
+        return
+    cutoff_iso = (_get_colombia_now() - timedelta(days=COMPLETED_FORMS_RETENTION_DAYS)).isoformat()
+    try:
+        rows = _supabase_get_paged(
+            "formatos_finalizados_il",
+            {
+                "select": ",".join(
+                    [
+                        "registro_id",
+                        "usuario_login",
+                        "nombre_formato",
+                        "nombre_empresa",
+                        "path_formato",
+                        "upload_status",
+                        "finalizado_at_iso",
+                        "finalizado_at_colombia",
+                        "payload_generated_at",
+                        "source_item_key",
+                        "payload_raw",
+                    ]
+                ),
+                "usuario_login": f"eq.{login}",
+                "finalizado_at_iso": f"gte.{cutoff_iso}",
+                "payload_raw": "not.is.null",
+                "order": "finalizado_at_iso.desc",
+            },
+            page_size=100,
+            max_pages=3,
+        )
+    except Exception as exc:
+        _log_capture(f"sync_completed_forms_from_remote failed user={login} err={exc}")
+        return
+    for row in rows:
+        try:
+            _store_completed_form_locally(row)
+        except Exception as exc:
+            _log_capture(f"sync_completed_forms_from_remote store_failed user={login} err={exc}")
 
 
 def _drive_job_identity(job):
@@ -1227,6 +1506,167 @@ def _cache_snapshot_has_meaningful_values(value):
     if isinstance(value, list):
         return any(_cache_snapshot_has_meaningful_values(item) for item in value)
     return str(value or "").strip() != ""
+
+
+_FORM_REQUIRED_SECTION_LABELS = {
+    "induccion_organizacional": {"section_3": "Seccion 3"},
+    "induccion_operativa": {"section_3": "Seccion 3"},
+}
+
+
+def _humanize_section_id(section_id):
+    text = str(section_id or "").strip()
+    if not text:
+        return ""
+    match = re.fullmatch(r"section_(\d+)", text)
+    if match:
+        return f"Seccion {match.group(1)}"
+    return text.replace("_", " ").strip().title()
+
+
+def _ensure_form_save_status_label(window):
+    if not window or not hasattr(window, "winfo_exists") or not window.winfo_exists():
+        return None
+    status_var = getattr(window, "_save_status_var", None)
+    if status_var is not None:
+        return status_var
+    status_var = tk.StringVar(window, value="Ultimo guardado: pendiente")
+    label = tk.Label(
+        window,
+        textvariable=status_var,
+        font=("Segoe UI", 9),
+        fg="#4f5b66",
+        bg=COLOR_LIGHT_BG,
+        anchor="e",
+        justify="right",
+    )
+    label.place(relx=1.0, x=-24, y=24, anchor="ne")
+    window._save_status_var = status_var
+    window._save_status_label = label
+    window._save_status_timestamp = ""
+    return status_var
+
+
+def _render_save_status_text(saved_at, section_id="", source=""):
+    ts = str(saved_at or "").strip()
+    if not ts:
+        return "Ultimo guardado: pendiente"
+    detail = _humanize_section_id(section_id)
+    if detail:
+        return f"Ultimo guardado: {ts} | {detail}"
+    return f"Ultimo guardado: {ts}"
+
+
+def _update_window_save_status(window, saved_at, section_id="", source=""):
+    status_var = _ensure_form_save_status_label(window)
+    if status_var is None:
+        return
+    ts = str(saved_at or "").strip()
+    current_ts = str(getattr(window, "_save_status_timestamp", "") or "").strip()
+    if current_ts and ts and ts < current_ts:
+        return
+    if not ts and current_ts:
+        return
+    window._save_status_timestamp = ts
+    status_var.set(_render_save_status_text(ts, section_id=section_id, source=source))
+
+
+def _refresh_form_save_status(window):
+    form_id = getattr(window, "_form_id", "") or WINDOW_CLASS_FORM_ID_MAP.get(window.__class__.__name__, "")
+    module = FORM_MODULE_MAP.get(form_id)
+    if not module or not hasattr(module, "get_form_cache"):
+        return
+    try:
+        cache_snapshot = module.get_form_cache() or {}
+    except Exception:
+        return
+    if not isinstance(cache_snapshot, dict):
+        return
+    _update_window_save_status(
+        window,
+        cache_snapshot.get("_last_saved_at"),
+        section_id=cache_snapshot.get("_last_saved_section"),
+        source=cache_snapshot.get("_last_saved_source"),
+    )
+
+
+def _section_history_has_meaningful_payload(cache_snapshot, section_id):
+    if not isinstance(cache_snapshot, dict):
+        return False
+    history_root = cache_snapshot.get("_section_history")
+    if not isinstance(history_root, dict):
+        return False
+    entries = history_root.get(section_id)
+    if not isinstance(entries, list):
+        return False
+    for entry in reversed(entries):
+        if not isinstance(entry, dict):
+            continue
+        if _cache_snapshot_has_meaningful_values(entry.get("payload")):
+            return True
+    return False
+
+
+def _find_guarded_missing_sections(form_id, cache_snapshot):
+    labels = _FORM_REQUIRED_SECTION_LABELS.get(str(form_id or "").strip(), {})
+    if not isinstance(cache_snapshot, dict) or not labels:
+        return []
+    missing = []
+    for section_id, label in labels.items():
+        if _cache_snapshot_has_meaningful_values(cache_snapshot.get(section_id)):
+            continue
+        if _section_history_has_meaningful_payload(cache_snapshot, section_id):
+            missing.append((section_id, label))
+    return missing
+
+
+def _run_pending_section_autosave(window):
+    autosave_fn = getattr(window, "_pending_autosave", None)
+    if callable(autosave_fn):
+        try:
+            autosave_fn()
+        except Exception as exc:
+            _log_capture(
+                f"[AUTOSAVE] flush_failed form={getattr(window, '_form_id', '')} "
+                f"section={getattr(window, '_current_section', '')} err={exc}"
+            )
+
+
+def _guard_form_action(window, *, action_label):
+    form_id = getattr(window, "_form_id", "") or WINDOW_CLASS_FORM_ID_MAP.get(window.__class__.__name__, "")
+    module = FORM_MODULE_MAP.get(form_id)
+    if not module or not hasattr(module, "get_form_cache"):
+        return False
+    _run_pending_section_autosave(window)
+    if hasattr(module, "save_cache_to_file"):
+        try:
+            module.save_cache_to_file()
+        except Exception:
+            pass
+    try:
+        cache_snapshot = copy.deepcopy(module.get_form_cache() or {})
+    except Exception:
+        cache_snapshot = {}
+    missing_sections = _find_guarded_missing_sections(form_id, cache_snapshot)
+    if not missing_sections:
+        return False
+    labels = ", ".join(label for _, label in missing_sections)
+    messagebox.showerror(
+        "Datos incompletos",
+        f"No se puede {action_label} este formulario porque {labels} quedo vacia despues "
+        "de haber tenido informacion guardada.\n\n"
+        "La ultima version buena sigue en el historial local de la seccion. "
+        "Vuelve a esa seccion y revisa antes de continuar.",
+        parent=window,
+    )
+    first_section = missing_sections[0][0]
+    show_fn = getattr(window, f"_show_{first_section}", None)
+    if callable(show_fn):
+        try:
+            show_fn()
+        except Exception:
+            pass
+    return True
 
 
 def _get_draft_save_command(window):
@@ -3568,6 +4008,12 @@ def _start_background_finalization(
     worker_fn,
     post_delivery_fn=None,
 ):
+    if _guard_form_action(window, action_label="finalizar"):
+        try:
+            loading.close()
+        except Exception:
+            pass
+        return
     if getattr(window, "_finalize_in_progress", False):
         messagebox.showinfo(
             "Finalización",
@@ -3587,6 +4033,7 @@ def _start_background_finalization(
             )
             _return_to_hub(window)
             try:
+                window._skip_close_guard = True
                 window.destroy()
             except tk.TclError:
                 pass
@@ -4685,6 +5132,7 @@ class HubWindow(tk.Tk):
         self._version_var = tk.StringVar(value="Versión local: - | GitHub: -")
         self._version_check_thread = None
         self._drafts_btn = None
+        self._completed_btn = None
         self._refresh_db_btn = None
         self._labs_btn = None
         self._sync_panel_btn = None
@@ -5411,6 +5859,10 @@ class HubWindow(tk.Tk):
             "payload_normalized": payload_normalized,
             "payload_generated_at": payload_generated_at,
         }
+        try:
+            _store_completed_form_locally(row)
+        except Exception as exc:
+            _log_capture(f"store_completed_form_locally failed registro_id={registro_id} err={exc}")
         if output_path:
             _log_capture(
                 f"create_form_completion_record form={form_name} company={company_name} output={output_path}"
@@ -6482,6 +6934,25 @@ class HubWindow(tk.Tk):
             return []
         return [item for item in drafts if isinstance(item, dict)]
 
+    def _get_user_completed_forms(self):
+        user_login = self._get_current_user_login()
+        if not user_login:
+            return []
+        _sync_completed_forms_from_remote(user_login)
+        data = _load_completed_forms_store()
+        users = data.get("users", {})
+        entries = users.get(user_login, [])
+        if not isinstance(entries, list):
+            return []
+        reopenable = []
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            if _resolve_completed_restore_form_meta(item) is None:
+                continue
+            reopenable.append(item)
+        return reopenable
+
     def _refresh_drafts_badge(self):
         if not self._drafts_btn:
             return
@@ -6632,6 +7103,7 @@ class HubWindow(tk.Tk):
 
         window._draft_id = draft_id
         window._draft_last_fingerprint = fingerprint
+        _update_window_save_status(window, now, section_id=ui_section, source="draft")
         self._refresh_drafts_badge()
         if toast_text:
             self.show_toast(toast_text)
@@ -6940,6 +7412,122 @@ class HubWindow(tk.Tk):
         ttk.Button(actions, text="Abrir", command=_open_selected).pack(side="right", padx=(0, 8))
         tree.bind("<Double-1>", lambda _e: _open_selected())
 
+    def _open_completed_entry(self, completed_entry):
+        if not isinstance(completed_entry, dict):
+            messagebox.showerror("Terminados", "El registro seleccionado no es valido.")
+            return
+        form_meta = _resolve_completed_restore_form_meta(completed_entry)
+        if not form_meta:
+            messagebox.showerror(
+                "Terminados",
+                "Este formulario terminado ya no se puede reabrir desde el flujo normal.",
+            )
+            return
+        payload_raw = _extract_completed_payload_raw(completed_entry)
+        cache_snapshot = payload_raw.get("cache_snapshot")
+        if not isinstance(cache_snapshot, dict) or not cache_snapshot:
+            messagebox.showerror("Terminados", "El registro terminado no tiene cache para restaurar.")
+            return
+        self._pending_draft_restore = {
+            "form_id": str(form_meta.get("id") or ""),
+            "draft_id": "",
+            "draft_session_key": uuid.uuid4().hex,
+            "cache": copy.deepcopy(cache_snapshot),
+            "ui_section": "section_1",
+            "ui_snapshot": [],
+        }
+        window = self._open_form(form_meta)
+        if not window:
+            self._pending_draft_restore = None
+            return
+        window._draft_id = ""
+        window._draft_session_key = uuid.uuid4().hex
+
+    def _open_completed_window(self):
+        completed = self._get_user_completed_forms()
+        modal = tk.Toplevel(self)
+        modal.title("Terminados - Ultimos 30 dias")
+        modal.configure(bg=COLOR_LIGHT_BG)
+        modal.geometry("920x420")
+        modal.transient(self)
+        modal.grab_set()
+
+        frame = tk.Frame(modal, bg=COLOR_LIGHT_BG, padx=14, pady=12)
+        frame.pack(fill="both", expand=True)
+
+        tk.Label(
+            frame,
+            text="Formularios terminados",
+            font=("Arial", 12, "bold"),
+            fg=COLOR_PURPLE,
+            bg=COLOR_LIGHT_BG,
+        ).pack(anchor="w", pady=(0, 8))
+
+        tk.Label(
+            frame,
+            text="Solo se conservan localmente por 30 dias y se reabren en el flujo normal con datos precargados.",
+            font=("Arial", 9),
+            fg="#555555",
+            bg=COLOR_LIGHT_BG,
+        ).pack(anchor="w", pady=(0, 8))
+
+        box = tk.Frame(frame, bg="white", bd=1, relief="solid")
+        box.pack(fill="both", expand=True)
+        yscroll = tk.Scrollbar(box, orient="vertical", width=SCROLLBAR_WIDTH)
+        yscroll.pack(side="right", fill="y")
+
+        tree = ttk.Treeview(
+            box,
+            columns=("form", "empresa", "finalizado", "estado"),
+            show="headings",
+            yscrollcommand=yscroll.set,
+        )
+        tree.heading("form", text="Formulario")
+        tree.heading("empresa", text="Empresa")
+        tree.heading("finalizado", text="Finalizado")
+        tree.heading("estado", text="Estado")
+        tree.column("form", width=260, anchor="w")
+        tree.column("empresa", width=300, anchor="w")
+        tree.column("finalizado", width=180, anchor="w")
+        tree.column("estado", width=120, anchor="w")
+        tree.pack(side="left", fill="both", expand=True)
+        yscroll.config(command=tree.yview)
+
+        entry_by_iid = {}
+        for idx, item in enumerate(completed, start=1):
+            iid = f"completed_{idx}"
+            entry_by_iid[iid] = item
+            tree.insert(
+                "",
+                "end",
+                iid=iid,
+                values=(
+                    str(item.get("form_name") or item.get("form_id") or ""),
+                    str(item.get("company_name") or "Sin empresa"),
+                    str(item.get("finalizado_at_colombia") or item.get("finalizado_at_iso") or ""),
+                    str(item.get("upload_status") or ""),
+                ),
+            )
+        if not entry_by_iid:
+            tree.insert("", "end", iid="__empty__", values=("-", "No hay formularios terminados recientes.", "-", "-"))
+
+        actions = tk.Frame(frame, bg=COLOR_LIGHT_BG)
+        actions.pack(fill="x", pady=(8, 0))
+
+        def _open_selected():
+            sel = tree.focus()
+            if not sel or sel == "__empty__":
+                return
+            entry = entry_by_iid.get(sel)
+            if not entry:
+                return
+            modal.destroy()
+            self._open_completed_entry(entry)
+
+        ttk.Button(actions, text="Cerrar", command=modal.destroy).pack(side="right")
+        ttk.Button(actions, text="Abrir", command=_open_selected).pack(side="right", padx=(0, 8))
+        tree.bind("<Double-1>", lambda _e: _open_selected())
+
     def _build_body(self):
         self.body = tk.Frame(self, bg=COLOR_LIGHT_BG)
         self.body.pack(fill="both", expand=True, padx=14, pady=10)
@@ -6978,12 +7566,12 @@ class HubWindow(tk.Tk):
             command=self._refresh_database_cache,
         )
         self._refresh_db_btn.pack(side="right", padx=(0, 8))
-        self._labs_btn = ttk.Button(
+        self._completed_btn = ttk.Button(
             left_header,
-            text="Labs",
-            command=self._open_labs_flow,
+            text="Terminados",
+            command=self._open_completed_window,
         )
-        self._labs_btn.pack(side="right", padx=(0, 8))
+        self._completed_btn.pack(side="right", padx=(0, 8))
         self._refresh_drafts_badge()
 
         # Lista de formularios con scroll para pantallas pequenas.
@@ -7171,6 +7759,8 @@ class HubWindow(tk.Tk):
         window._draft_session_key = getattr(window, "_draft_session_key", "") or uuid.uuid4().hex
         window._draft_autosave_after_id = None
         window._draft_last_fingerprint = getattr(window, "_draft_last_fingerprint", "")
+        window._skip_close_guard = False
+        _ensure_form_save_status_label(window)
         if not getattr(window, "_usage_close_tracking_installed", False):
             window._usage_close_tracking_installed = True
             window._usage_finish_logged = False
@@ -7183,6 +7773,9 @@ class HubWindow(tk.Tk):
                 _log_capture(f"[USAGE] form_window_closed form={form_id}")
 
             def _tracked_destroy(*args, **kwargs):
+                if not getattr(window, "_skip_close_guard", False):
+                    if _guard_form_action(window, action_label="cerrar"):
+                        return None
                 _track_usage_finish_once()
                 return original_destroy(*args, **kwargs)
 
@@ -7219,6 +7812,7 @@ class HubWindow(tk.Tk):
                             _log_capture(
                                 f"[DRAFT] autosave_wrapper_failed form={form_id} section={section} err={exc}"
                             )
+                    _refresh_form_save_status(window)
                     return result
 
                 _wrapped._section_wrapped = True
@@ -7245,6 +7839,7 @@ class HubWindow(tk.Tk):
                 _log_capture(
                     f"[DRAFT] autosave_initial_failed form={form_id} section={getattr(window, '_current_section', 'section_1')} err={exc}"
                 )
+        _refresh_form_save_status(window)
 
     def _open_form(self, form_meta):
         if form_meta["id"] == "presentacion_programa":
@@ -10530,13 +11125,41 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
     def _show_section_8(self):
         self._clear_section_container()
         self.header_title.config(text=condiciones_vacante.SECTION_8["title"])
-        self.header_subtitle.config(text="Registra asistentes.")
+        self.header_subtitle.config(text="Selecciona tamano de empresa y registra asistentes.")
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
         section_frame.pack(fill="both", expand=True)
         section_frame = _build_scrollable_content(section_frame, self)
 
+        cached_section8 = condiciones_vacante.get_form_cache().get("section_8", {})
+        if isinstance(cached_section8, dict):
+            cached_rows = cached_section8.get("asistentes", [])
+            cached_tamano = cached_section8.get(
+                condiciones_vacante.SECTION_8["tamano_field_id"],
+                "",
+            )
+        else:
+            cached_rows = cached_section8 or []
+            cached_tamano = ""
+
+        tamano_row = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
+        tamano_row.pack(fill="x", padx=24, pady=(12, 4))
+        tk.Label(
+            tamano_row,
+            text="Tamano empresa *",
+            font=FONT_LABEL,
+            bg=COLOR_LIGHT_BG,
+        ).pack(side="left", padx=(0, 8))
+        self.section8_tamano_empresa = ttk.Combobox(
+            tamano_row,
+            values=condiciones_vacante.SECTION_8["tamano_options"],
+            state="readonly",
+            width=20,
+        )
+        self.section8_tamano_empresa.pack(side="left")
+        self.section8_tamano_empresa.set(cached_tamano)
+
         table = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
-        table.pack(fill="x", padx=24, pady=(12, 8))
+        table.pack(fill="x", padx=24, pady=(8, 8))
 
         tk.Label(
             table,
@@ -10560,7 +11183,6 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         )
         self._asesores_agencia_catalog = _get_asesores_agencia_catalog()
 
-        cached_rows = condiciones_vacante.get_form_cache().get("section_8", [])
         self._render_section8_asistentes(cached_rows)
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
@@ -10568,7 +11190,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         self._pending_autosave = lambda: _autosave_section(
             condiciones_vacante,
             "section_8",
-            lambda: self._get_section8_asistentes_values(),
+            lambda: self._get_section8_payload(),
         )
         ttk.Button(actions, text="Regresar", command=self._show_section_7).pack(side="left")
         ttk.Button(actions, text="Finalizar", command=self._confirm_section_8).pack(side="right")
@@ -10583,6 +11205,12 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
                 }
             )
         return values
+
+    def _get_section8_payload(self):
+        return {
+            condiciones_vacante.SECTION_8["tamano_field_id"]: self.section8_tamano_empresa.get().strip(),
+            "asistentes": self._get_section8_asistentes_values(),
+        }
 
     def _render_section8_asistentes(self, values=None):
         rows = list(values or [])
@@ -10642,14 +11270,10 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         self._render_section8_asistentes(rows)
 
     def _confirm_section_8(self):
-        payload = []
-        for nombre_entry, cargo_entry in self.section8_rows:
-            payload.append(
-                {
-                    "nombre": nombre_entry.get().strip(),
-                    "cargo": cargo_entry.get().strip(),
-                }
-            )
+        payload = self._get_section8_payload()
+        if not payload.get(condiciones_vacante.SECTION_8["tamano_field_id"]):
+            messagebox.showerror("Error", "Selecciona el tamano de la empresa.")
+            return
         try:
             condiciones_vacante.confirm_section_8(payload)
         except Exception as exc:
@@ -14641,6 +15265,19 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         self.section3_fields = {}
         cached = induccion_operativa.get_form_cache().get("section_3", {})
 
+        bulk_actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
+        bulk_actions.pack(anchor="w", padx=FORM_PADX, pady=(8, 4))
+        for label, value in (
+            ("Todo si", "Si"),
+            ("Todo no", "No"),
+            ("Todo no aplica", "No aplica"),
+        ):
+            ttk.Button(
+                bulk_actions,
+                text=label,
+                command=lambda selected=value: self._set_section3_ejecucion(selected),
+            ).pack(side="left", padx=(0, 8))
+
         table = tk.Frame(content, bg=COLOR_LIGHT_BG)
         table.pack(fill="x", padx=FORM_PADX, pady=(8, 4))
         table.grid_columnconfigure(0, weight=4, minsize=520)
@@ -14691,6 +15328,18 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         self._pending_autosave = lambda f=self.section3_fields: _autosave_section(induccion_operativa, "section_3", lambda: _collect_flat_fields(f))
         ttk.Button(actions, text="Regresar", command=self._show_section_2).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_3).pack(side="right")
+
+    def _set_section3_ejecucion(self, value, item_ids=None):
+        allowed_ids = set(item_ids or []) if item_ids else None
+        for item_id, widgets in self.section3_fields.items():
+            if allowed_ids is not None and item_id not in allowed_ids:
+                continue
+            ejecucion_widget = widgets.get("ejecucion")
+            if isinstance(ejecucion_widget, ttk.Combobox):
+                ejecucion_widget.set(value)
+        autosave_fn = getattr(self, "_pending_autosave", None)
+        if callable(autosave_fn):
+            autosave_fn()
 
     def _show_section_4(self):
         self._clear_section_container()

@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.2.5 - 2026-03-27
+
+Esta version corrige un riesgo serio de perdida de datos en formularios de induccion y agrega una forma segura de reabrir formularios ya terminados.
+
+### Cambios principales
+
+- Se corrigio el autoguardado de `Induccion Organizacional` y `Induccion Operativa` para que no vacie `section_3` al navegar entre secciones.
+- El autoguardado ahora protege datos ya guardados frente a payloads vacios o sospechosos y mantiene historial local por seccion para recuperacion.
+- La finalizacion y el cierre ahora se bloquean si una seccion obligatoria queda vacia despues de haber tenido datos, evitando exportes incompletos.
+- Se agrego un indicador visible de `Ultimo guardado` dentro del flujo de formularios.
+- El boton `Labs` del hub fue reemplazado por `Terminados`.
+- `Terminados` permite reabrir en el flujo normal los formularios finalizados de los ultimos 30 dias con los datos precargados.
+- Se agrego `tzdata` a dependencias para empaquetar correctamente la zona horaria en la app instalada.
+
+### Como afecta a los usuarios
+
+- Se reduce de forma importante el riesgo de perder informacion diligenciada al cambiar de seccion o finalizar un formulario.
+- Si un formulario ya finalizado debe reabrirse, el usuario puede hacerlo desde `Terminados` sin volver a digitar la informacion.
+- La app instalada mantiene mejor consistencia de fechas y horas entre entornos Windows.
+
 ## 1.2.2 - 2026-03-25
 
 Esta version corrige errores de cierre y acceso que estaban afectando a usuarios en la app instalada.

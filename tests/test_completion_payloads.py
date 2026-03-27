@@ -231,6 +231,36 @@ class CompletionPayloadTests(unittest.TestCase):
         self.assertIn("seguimientos:", result["source_item_key"])
         self.assertTrue(result["source_item_key"].endswith(":followup:2"))
 
+    def test_strips_internal_cache_metadata_from_raw_payload(self) -> None:
+        result = completion_payloads.build_completion_payload(
+            "induccion_organizacional",
+            "Induccion Organizacional",
+            {
+                "section_1": {
+                    "fecha_visita": "2026-03-17",
+                    "nombre_empresa": "Empresa Demo",
+                    "nit_empresa": "900123456",
+                    "modalidad": "Presencial",
+                    "profesional_asignado": "Leidy Novoa",
+                },
+                "section_2": [{"nombre_oferente": "Ana", "cargo_oferente": "Auxiliar"}],
+                "section_6": [{"nombre": "Leidy Novoa", "cargo": "Profesional"}],
+                "_section_history": {"section_3": [{"payload": {"foo": "bar"}}]},
+                "_last_saved_at": "2026-03-27 10:00:00",
+                "_last_saved_section": "section_3",
+                "_last_saved_source": "autosave",
+            },
+            output_path=r"C:\tmp\induccion.xlsx",
+            session_id="session-6",
+            app_version="2.0.0",
+        )
+
+        raw_cache = result["payload_raw"]["cache_snapshot"]
+        self.assertNotIn("_section_history", raw_cache)
+        self.assertNotIn("_last_saved_at", raw_cache)
+        self.assertNotIn("_last_saved_section", raw_cache)
+        self.assertNotIn("_last_saved_source", raw_cache)
+
 
 if __name__ == "__main__":
     unittest.main()

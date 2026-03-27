@@ -12,6 +12,12 @@ from typing import Any, Callable
 
 PAYLOAD_SCHEMA_VERSION = 1
 _PAYLOAD_REASON = "Generado directamente por la app de Inclusion Laboral."
+_INTERNAL_CACHE_KEYS = {
+    "_section_history",
+    "_last_saved_at",
+    "_last_saved_section",
+    "_last_saved_source",
+}
 
 
 def _clean_text(value: Any) -> str:
@@ -65,6 +71,16 @@ def _section_list(cache_snapshot: dict[str, Any], section_id: str) -> list[dict[
         if isinstance(item, dict):
             rows.append(dict(item))
     return rows
+
+
+def _strip_internal_cache_metadata(cache_snapshot: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(cache_snapshot, dict):
+        return {}
+    return {
+        key: value
+        for key, value in cache_snapshot.items()
+        if str(key or "") not in _INTERNAL_CACHE_KEYS
+    }
 
 
 def _normalize_asistentes(value: Any) -> list[dict[str, str]]:
@@ -449,7 +465,7 @@ def build_completion_payload(
 
     generated_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     payload_source = _clean_text((extra_context or {}).get("payload_source")) or "form_cache"
-    raw_cache = copy.deepcopy(dict(cache_snapshot or {}))
+    raw_cache = _strip_internal_cache_metadata(copy.deepcopy(dict(cache_snapshot or {})))
     normalized = normalizer(
         _clean_text(form_name),
         raw_cache,

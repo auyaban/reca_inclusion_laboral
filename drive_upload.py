@@ -296,86 +296,7 @@ def _log_drive(message, base_path=None):
         return
 
 
-def probe_drive_service(timeout=6, log_enabled=False):
-    started_at = time.perf_counter()
-
-    def _result(ok, status_text, error_code="", detail=""):
-        latency_ms = int((time.perf_counter() - started_at) * 1000)
-        payload = {
-            "ok": bool(ok),
-            "status_text": str(status_text or "").strip(),
-            "error_code": str(error_code or "").strip(),
-            "detail": str(detail or "").strip(),
-            "latency_ms": latency_ms,
-        }
-        if log_enabled:
-            level = "INFO" if ok else "ERROR"
-            _log_drive(
-                f"PROBE ok={payload['ok']} status={payload['status_text']!r} "
-                f"code={payload['error_code']!r} detail={payload['detail']!r} "
-                f"latency_ms={latency_ms}"
-            )
-        return payload
-
-    try:
-        from google.oauth2.service_account import Credentials
-        from googleapiclient.discovery import build
-    except ImportError as exc:
-        return _result(False, "Dependencias faltantes", "missing_dependencies", exc)
-
-    try:
-        creds_path = _get_credentials_path()
-    except Exception as exc:
-        return _result(False, "Credenciales no disponibles", "credentials", exc)
-
-    try:
-        configured_root_folder_id = _get_excel_folder_id()
-    except Exception as exc:
-        return _result(False, "Carpeta de Drive no configurada", "folder_config", exc)
-
-    try:
-        credentials = Credentials.from_service_account_file(creds_path, scopes=[SCOPE])
-        service = build("drive", "v3", credentials=credentials, cache_discovery=False)
-        target_id = _resolve_target_root_id(service, configured_root_folder_id)
-        if str(target_id).startswith("0A"):
-            result = service.files().list(
-                corpora="drive",
-                driveId=target_id,
-                includeItemsFromAllDrives=True,
-                supportsAllDrives=True,
-                pageSize=1,
-                fields="files(id,name)",
-                q="trashed=false",
-            ).execute()
-            files = result.get("files", [])
-            sample = files[0] if files else {}
-            return _result(
-                True,
-                "Configurado y autenticado",
-                "",
-                f"drive_id={target_id} sample_id={sample.get('id')} sample_name={sample.get('name')!r}",
-            )
-        metadata = service.files().get(
-            fileId=target_id,
-            fields="id,name,driveId,mimeType,trashed",
-            supportsAllDrives=True,
-        ).execute()
-        return _result(
-            True,
-            "Configurado y autenticado",
-            "",
-            f"id={metadata.get('id')} name={metadata.get('name')!r}",
-        )
-    except Exception as exc:
-        status = int(getattr(getattr(exc, "resp", None), "status", 0) or 0)
-        if status in {401, 403}:
-            return _result(False, "Autenticación o permisos inválidos", "auth", exc)
-        if status == 404:
-            return _result(False, "Carpeta de Drive no accesible", "folder_not_found", exc)
-        return _result(False, "No se pudo conectar a Drive", "connectivity", exc)
-
-
-def probe_drive_service(timeout=6, log_enabled=False):
+def probe_drive_service(timeout=6, log_enabled=False, require_write=True):
     started_at = time.perf_counter()
 
     def _result(ok, status_text, error_code="", detail=""):
@@ -418,15 +339,21 @@ def probe_drive_service(timeout=6, log_enabled=False):
         service = build("drive", "v3", credentials=credentials, cache_discovery=False)
         target_id = _resolve_target_root_id(service, configured_root_folder_id)
         read_meta = _probe_parent_read_access(service, target_id)
-        write_meta = _probe_parent_write_access(service, target_id)
+        detail = f"target_id={target_id} sample_id={read_meta.get('sample_id')}"
+        if require_write:
+            write_meta = _probe_parent_write_access(service, target_id)
+            detail = f"{detail} probe_id={write_meta.get('probe_id')}"
+            return _result(
+                True,
+                "Configurado y con escritura",
+                "",
+                detail,
+            )
         return _result(
             True,
-            "Configurado y con escritura",
+            "Configurado y autenticado",
             "",
-            (
-                f"target_id={target_id} sample_id={read_meta.get('sample_id')} "
-                f"probe_id={write_meta.get('probe_id')}"
-            ),
+            detail,
         )
     except Exception as exc:
         status = int(getattr(getattr(exc, "resp", None), "status", 0) or 0)
@@ -487,7 +414,7 @@ def upload_excel_to_drive(
     )
 
     credentials = Credentials.from_service_account_file(creds_path, scopes=[SCOPE])
-    service = build("drive", "v3", credentials=credentials)
+    service = build("drive", "v3", credentials=credentials, cache_discovery=False)
     root_folder_id = _resolve_target_root_id(service, configured_root_folder_id, excel_path)
     target_folder_id = root_folder_id
     if resolved_folder_name:

@@ -1,4 +1,5 @@
 import threading
+import errno
 import re
 import os
 import time
@@ -850,60 +851,137 @@ def _update_form_completion_upload_status(
         return False
 
 
+def _iter_exception_chain(exc):
+    pending = [exc]
+    seen = set()
+    while pending:
+        current = pending.pop(0)
+        if current is None:
+            continue
+        marker = id(current)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        yield current
+        for attr in ("__cause__", "__context__", "reason"):
+            nested = getattr(current, attr, None)
+            if isinstance(nested, BaseException):
+                pending.append(nested)
+        for value in getattr(current, "args", ()) or ():
+            if isinstance(value, BaseException):
+                pending.append(value)
+
+
+def _is_transient_os_error(exc):
+    if not isinstance(exc, OSError):
+        return False
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+    transient_errnos = {
+        getattr(errno, "ECONNABORTED", None),
+        getattr(errno, "ECONNREFUSED", None),
+        getattr(errno, "ECONNRESET", None),
+        getattr(errno, "EHOSTUNREACH", None),
+        getattr(errno, "ENETDOWN", None),
+        getattr(errno, "ENETRESET", None),
+        getattr(errno, "ENETUNREACH", None),
+        getattr(errno, "ETIMEDOUT", None),
+    }
+    transient_winerrors = {
+        64,
+        10051,
+        10052,
+        10053,
+        10054,
+        10060,
+        10061,
+    }
+    err_no = getattr(exc, "errno", None)
+    if isinstance(err_no, int) and err_no in transient_errnos:
+        return True
+    winerror = getattr(exc, "winerror", None)
+    if isinstance(winerror, int) and winerror in transient_winerrors:
+        return True
+    return False
+
+
 def _is_transient_drive_exception(exc):
     if exc is None:
         return False
-    root = exc
-    if isinstance(root, RuntimeError) and getattr(root, "__cause__", None) is not None:
-        root = root.__cause__
+    for root in _iter_exception_chain(exc):
+        if isinstance(root, urllib.error.HTTPError):
+            code = int(getattr(root, "code", 0) or 0)
+            if code >= 500 or code == 429:
+                return True
+            if code in {400, 401, 403, 404}:
+                return False
+        if isinstance(root, urllib.error.URLError):
+            return True
+        if isinstance(root, TimeoutError):
+            return True
+        if _is_transient_os_error(root):
+            return True
 
-    if isinstance(root, urllib.error.HTTPError):
-        code = int(getattr(root, "code", 0) or 0)
-        return code >= 500 or code == 429
-    if isinstance(root, urllib.error.URLError):
-        return True
-    if isinstance(root, TimeoutError):
-        return True
-    if isinstance(root, OSError):
-        return True
+        resp = getattr(root, "resp", None)
+        status = int(getattr(resp, "status", 0) or getattr(root, "status_code", 0) or 0)
+        if status >= 500 or status == 429:
+            return True
+        if status in {400, 401, 403, 404}:
+            return False
 
-    resp = getattr(root, "resp", None)
-    status = int(getattr(resp, "status", 0) or getattr(root, "status_code", 0) or 0)
-    if status >= 500 or status == 429:
-        return True
-    if status in {400, 401, 403, 404}:
-        return False
-
-    text = str(root).lower()
-    transient_markers = (
-        "timeout",
-        "timed out",
-        "temporarily unavailable",
-        "temporary failure",
-        "connection aborted",
-        "connection reset",
-        "network is unreachable",
-        "name resolution",
-        "failed to establish a new connection",
-        "connection refused",
-        "remote end closed connection",
-        "ssl",
-    )
-    if any(marker in text for marker in transient_markers):
-        return True
-    permanent_markers = (
-        "permission",
-        "forbidden",
-        "insufficient permissions",
-        "no existe el json",
-        "falta google_drive",
-        "invalid",
-        "not found",
-        "no existe el archivo",
-    )
-    if any(marker in text for marker in permanent_markers):
-        return False
+        text = str(root).lower()
+        transient_markers = (
+            "timeout",
+            "timed out",
+            "temporarily unavailable",
+            "temporary failure",
+            "connection aborted",
+            "connection reset",
+            "network is unreachable",
+            "name resolution",
+            "failed to establish a new connection",
+            "connection refused",
+            "remote end closed connection",
+            "se ha anulado una conexion",
+            "se ha anulado una conexión",
+            "software en su equipo host",
+            "ssl",
+        )
+        if any(marker in text for marker in transient_markers):
+            return True
+        permanent_markers = (
+            "permission",
+            "forbidden",
+            "insufficient permissions",
+            "no existe el json",
+            "falta google_drive",
+            "invalid",
+            "not found",
+            "no existe el archivo",
+        )
+        if any(marker in text for marker in permanent_markers):
+            return False
     return False
+
+
+def _build_drive_upload_result_from_exception(job, exc, *, attempted_at=None):
+    attempted_at = str(attempted_at or _get_colombia_now().isoformat()).strip()
+    error = str(exc).strip() or repr(exc)
+    status = "pending" if _is_transient_drive_exception(exc) else "failed"
+    _update_form_completion_upload_status(
+        (job or {}).get("registro_id"),
+        upload_status=status,
+        upload_error=error,
+        upload_attempted_at=attempted_at,
+    )
+    return {
+        "status": status,
+        "error": error,
+        "attempted_at": attempted_at,
+        "output_path": str((job or {}).get("local_excel_path") or "").strip(),
+        "remote_url": "",
+        "drive_file_id": "",
+    }
 
 
 def _drive_upload_operation_label(job):
@@ -939,22 +1017,7 @@ def _perform_drive_upload_attempt(job):
                 folder_name=company_name,
             )
     except Exception as exc:
-        error = str(exc).strip() or repr(exc)
-        status = "pending" if _is_transient_drive_exception(exc) else "failed"
-        _update_form_completion_upload_status(
-            job.get("registro_id"),
-            upload_status=status,
-            upload_error=error,
-            upload_attempted_at=attempted_at,
-        )
-        return {
-            "status": status,
-            "error": error,
-            "attempted_at": attempted_at,
-            "output_path": excel_path,
-            "remote_url": "",
-            "drive_file_id": "",
-        }
+        return _build_drive_upload_result_from_exception(job, exc, attempted_at=attempted_at)
 
     remote_url = str(upload_result.get("webViewLink") or "").strip()
     drive_file_id = str(upload_result.get("file_id") or "").strip()
@@ -2290,7 +2353,7 @@ def _result_with_dependency_down(status_text):
     }
 
 
-def probe_startup_services(log_enabled=False):
+def probe_startup_services(log_enabled=False, require_drive_write=True):
     internet = check_internet(log_enabled=log_enabled)
     if not internet.get("ok"):
         return {
@@ -2301,7 +2364,10 @@ def probe_startup_services(log_enabled=False):
     return {
         "internet": internet,
         "supabase": probe_supabase_service(log_enabled=log_enabled),
-        "drive": drive_upload.probe_drive_service(log_enabled=log_enabled),
+        "drive": drive_upload.probe_drive_service(
+            log_enabled=log_enabled,
+            require_write=require_drive_write,
+        ),
     }
 
 def _maximize_window(window):
@@ -4040,6 +4106,66 @@ def _raise_finalize_stage(stage, func):
         raise
     except Exception as exc:
         raise FinalizeProcessError(stage, exc) from exc
+
+
+def _read_followup_case_state(case_target):
+    try:
+        suggestion = seguimientos.suggest_next_step(case_target)
+        summary = seguimientos.describe_case(case_target)
+        return {"suggestion": suggestion, "summary": summary, "error": None}
+    except Exception as exc:
+        _log_capture(f"followup_case_state_read_failed target={case_target!r} err={exc}")
+        return {"suggestion": None, "summary": None, "error": exc}
+
+
+def _format_followup_case_state_error(exc):
+    if exc is None:
+        return ""
+    detail = str(exc).strip() or repr(exc)
+    detail_lower = detail.lower()
+    if _is_transient_drive_exception(exc) or "supabase no esta disponible" in detail_lower:
+        return (
+            "Archivo encontrado, pero no se pudo leer el estado actual del caso "
+            "por una falla temporal de conexión."
+        )
+    return f"Archivo encontrado, pero falló lectura de estado: {detail}"
+
+
+def _build_followup_suggestion_from_workflow(workflow):
+    workflow = workflow or {}
+    try:
+        max_seguimientos = int(workflow.get("max_seguimientos") or 3)
+    except Exception:
+        max_seguimientos = 3
+    return {
+        "sheet": workflow.get("suggested_sheet") or workflow.get("base_sheet_name") or seguimientos.SHEET_BASE,
+        "message": str(workflow.get("message") or "").strip(),
+        "max_seguimientos": max_seguimientos,
+    }
+
+
+def _format_followup_editor_open_error(exc):
+    if exc is None:
+        return ""
+    detail = str(exc).strip() or repr(exc)
+    detail_lower = detail.lower()
+    if _is_transient_drive_exception(exc) or "supabase no esta disponible" in detail_lower:
+        return "No se pudo abrir el editor del caso por una falla temporal de conexion."
+    return f"No se pudo abrir el editor del caso: {detail}"
+
+
+def _load_followup_editor_bootstrap(case_target):
+    try:
+        meta = seguimientos.get_case_meta(case_target)
+        workflow = seguimientos.get_workflow_state(case_target)
+    except Exception as exc:
+        _log_capture(f"followup_editor_bootstrap_failed target={case_target!r} err={exc}")
+        raise RuntimeError(_format_followup_editor_open_error(exc)) from exc
+    return {
+        "meta": dict(meta or {}),
+        "workflow": dict(workflow or {}),
+        "suggestion": _build_followup_suggestion_from_workflow(workflow),
+    }
 
 
 def _clear_form_cache_safe(module):
@@ -5972,7 +6098,14 @@ class HubWindow(tk.Tk):
         }
         if isinstance(drive_job, dict):
             job.update(drive_job)
-        result = _perform_drive_upload_attempt(job)
+        try:
+            result = _perform_drive_upload_attempt(job)
+        except Exception as exc:
+            _log_capture(
+                f"finalize_form_delivery unexpected_drive_exception "
+                f"registro_id={job.get('registro_id')} err={exc}"
+            )
+            result = _build_drive_upload_result_from_exception(job, exc)
         result["output_path"] = output_path
         result["registro_id"] = str(job.get("registro_id") or "").strip()
         if not result["registro_id"]:
@@ -6392,13 +6525,16 @@ class HubWindow(tk.Tk):
             "drive_failed": 0,
         }
         _cache_age = time.time() - (self._service_probe_cache_time or 0.0)
-        _use_cached = _cache_age < 15 and bool(self._service_probe_cache.get("internet"))
+        _use_cached = _cache_age < 60 and bool(self._service_probe_cache.get("internet"))
 
         def _worker():
             if _use_cached:
                 result["services"] = {}
             else:
-                result["services"] = probe_startup_services(log_enabled=False)
+                result["services"] = probe_startup_services(
+                    log_enabled=False,
+                    require_drive_write=False,
+                )
             supabase_stats = _get_supabase_write_queue_stats() or {}
             drive_stats = _get_drive_upload_queue_stats() or {}
             result["supabase_pending"] = int(supabase_stats.get("pending") or 0)
@@ -16799,10 +16935,13 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             )
             suggestion = None
             summary = None
+            state_error = None
             if case_target:
                 progress("Leyendo el estado actual del caso...", 82)
-                suggestion = seguimientos.suggest_next_step(case_target)
-                summary = seguimientos.describe_case(case_target)
+                state_snapshot = _read_followup_case_state(case_target)
+                suggestion = state_snapshot.get("suggestion")
+                summary = state_snapshot.get("summary")
+                state_error = state_snapshot.get("error")
             progress("Organizando la información del caso...", 100)
             return {
                 "row": row,
@@ -16811,6 +16950,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
                 "case_path": case_path,
                 "suggestion": suggestion,
                 "summary": summary,
+                "state_error": state_error,
             }
 
         def _on_success(data):
@@ -16850,6 +16990,14 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
                     missing_case_status=status_text,
                 )
                 return
+            state_error = data.get("state_error")
+            if state_error is not None:
+                self._case_suggestion_cache = None
+                self._case_summary_cache = None
+                self.suggestion_var.set("No fue posible leer sugerencia.")
+                self.followups_var.set("")
+                self.status_var.set(_format_followup_case_state_error(state_error))
+                return
             self._apply_summary_result(
                 suggestion=data.get("suggestion"),
                 summary=data.get("summary"),
@@ -16875,14 +17023,15 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             else:
                 self.status_var.set("No existe archivo para este vinculado. Busca la empresa por NIT o nombre para confirmar si es Compensar.")
             return
-        try:
-            suggestion = seguimientos.suggest_next_step(case_target)
-            summary = seguimientos.describe_case(case_target)
-        except Exception as exc:
+        state_snapshot = _read_followup_case_state(case_target)
+        suggestion = state_snapshot.get("suggestion")
+        summary = state_snapshot.get("summary")
+        state_error = state_snapshot.get("error")
+        if state_error is not None:
             self.suggestion_var.set("No fue posible leer sugerencia.")
-            self.company_var.set("")
+            self._apply_linked_company_to_ui()
             self.followups_var.set("")
-            self.status_var.set(f"Archivo encontrado, pero falló lectura de estado: {exc}")
+            self.status_var.set(_format_followup_case_state_error(state_error))
             return
         sheet = suggestion.get("sheet") or ""
         msg = suggestion.get("message") or ""
@@ -16966,16 +17115,20 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
                 progress("Usando el estado del caso ya leído...", 75)
                 suggestion = self._case_suggestion_cache
                 summary = self._case_summary_cache
+                state_error = None
             else:
                 progress("Leyendo la hoja sugerida para continuar...", 75)
-                suggestion = seguimientos.suggest_next_step(case_target)
-                summary = seguimientos.describe_case(case_target)
+                state_snapshot = _read_followup_case_state(case_target)
+                suggestion = state_snapshot.get("suggestion")
+                summary = state_snapshot.get("summary")
+                state_error = state_snapshot.get("error")
             progress("Abriendo el editor del caso...", 100)
             return {
                 "result": result,
                 "suggestion": suggestion,
                 "summary": summary,
                 "cache_key": cache_key,
+                "state_error": state_error,
             }
 
         def _on_success(data):
@@ -16990,6 +17143,16 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             created = bool(result.get("created"))
             max_seg = result.get("max_seguimientos")
             action = "creado" if created else "actualizado"
+            state_error = data.get("state_error")
+            if state_error is not None:
+                self._case_suggestion_cache = None
+                self._case_summary_cache = None
+                self.suggestion_var.set("No fue posible leer sugerencia.")
+                self.followups_var.set("")
+                self.status_var.set(_format_followup_case_state_error(state_error))
+                if self._get_case_target():
+                    self._open_editor()
+                return
             self._apply_summary_result(
                 suggestion=data.get("suggestion"),
                 summary=data.get("summary"),
@@ -17026,34 +17189,84 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         if not case_target:
             messagebox.showerror("Error", "No hay archivo de seguimiento para diligenciar.")
             return
-        if self.case_record and (
-            str((self.case_record or {}).get("source") or "").strip() != "drive"
-            or str((self.case_record or {}).get("mime_type") or "").strip()
-            != seguimientos.GOOGLE_SHEETS_MIME
-        ):
+        case_record_snapshot = dict(self.case_record or {})
+        case_path_snapshot = self.case_path
+        raw_cedula = self.cedula_combo.get().strip()
+        is_compensar = self.compensar_var.get().startswith("Si")
+        user_row_snapshot = dict(self.user_row or {})
+        linked_company_snapshot = dict(self.linked_company or {})
+
+        def _worker(progress):
+            case_record = dict(case_record_snapshot or {})
+            case_path = case_path_snapshot
+            progress("Preparando el editor del caso...", 18)
+            if case_record and (
+                str((case_record or {}).get("source") or "").strip() != "drive"
+                or str((case_record or {}).get("mime_type") or "").strip()
+                != seguimientos.GOOGLE_SHEETS_MIME
+            ):
+                progress("Migrando el caso a Google Sheets...", 52)
+                cedula = re.sub(r"\D+", "", raw_cedula)
+                user_row = dict(user_row_snapshot or {})
+                if linked_company_snapshot.get("nit_empresa"):
+                    user_row["empresa_nit"] = str(linked_company_snapshot.get("nit_empresa") or "").strip()
+                if linked_company_snapshot.get("nombre_empresa"):
+                    user_row["empresa_nombre"] = str(linked_company_snapshot.get("nombre_empresa") or "").strip()
+                try:
+                    result = seguimientos.ensure_case_record(
+                        cedula,
+                        user_row,
+                        is_compensar=is_compensar,
+                    )
+                except Exception as exc:
+                    raise RuntimeError(f"No se pudo migrar el caso a Google Sheets.\n{exc}") from exc
+                case_record = result.get("record") or case_record
+                case_path = (case_record or {}).get("local_path")
+            case_target = (
+                case_record
+                if (
+                    case_record
+                    and str((case_record or {}).get("source") or "").strip() == "drive"
+                    and str((case_record or {}).get("mime_type") or "").strip()
+                    == seguimientos.GOOGLE_SHEETS_MIME
+                )
+                else case_path
+            )
+            if not case_target:
+                raise RuntimeError("No hay archivo de seguimiento para diligenciar.")
+            progress("Leyendo la estructura del caso...", 82)
+            bootstrap = _load_followup_editor_bootstrap(case_target)
+            progress("Abriendo el editor...", 100)
+            return {
+                "case_record": case_record,
+                "case_path": case_path,
+                "bootstrap": bootstrap,
+            }
+
+        def _on_success(data):
+            self.case_record = data.get("case_record") or {}
+            self.case_path = data.get("case_path")
+            self.path_var.set((self.case_record or {}).get("webViewLink") or self.case_path or "")
+            self.open_btn.config(state="normal" if self.case_record else "disabled")
             try:
-                raw = self.cedula_combo.get().strip()
-                cedula = re.sub(r"\D+", "", raw)
-                user_row = dict(self.user_row or {})
-                if self.linked_company:
-                    if self.linked_company.get("nit_empresa"):
-                        user_row["empresa_nit"] = str(self.linked_company.get("nit_empresa") or "").strip()
-                    if self.linked_company.get("nombre_empresa"):
-                        user_row["empresa_nombre"] = str(self.linked_company.get("nombre_empresa") or "").strip()
-                result = seguimientos.ensure_case_record(
-                    cedula,
-                    user_row,
-                    is_compensar=self.compensar_var.get().startswith("Si"),
+                editor = SeguimientoEditorWindow(
+                    self,
+                    self.case_path,
+                    case_record=self.case_record,
+                    bootstrap=data.get("bootstrap"),
                 )
             except Exception as exc:
-                messagebox.showerror("Error", f"No se pudo migrar el caso a Google Sheets.\n{exc}")
+                messagebox.showerror("Error", str(exc))
                 return
-            self.case_record = result.get("record") or self.case_record
-            self.case_path = self.case_record.get("local_path")
-            self.path_var.set(self.case_record.get("webViewLink") or self.case_path or "")
-            self.open_btn.config(state="normal" if self.case_record else "disabled")
-        editor = SeguimientoEditorWindow(self, self.case_path, case_record=self.case_record)
-        _focus_window(editor)
+            _focus_window(editor)
+
+        self._run_loading_job(
+            title="Abriendo seguimiento",
+            initial_status="Preparando el editor del caso...",
+            worker=_worker,
+            on_success=_on_success,
+            on_error_title="Seguimientos",
+        )
 
     def _close_to_hub(self):
         _return_to_hub(self)
@@ -17061,7 +17274,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
 
 
 class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
-    def __init__(self, parent, case_path, case_record=None):
+    def __init__(self, parent, case_path, case_record=None, bootstrap=None):
         super().__init__(parent)
         self.owner = parent
         self.case_path = case_path
@@ -17080,8 +17293,13 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         self.geometry("1200x820")
         _maximize_window(self)
 
-        self.meta = seguimientos.get_case_meta(self.case_target)
-        self.workflow = seguimientos.get_workflow_state(self.case_target)
+        bootstrap = bootstrap or _load_followup_editor_bootstrap(self.case_target)
+        self.meta = dict((bootstrap or {}).get("meta") or {})
+        self.workflow = dict((bootstrap or {}).get("workflow") or {})
+        suggestion = dict(
+            (bootstrap or {}).get("suggestion")
+            or _build_followup_suggestion_from_workflow(self.workflow)
+        )
         self.max_seg = int(
             self.workflow.get("max_seguimientos") or self.meta.get("max_seguimientos") or 3
         )
@@ -17091,7 +17309,6 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             or seguimientos.SHEET_BASE
         )
         self.sheet_options = list(self.workflow.get("visible_sheets") or [self.base_sheet_name])
-        suggestion = seguimientos.suggest_next_step(self.case_target)
         self.sheet_var = tk.StringVar(value=suggestion.get("sheet") or self.sheet_options[0])
         if self.sheet_var.get() not in self.sheet_options:
             self.sheet_var.set(self.sheet_options[0])
@@ -17351,8 +17568,17 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         self.canvas.yview_moveto(0)
 
     def _refresh_workflow_state(self, preferred_sheet=None):
-        self.meta = seguimientos.get_case_meta(self.case_target)
-        self.workflow = seguimientos.get_workflow_state(self.case_target)
+        try:
+            bootstrap = _load_followup_editor_bootstrap(self.case_target)
+        except RuntimeError as exc:
+            self.status_var.set(str(exc))
+            return
+        self.meta = dict((bootstrap or {}).get("meta") or {})
+        self.workflow = dict((bootstrap or {}).get("workflow") or {})
+        suggestion = dict(
+            (bootstrap or {}).get("suggestion")
+            or _build_followup_suggestion_from_workflow(self.workflow)
+        )
         self.max_seg = int(
             self.workflow.get("max_seguimientos") or self.meta.get("max_seguimientos") or 3
         )
@@ -17367,7 +17593,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         target_sheet = preferred_sheet or self.sheet_var.get().strip()
         if target_sheet not in self.sheet_options:
             target_sheet = (
-                self.workflow.get("suggested_sheet")
+                suggestion.get("sheet")
                 or (self.sheet_options[0] if self.sheet_options else self.base_sheet_name)
             )
         self.sheet_var.set(target_sheet)

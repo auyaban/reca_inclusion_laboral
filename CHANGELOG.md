@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.2.7 - 2026-03-30
+
+Esta version endurece el flujo de `Seguimientos` frente a fallas temporales de red y deja mas seguro el proceso de actualizacion.
+
+### Cambios principales
+
+- Se corrigio el manejo de errores transitorios al leer el estado de casos de `Seguimientos`, evitando popups crudos por fallas como `WinError 10053`.
+- La apertura del editor de `Seguimientos` ahora precarga la estructura del caso en segundo plano y muestra errores amigables si Drive o Google Sheets fallan temporalmente.
+- Se redujo la agresividad del probe periodico de Drive para evitar ruido innecesario de conectividad en segundo plano.
+- Se elimino codigo duplicado en `drive_upload.py` y se fortalecio la clasificacion entre errores transitorios y errores permanentes.
+- Se agregaron pruebas de resiliencia para carga de casos, apertura del editor y manejo de errores de transporte.
+
+### Como afecta a los usuarios
+
+- Buscar una cedula y abrir un caso en `Seguimientos` ahora es mas estable cuando la red esta intermitente.
+- Las fallas temporales de Drive dejan de verse como errores tecnicos de Windows y pasan a mostrarse como mensajes operativos.
+- La app solo ofrecera la actualizacion cuando exista una version realmente superior, evitando instalaciones ambiguas sobre el mismo tag.
+
 ## 1.2.5 - 2026-03-27
 
 Esta version corrige un riesgo serio de perdida de datos en formularios de induccion y agrega una forma segura de reabrir formularios ya terminados.

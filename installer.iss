@@ -42,7 +42,6 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Abrir {#MyAppName}"; Flags: now
 [Code]
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  EnvPath: string;
   RoamingPath: string;
   EnvContent: string;
 begin
@@ -52,10 +51,8 @@ begin
                   'SUPABASE_KEY={#SupabaseKey}' + #13#10 +
                   'GITHUB_REPO_OWNER={#GithubRepoOwner}' + #13#10 +
                   'GITHUB_REPO_NAME={#GithubRepoName}' + #13#10 +
-                  'INSTALLER_ASSET_NAME={#InstallerAssetName}' + #13#10;
-
-    EnvPath := ExpandConstant('{app}\.env');
-    SaveStringToFile(EnvPath, EnvContent, False);
+                  'INSTALLER_ASSET_NAME={#InstallerAssetName}' + #13#10 +
+                  'GOOGLE_SERVICE_ACCOUNT_FILE={#GoogleServiceAccountFileName}' + #13#10;
 
     RoamingPath := ExpandConstant('{userappdata}\RECA Inclusion Laboral\.env');
     ForceDirectories(ExtractFileDir(RoamingPath));

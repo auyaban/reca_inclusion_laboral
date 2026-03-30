@@ -1,10 +1,10 @@
 import json
 import os
-import re
 import sys
 import time
 import uuid
 from logging_utils import log_drive_event
+from formularios.common import _load_env_file, _sanitize_filename as _shared_sanitize_filename
 
 
 SCOPE = "https://www.googleapis.com/auth/drive"
@@ -23,10 +23,15 @@ def _get_bundle_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _load_runtime_env():
+    try:
+        return _load_env_file(".env") or {}
+    except Exception:
+        return {}
+
+
 def _sanitize_filename(value):
-    safe = re.sub(r"[\\/:*?\"<>|]+", " ", str(value or ""))
-    safe = re.sub(r"\s+", " ", safe).strip()
-    return safe or "archivo"
+    return _shared_sanitize_filename(value, default="archivo", max_length=200)
 
 
 def _split_filename(filename):
@@ -38,13 +43,19 @@ def _split_filename(filename):
 
 
 def _get_credentials_path():
-    path = os.getenv("GOOGLE_DRIVE_SA_JSON")
+    runtime_env = _load_runtime_env()
+    path = (
+        os.getenv("GOOGLE_DRIVE_SA_JSON")
+        or os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
+        or runtime_env.get("GOOGLE_DRIVE_SA_JSON")
+        or runtime_env.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+    )
     if not path:
         config = _load_config()
         path = config.get("google_drive_sa_json")
     if not path:
         raise RuntimeError(
-            "Falta GOOGLE_DRIVE_SA_JSON o config.json con google_drive_sa_json."
+            "Falta GOOGLE_DRIVE_SA_JSON/GOOGLE_SERVICE_ACCOUNT_FILE o config.json con google_drive_sa_json."
         )
     # Resolve relative paths against the bundle / script directory so the app
     # works correctly whether running from source or as a PyInstaller bundle.

@@ -4,6 +4,7 @@ import re
 import sys
 from functools import lru_cache
 from pathlib import Path
+from formularios.common import _load_env_file
 
 
 DEFAULT_CONFIG_PATH = "config.json"
@@ -31,10 +32,20 @@ def _load_config():
     return {}
 
 
+def _load_runtime_env():
+    try:
+        return _load_env_file(".env") or {}
+    except Exception:
+        return {}
+
+
 def _get_credentials_path():
+    runtime_env = _load_runtime_env()
     env_path = str(
         os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
         or os.getenv("GOOGLE_SHEETS_SA_JSON")
+        or runtime_env.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+        or runtime_env.get("GOOGLE_SHEETS_SA_JSON")
         or ""
     ).strip()
     if env_path:
@@ -49,7 +60,7 @@ def _get_credentials_path():
         )
     if not path:
         raise RuntimeError(
-            "Falta GOOGLE_SERVICE_ACCOUNT_FILE o config.json con "
+            "Falta GOOGLE_SERVICE_ACCOUNT_FILE/GOOGLE_SHEETS_SA_JSON o config.json con "
             "google_service_account_file/google_sheets_sa_json/google_drive_sa_json."
         )
     if not os.path.isabs(path):
@@ -71,7 +82,12 @@ def extract_spreadsheet_id(value):
 
 
 def get_default_spreadsheet_id():
-    env_value = str(os.getenv("GOOGLE_SHEETS_DEFAULT_SPREADSHEET_ID") or "").strip()
+    runtime_env = _load_runtime_env()
+    env_value = str(
+        os.getenv("GOOGLE_SHEETS_DEFAULT_SPREADSHEET_ID")
+        or runtime_env.get("GOOGLE_SHEETS_DEFAULT_SPREADSHEET_ID")
+        or ""
+    ).strip()
     if env_value:
         return extract_spreadsheet_id(env_value)
 
@@ -87,8 +103,11 @@ def get_default_spreadsheet_id():
 
 
 def get_evaluacion_accesibilidad_template_id():
+    runtime_env = _load_runtime_env()
     env_value = str(
-        os.getenv("GOOGLE_SHEETS_EVALUACION_ACCESIBILIDAD_TEMPLATE_ID") or ""
+        os.getenv("GOOGLE_SHEETS_EVALUACION_ACCESIBILIDAD_TEMPLATE_ID")
+        or runtime_env.get("GOOGLE_SHEETS_EVALUACION_ACCESIBILIDAD_TEMPLATE_ID")
+        or ""
     ).strip()
     if env_value:
         return extract_spreadsheet_id(env_value)

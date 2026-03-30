@@ -1,11 +1,11 @@
-import os
 import json
+import os
 import time
 import re
 import shutil
 import unicodedata
 
-from google_sheets_client import read_sheet_values
+from google_sheets_client import _load_config as _load_sheets_config, read_sheet_values
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
     format_checkbox_symbol,
@@ -16,6 +16,7 @@ from formularios.common import (
     ws_write,
     _build_process_output_path,
     _get_desktop_dir,
+    _load_env_file,
     _next_available_file_path,
     _normalize_text,
     _sanitize_filename,
@@ -32,9 +33,27 @@ FORM_CACHE = {}
 SECTION_1_CACHE = {}
 _DISABILITY_DICT = None
 
-OFFICIAL_DICTIONARY_SPREADSHEET_ID = "1pMGkp7TKiCeNvRAE1Cu9zVmlSVYSAI9Kuq9YRbhckW8"
+DEFAULT_OFFICIAL_DICTIONARY_SPREADSHEET_ID = "1pMGkp7TKiCeNvRAE1Cu9zVmlSVYSAI9Kuq9YRbhckW8"
 OFFICIAL_DICTIONARY_SHEET = "caracterizacion"
 OFFICIAL_DICTIONARY_RANGE = f"'{OFFICIAL_DICTIONARY_SHEET}'!A52:B73"
+
+
+def _load_runtime_env():
+    try:
+        return _load_env_file(".env") or {}
+    except Exception:
+        return {}
+
+
+def _get_official_dictionary_spreadsheet_id():
+    runtime_env = _load_runtime_env()
+    raw = str(
+        os.getenv("GOOGLE_SHEETS_CONDICIONES_VACANTE_DICTIONARY_ID")
+        or runtime_env.get("GOOGLE_SHEETS_CONDICIONES_VACANTE_DICTIONARY_ID")
+        or _load_sheets_config().get("google_sheets_condiciones_vacante_dictionary_id")
+        or DEFAULT_OFFICIAL_DICTIONARY_SPREADSHEET_ID
+    ).strip()
+    return raw or DEFAULT_OFFICIAL_DICTIONARY_SPREADSHEET_ID
 
 
 SECTION_1 = {
@@ -1112,7 +1131,7 @@ def _looks_like_disability_heading(text):
 
 
 def _load_disability_descriptions_from_sheet():
-    rows = read_sheet_values(OFFICIAL_DICTIONARY_SPREADSHEET_ID, OFFICIAL_DICTIONARY_RANGE)
+    rows = read_sheet_values(_get_official_dictionary_spreadsheet_id(), OFFICIAL_DICTIONARY_RANGE)
     entries = {}
     for row in rows or []:
         if not row:

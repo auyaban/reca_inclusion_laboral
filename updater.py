@@ -24,7 +24,7 @@ def _update_log_path() -> Path:
     try:
         desktop = Path(os.path.expanduser("~")) / "Desktop"
         desktop.mkdir(parents=True, exist_ok=True)
-        return desktop / "log"
+        return desktop / "updater.log"
     except Exception:
         return appdata_logs_dir() / "updater.log"
 

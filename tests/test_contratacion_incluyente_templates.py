@@ -45,19 +45,19 @@ class ContratacionIncluyenteTemplateTests(unittest.TestCase):
 
     def test_individual_template_mapping_keeps_expected_rows(self) -> None:
         mapping = contratacion.SECTION_2_INDIVIDUAL_CELL_MAP
-        self.assertEqual(mapping["numero"], ("A", 18))
-        self.assertEqual(mapping["nombre_oferente"], ("C", 18))
-        self.assertEqual(mapping["cedula"], ("H", 18))
-        self.assertEqual(mapping["certificado_porcentaje"], ("K", 18))
-        self.assertEqual(mapping["discapacidad"], ("L", 18))
-        self.assertEqual(mapping["telefono_oferente"], ("O", 18))
-        self.assertEqual(mapping["contacto_emergencia"], ("I", 21))
-        self.assertEqual(mapping["parentesco"], ("M", 21))
-        self.assertEqual(mapping["telefono_emergencia"], ("Q", 21))
-        self.assertEqual(mapping["tipo_contrato"], ("G", 24))
-        self.assertEqual(mapping["desarrollo_actividad"], ("A", 26))
-        self.assertEqual(mapping["contrato_lee_nivel_apoyo"], ("G", 30))
-        self.assertEqual(mapping["rutas_atencion_nivel_apoyo"], ("G", 66))
+        self.assertEqual(mapping["numero"], ("A", 23))
+        self.assertEqual(mapping["nombre_oferente"], ("C", 23))
+        self.assertEqual(mapping["cedula"], ("H", 23))
+        self.assertEqual(mapping["certificado_porcentaje"], ("K", 23))
+        self.assertEqual(mapping["discapacidad"], ("L", 23))
+        self.assertEqual(mapping["telefono_oferente"], ("O", 23))
+        self.assertEqual(mapping["contacto_emergencia"], ("I", 26))
+        self.assertEqual(mapping["parentesco"], ("M", 26))
+        self.assertEqual(mapping["telefono_emergencia"], ("Q", 26))
+        self.assertEqual(mapping["tipo_contrato"], ("G", 29))
+        self.assertEqual(mapping["desarrollo_actividad"], ("A", 15))
+        self.assertEqual(mapping["contrato_lee_nivel_apoyo"], ("G", 33))
+        self.assertEqual(mapping["rutas_atencion_nivel_apoyo"], ("G", 69))
 
     def test_group_template_mapping_matches_audited_rows(self) -> None:
         mapping = contratacion.SECTION_2_GROUP_FIRST_BLOCK_CELL_MAP
@@ -90,6 +90,28 @@ class ContratacionIncluyenteTemplateTests(unittest.TestCase):
         self.assertEqual(mapping["telefono_oferente"][1] + third_offset, 127)
         self.assertEqual(mapping["contacto_emergencia"][1] + third_offset, 130)
         self.assertEqual(mapping["rutas_atencion_nivel_apoyo"][1] + third_offset, 173)
+
+    def test_section_2_template_mappings_target_empty_cells(self) -> None:
+        path = contratacion._find_template_path(contratacion.TEMPLATE_VARIANT_INDIVIDUAL)
+        wb = load_workbook(path, read_only=True)
+        try:
+            ws = wb[contratacion.SHEET_NAME_BY_VARIANT[contratacion.TEMPLATE_VARIANT_INDIVIDUAL]]
+            for field_id, (col, row) in contratacion.SECTION_2_INDIVIDUAL_CELL_MAP.items():
+                value = ws[f"{col}{row}"].value
+                self.assertIn(
+                    value,
+                    (None, ""),
+                    msg=f"individual field {field_id} points to non-empty cell {col}{row}: {value!r}",
+                )
+            for field_id, (col, row) in contratacion.SECTION_2_GROUP_FIRST_BLOCK_CELL_MAP.items():
+                value = ws[f"{col}{row}"].value
+                self.assertIn(
+                    value,
+                    (None, ""),
+                    msg=f"group field {field_id} points to non-empty cell {col}{row}: {value!r}",
+                )
+        finally:
+            wb.close()
 
     def test_group_block_rows_expand_from_single_template_block(self) -> None:
         self.assertEqual(contratacion._section_2_group_block_start_row(0), 19)

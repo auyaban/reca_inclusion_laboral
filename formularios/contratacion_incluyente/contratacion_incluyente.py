@@ -6,6 +6,7 @@ from datetime import datetime
 from difflib import SequenceMatcher
 from functools import lru_cache
 
+from openpyxl import load_workbook
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
     _build_process_output_path,
@@ -436,87 +437,82 @@ SECTION_2_GROUP_FIRST_BLOCK_START_ROW = 19
 SECTION_2_GROUP_SECOND_BLOCK_START_ROW = 71
 SECTION_2_GROUP_SHARED_ACTIVITY_CELL = "A15"
 
-SECTION_2_INDIVIDUAL_CELL_MAP = {
-    "numero": ("A", 18),
-    "nombre_oferente": ("C", 18),
-    "cedula": ("H", 18),
-    "certificado_porcentaje": ("K", 18),
-    "discapacidad": ("L", 18),
-    "telefono_oferente": ("O", 18),
-    "genero": ("C", 19),
-    "correo_oferente": ("G", 19),
-    "fecha_nacimiento": ("M", 19),
-    "edad": ("Q", 19),
-    "lgtbiq": ("E", 20),
-    "grupo_etnico": ("L", 20),
-    "grupo_etnico_cual": ("O", 20),
-    "cargo_oferente": ("C", 21),
-    "contacto_emergencia": ("I", 21),
-    "parentesco": ("M", 21),
-    "telefono_emergencia": ("Q", 21),
-    "certificado_discapacidad": ("F", 22),
-    "lugar_firma_contrato": ("L", 22),
-    "fecha_firma_contrato": ("Q", 22),
-    "tipo_contrato": ("G", 24),
-    "fecha_fin": ("N", 24),
-    "desarrollo_actividad": ("A", 26),
-    "contrato_lee_nivel_apoyo": ("G", 30),
-    "contrato_lee_observacion": ("L", 30),
-    "contrato_lee_nota": ("M", 31),
-    "contrato_comprendido_nivel_apoyo": ("G", 32),
-    "contrato_comprendido_observacion": ("L", 32),
-    "contrato_comprendido_nota": ("M", 33),
-    "contrato_tipo_nivel_apoyo": ("G", 34),
-    "contrato_tipo_observacion": ("L", 34),
-    "contrato_tipo_contrato": ("L", 35),
-    "contrato_jornada": ("L", 36),
-    "contrato_clausulas": ("L", 37),
-    "contrato_tipo_nota": ("M", 38),
-    "condiciones_salariales_nivel_apoyo": ("G", 39),
-    "condiciones_salariales_observacion": ("L", 39),
-    "condiciones_salariales_frecuencia_pago": ("L", 40),
-    "condiciones_salariales_forma_pago": ("L", 41),
-    "condiciones_salariales_nota": ("M", 42),
-    "prestaciones_cesantias_nivel_apoyo": ("G", 45),
-    "prestaciones_cesantias_observacion": ("L", 45),
-    "prestaciones_cesantias_nota": ("M", 46),
-    "prestaciones_auxilio_transporte_nivel_apoyo": ("G", 47),
-    "prestaciones_auxilio_transporte_observacion": ("L", 47),
-    "prestaciones_auxilio_transporte_nota": ("M", 48),
-    "prestaciones_prima_nivel_apoyo": ("G", 49),
-    "prestaciones_prima_observacion": ("L", 49),
-    "prestaciones_prima_nota": ("M", 50),
-    "prestaciones_seguridad_social_nivel_apoyo": ("G", 51),
-    "prestaciones_seguridad_social_observacion": ("L", 51),
-    "prestaciones_seguridad_social_nota": ("M", 52),
-    "prestaciones_vacaciones_nivel_apoyo": ("G", 53),
-    "prestaciones_vacaciones_observacion": ("L", 53),
-    "prestaciones_vacaciones_nota": ("M", 54),
-    "prestaciones_auxilios_beneficios_nivel_apoyo": ("G", 55),
-    "prestaciones_auxilios_beneficios_observacion": ("L", 55),
-    "prestaciones_auxilios_beneficios_nota": ("M", 56),
-    "conducto_regular_nivel_apoyo": ("G", 59),
-    "conducto_regular_observacion": ("L", 59),
-    "descargos_observacion": ("L", 60),
-    "tramites_observacion": ("L", 61),
-    "permisos_observacion": ("L", 62),
-    "conducto_regular_nota": ("M", 63),
-    "causales_fin_nivel_apoyo": ("G", 64),
-    "causales_fin_observacion": ("L", 64),
-    "causales_fin_nota": ("M", 65),
-    "rutas_atencion_nivel_apoyo": ("G", 66),
-    "rutas_atencion_observacion": ("L", 66),
-    "rutas_atencion_nota": ("M", 67),
+SECTION_2_BLOCK_CELL_MAP = {
+    "numero": ("A", 23),
+    "nombre_oferente": ("C", 23),
+    "cedula": ("H", 23),
+    "certificado_porcentaje": ("K", 23),
+    "discapacidad": ("L", 23),
+    "telefono_oferente": ("O", 23),
+    "genero": ("C", 24),
+    "correo_oferente": ("G", 24),
+    "fecha_nacimiento": ("M", 24),
+    "edad": ("Q", 24),
+    "lgtbiq": ("E", 25),
+    "grupo_etnico": ("L", 25),
+    "grupo_etnico_cual": ("O", 25),
+    "cargo_oferente": ("C", 26),
+    "contacto_emergencia": ("I", 26),
+    "parentesco": ("M", 26),
+    "telefono_emergencia": ("Q", 26),
+    "certificado_discapacidad": ("F", 27),
+    "lugar_firma_contrato": ("L", 27),
+    "fecha_firma_contrato": ("Q", 27),
+    "tipo_contrato": ("G", 29),
+    "fecha_fin": ("N", 29),
+    "contrato_lee_nivel_apoyo": ("G", 33),
+    "contrato_lee_observacion": ("L", 33),
+    "contrato_lee_nota": ("M", 34),
+    "contrato_comprendido_nivel_apoyo": ("G", 35),
+    "contrato_comprendido_observacion": ("L", 35),
+    "contrato_comprendido_nota": ("M", 36),
+    "contrato_tipo_nivel_apoyo": ("G", 37),
+    "contrato_tipo_observacion": ("L", 37),
+    "contrato_tipo_contrato": ("L", 38),
+    "contrato_jornada": ("L", 39),
+    "contrato_clausulas": ("L", 40),
+    "contrato_tipo_nota": ("M", 41),
+    "condiciones_salariales_nivel_apoyo": ("G", 42),
+    "condiciones_salariales_observacion": ("L", 42),
+    "condiciones_salariales_frecuencia_pago": ("L", 43),
+    "condiciones_salariales_forma_pago": ("L", 44),
+    "condiciones_salariales_nota": ("M", 45),
+    "prestaciones_cesantias_nivel_apoyo": ("G", 48),
+    "prestaciones_cesantias_observacion": ("L", 48),
+    "prestaciones_cesantias_nota": ("M", 49),
+    "prestaciones_auxilio_transporte_nivel_apoyo": ("G", 50),
+    "prestaciones_auxilio_transporte_observacion": ("L", 50),
+    "prestaciones_auxilio_transporte_nota": ("M", 51),
+    "prestaciones_prima_nivel_apoyo": ("G", 52),
+    "prestaciones_prima_observacion": ("L", 52),
+    "prestaciones_prima_nota": ("M", 53),
+    "prestaciones_seguridad_social_nivel_apoyo": ("G", 54),
+    "prestaciones_seguridad_social_observacion": ("L", 54),
+    "prestaciones_seguridad_social_nota": ("M", 55),
+    "prestaciones_vacaciones_nivel_apoyo": ("G", 56),
+    "prestaciones_vacaciones_observacion": ("L", 56),
+    "prestaciones_vacaciones_nota": ("M", 57),
+    "prestaciones_auxilios_beneficios_nivel_apoyo": ("G", 58),
+    "prestaciones_auxilios_beneficios_observacion": ("L", 58),
+    "prestaciones_auxilios_beneficios_nota": ("M", 59),
+    "conducto_regular_nivel_apoyo": ("G", 62),
+    "conducto_regular_observacion": ("L", 62),
+    "descargos_observacion": ("L", 63),
+    "tramites_observacion": ("L", 64),
+    "permisos_observacion": ("L", 65),
+    "conducto_regular_nota": ("M", 66),
+    "causales_fin_nivel_apoyo": ("G", 67),
+    "causales_fin_observacion": ("L", 67),
+    "causales_fin_nota": ("M", 68),
+    "rutas_atencion_nivel_apoyo": ("G", 69),
+    "rutas_atencion_observacion": ("L", 69),
+    "rutas_atencion_nota": ("M", 70),
 }
 
-SECTION_2_GROUP_FIRST_BLOCK_CELL_MAP = dict(SECTION_2_INDIVIDUAL_CELL_MAP)
-for _field_id, (_col, _row) in list(SECTION_2_GROUP_FIRST_BLOCK_CELL_MAP.items()):
-    if _field_id == "desarrollo_actividad":
-        SECTION_2_GROUP_FIRST_BLOCK_CELL_MAP.pop(_field_id, None)
-    elif _row <= 24:
-        SECTION_2_GROUP_FIRST_BLOCK_CELL_MAP[_field_id] = (_col, _row + 5)
-    elif _row >= 30:
-        SECTION_2_GROUP_FIRST_BLOCK_CELL_MAP[_field_id] = (_col, _row + 3)
+SECTION_2_INDIVIDUAL_CELL_MAP = dict(SECTION_2_BLOCK_CELL_MAP)
+SECTION_2_INDIVIDUAL_CELL_MAP["desarrollo_actividad"] = ("A", 15)
+
+SECTION_2_GROUP_FIRST_BLOCK_CELL_MAP = dict(SECTION_2_BLOCK_CELL_MAP)
 
 SECTION_1_CELL_MAP_BY_TEMPLATE = {
     TEMPLATE_VARIANT_INDIVIDUAL: EXCEL_MAPPING["section_1"],
@@ -792,8 +788,6 @@ def _get_list_field_cell(field_id, template_variant=TEMPLATE_VARIANT_INDIVIDUAL)
 
 @lru_cache(maxsize=None)
 def _get_template_validation_formula_map(template_variant):
-    from openpyxl import load_workbook
-
     path = _find_template_path(template_variant)
     workbook = load_workbook(path)
     target_sheet = SHEET_NAME_BY_VARIANT.get(template_variant) or workbook.sheetnames[0]

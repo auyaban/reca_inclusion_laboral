@@ -128,6 +128,8 @@ LOGIN_CREDENTIALS_FILE_NAME = "login_credentials.json"
 DRIVE_UPLOAD_QUEUE_FILE_NAME = "drive_upload_queue.json"
 DRIVE_UPLOAD_FAILED_FILE_NAME = "drive_upload_failed.json"
 COMPLETED_FORMS_RETENTION_DAYS = 30
+TEST_FILL_LOGIN = "testaaron"
+TEST_FILL_TEXT = "Pendiente"
 COMPLETED_FORM_ID_ALIASES = {
     "condiciones_vacante_labs": "condiciones_vacante",
     "seleccion_incluyente_labs": "seleccion_incluyente",
@@ -498,24 +500,9 @@ def _prune_completed_forms_entries(entries, *, now=None):
             or item.get("finalizado_at_colombia")
         )
         if dt is None or dt.timestamp() >= cutoff_ts:
-            kept.append(item)
-    kept.sort(
-        key=lambda item: (
-            _parse_completed_datetime(
-                item.get("finalizado_at_iso")
-                or item.get("payload_generated_at")
-                or item.get("finalizado_at_colombia")
-            ).timestamp()
-            if _parse_completed_datetime(
-                item.get("finalizado_at_iso")
-                or item.get("payload_generated_at")
-                or item.get("finalizado_at_colombia")
-            )
-            else 0.0
-        ),
-        reverse=True,
-    )
-    return kept
+            kept.append((dt.timestamp() if dt is not None else 0.0, item))
+    kept.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _timestamp, item in kept]
 
 
 def _load_completed_forms_store():
@@ -1450,6 +1437,159 @@ def _set_widget_value_from_snapshot(widget, value):
     return False
 
 
+def _login_allows_test_fill(login):
+    return str(login or "").strip().lower() == TEST_FILL_LOGIN
+
+
+def _pick_test_combobox_value(values):
+    for value in list(values or []):
+        text = str(value or "")
+        if text.strip():
+            return text
+    return ""
+
+
+def _get_test_fill_entry_value(kind="", max_len=None):
+    normalized_kind = str(kind or "").strip().lower()
+    if normalized_kind == "numeric":
+        try:
+            size = int(max_len)
+        except Exception:
+            size = 1
+        size = max(1, size)
+        return "1" * min(size, 4)
+    if normalized_kind == "decimal":
+        return "1"
+    if normalized_kind == "birthdate":
+        return "01/01/2000"
+    return TEST_FILL_TEXT
+
+
+def _window_allows_test_fill(window):
+    form_id = getattr(window, "_form_id", "") or WINDOW_CLASS_FORM_ID_MAP.get(
+        window.__class__.__name__, ""
+    )
+    if not form_id:
+        return False
+    hub = getattr(window, "master", None)
+    if hub is None:
+        return False
+    login = (
+        getattr(hub, "current_user_profile", {}).get("usuario_login")
+        or getattr(hub, "current_user", "")
+    )
+    return _login_allows_test_fill(login)
+
+
+def _emit_test_fill_events(widget):
+    try:
+        if isinstance(widget, ttk.Combobox):
+            widget.event_generate("<<ComboboxSelected>>")
+            widget.event_generate("<FocusOut>")
+            return
+        if isinstance(widget, DateEntry):
+            widget.event_generate("<<DateEntrySelected>>")
+            widget.event_generate("<FocusOut>")
+            return
+        widget.event_generate("<FocusOut>")
+    except Exception:
+        return
+
+
+def _fill_widget_for_test(widget):
+    try:
+        if not widget.winfo_exists() or not widget.winfo_ismapped():
+            return False
+    except Exception:
+        return False
+
+    try:
+        if isinstance(widget, tk.Text):
+            widget.delete("1.0", tk.END)
+            widget.insert("1.0", TEST_FILL_TEXT)
+            _emit_test_fill_events(widget)
+            return True
+        if isinstance(widget, ttk.Combobox):
+            state = str(widget.cget("state") or "")
+            if state == "disabled":
+                return False
+            combo_value = _pick_test_combobox_value(widget.cget("values"))
+            if combo_value:
+                widget.set(combo_value)
+            elif state != "readonly":
+                widget.set(TEST_FILL_TEXT)
+            else:
+                return False
+            _emit_test_fill_events(widget)
+            return True
+        if isinstance(widget, DateEntry):
+            state = str(widget.cget("state") or "")
+            if state == "disabled":
+                return False
+            widget.set_date(_get_colombia_now().date())
+            _emit_test_fill_events(widget)
+            return True
+        if isinstance(widget, (tk.Entry, ttk.Entry)):
+            state = str(widget.cget("state") or "")
+            if state in {"readonly", "disabled"}:
+                return False
+            value = _get_test_fill_entry_value(
+                getattr(widget, "_test_fill_kind", ""),
+                getattr(widget, "_test_fill_max_len", None),
+            )
+            widget.delete(0, tk.END)
+            widget.insert(0, value)
+            _emit_test_fill_events(widget)
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _fill_current_section_with_test_data(window):
+    if not _window_allows_test_fill(window):
+        return False
+    section_root = getattr(window, "section_container", None) or window
+    changed_total = 0
+    for _attempt in range(3):
+        changed = 0
+        for _path, widget in _iter_widget_paths(section_root):
+            changed += 1 if _fill_widget_for_test(widget) else 0
+        changed_total += changed
+        try:
+            window.update_idletasks()
+        except Exception:
+            pass
+        if changed == 0:
+            break
+    autosave_fn = getattr(window, "_pending_autosave", None)
+    if callable(autosave_fn):
+        try:
+            autosave_fn()
+        except Exception as exc:
+            _log_capture(
+                f"[TEST_FILL] autosave_failed form={getattr(window, '_form_id', '')} "
+                f"section={getattr(window, '_current_section', '')} err={exc}"
+            )
+    try:
+        _refresh_form_save_status(window)
+    except Exception:
+        pass
+    hub = getattr(window, "master", None)
+    if changed_total and hub and hasattr(hub, "show_toast"):
+        try:
+            hub.show_toast("Seccion diligenciada en modo test")
+        except Exception:
+            pass
+    return changed_total > 0
+
+
+def _get_test_fill_command(window):
+    if not _window_allows_test_fill(window):
+        return None
+    return lambda w=window: _fill_current_section_with_test_data(w)
+
+
 def _collect_visible_input_snapshot(window):
     sticky_bar = getattr(window, "_sticky_actions_bar", None)
     rows = []
@@ -1741,12 +1881,6 @@ def _normalize_ascii_text(value):
     return text
 
 
-def _sanitize_sheet_name(value, fallback="Hoja"):
-    text = _normalize_ascii_text(value) or fallback
-    text = text.replace("[", "").replace("]", "").replace(":", "")
-    return text[:31] if len(text) > 31 else text
-
-
 def _detect_mojibake_issues(project_root):
     issues = []
     include_roots = [
@@ -1810,6 +1944,9 @@ def _normalize_person_name(value):
 
 
 def _bind_numeric_entry(entry, max_len=None):
+    entry._test_fill_kind = "numeric"
+    entry._test_fill_max_len = max_len
+
     def _on_key_release(_event=None):
         raw = _digits_only(entry.get(), max_len=max_len)
         if entry.get() == raw:
@@ -1821,6 +1958,8 @@ def _bind_numeric_entry(entry, max_len=None):
 
 
 def _bind_decimal_entry(entry):
+    entry._test_fill_kind = "decimal"
+
     def _normalize_current(*, allow_trailing_separator):
         raw = _normalize_decimal_value(
             entry.get(),
@@ -1843,6 +1982,8 @@ def _bind_decimal_entry(entry):
 
 
 def _bind_name_entry(entry):
+    entry._test_fill_kind = "name"
+
     def _on_key_release(_event=None):
         filtered = "".join(ch for ch in entry.get() if ch.isalpha() or ch.isspace())
         if filtered == entry.get():
@@ -1913,6 +2054,8 @@ def _bind_birthdate_entry(
     mark_invalid=True,
     clear_invalid=False,
 ):
+    date_entry._test_fill_kind = "birthdate"
+
     state = {"updating": False}
 
     def _format_and_validate(_event=None):
@@ -2160,102 +2303,6 @@ def probe_startup_services(log_enabled=False):
         "supabase": probe_supabase_service(log_enabled=log_enabled),
         "drive": drive_upload.probe_drive_service(log_enabled=log_enabled),
     }
-
-
-def _is_seguimiento_form(form_name):
-    return "seguimiento" in str(form_name or "").strip().lower()
-
-
-def _build_company_workbook_path(individual_excel_path, company_name):
-    company_safe = _normalize_ascii_text(company_name) or "Empresa"
-    base_dir = os.path.dirname(individual_excel_path)
-    parent_name = _normalize_ascii_text(os.path.basename(base_dir))
-    folder = base_dir if parent_name.lower() == company_safe.lower() else os.path.join(base_dir, company_safe)
-    os.makedirs(folder, exist_ok=True)
-    return os.path.join(folder, f"{company_safe}.xlsx")
-
-
-def _append_sheet_to_company_workbook(individual_excel_path, company_name, form_name):
-    if not individual_excel_path or not os.path.exists(individual_excel_path):
-        raise RuntimeError("No existe el Excel individual para consolidar.")
-    if _is_seguimiento_form(form_name):
-        return individual_excel_path
-
-    try:
-        import win32com.client as win32  # pyright: ignore[reportMissingModuleSource]
-    except ImportError as exc:
-        raise RuntimeError("Falta pywin32 para consolidar hojas por empresa.") from exc
-
-    company_workbook_path = _build_company_workbook_path(individual_excel_path, company_name)
-    sheet_base = _sanitize_sheet_name(form_name, fallback="Formulario")
-
-    if not os.path.exists(company_workbook_path):
-        shutil.copy2(individual_excel_path, company_workbook_path)
-        excel = win32.DispatchEx("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
-        wb = None
-        try:
-            wb = excel.Workbooks.Open(os.path.abspath(company_workbook_path))
-            existing_names = {str(wb.Worksheets(i).Name) for i in range(1, wb.Worksheets.Count + 1)}
-            first_sheet = wb.Worksheets(1)
-            next_name = sheet_base
-            suffix = 2
-            while next_name in existing_names and next_name != str(first_sheet.Name):
-                next_name = _sanitize_sheet_name(f"{sheet_base} {suffix}", fallback=sheet_base)
-                suffix += 1
-            first_sheet.Name = next_name
-            wb.Save()
-            return company_workbook_path
-        finally:
-            try:
-                if wb is not None:
-                    wb.Close(SaveChanges=False)
-            except Exception:
-                pass
-            try:
-                excel.Quit()
-            except Exception:
-                pass
-
-    excel = win32.DispatchEx("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
-    src_wb = None
-    dst_wb = None
-    try:
-        src_wb = excel.Workbooks.Open(os.path.abspath(individual_excel_path))
-        dst_wb = excel.Workbooks.Open(os.path.abspath(company_workbook_path))
-        existing_names = {str(dst_wb.Worksheets(i).Name) for i in range(1, dst_wb.Worksheets.Count + 1)}
-
-        # In COM automation, cross-workbook copy is reliable with "Before".
-        src_wb.Worksheets(1).Copy(Before=dst_wb.Worksheets(1))
-        new_sheet = dst_wb.Worksheets(1)
-
-        next_name = sheet_base
-        suffix = 2
-        while next_name in existing_names:
-            next_name = _sanitize_sheet_name(f"{sheet_base} {suffix}", fallback=sheet_base)
-            suffix += 1
-        new_sheet.Name = next_name
-        dst_wb.Save()
-        return company_workbook_path
-    finally:
-        try:
-            if src_wb is not None:
-                src_wb.Close(SaveChanges=False)
-        except Exception:
-            pass
-        try:
-            if dst_wb is not None:
-                dst_wb.Close(SaveChanges=False)
-        except Exception:
-            pass
-        try:
-            excel.Quit()
-        except Exception:
-            pass
-
 
 def _maximize_window(window):
     screen_w = None
@@ -2559,6 +2606,19 @@ def _install_sticky_actions(frame):
 def _pack_actions(frame, pad_y=(8, FORM_PADY), pad_x=True):
     try:
         window = frame.winfo_toplevel()
+        test_cmd = _get_test_fill_command(window)
+        if callable(test_cmd):
+            has_test = False
+            for child in frame.winfo_children():
+                if isinstance(child, ttk.Button) and str(child.cget("text")).strip().lower() == "test":
+                    has_test = True
+                    break
+            if not has_test:
+                ttk.Button(
+                    frame,
+                    text="Test",
+                    command=test_cmd,
+                ).pack(side="left", padx=(8, 0))
         save_cmd = _get_draft_save_command(window)
         if callable(save_cmd):
             has_save = False
@@ -2970,7 +3030,7 @@ def _create_vscroll(parent, command):
     return tk.Scrollbar(parent, orient="vertical", command=command, width=SCROLLBAR_WIDTH)
 
 
-def _build_scrollable_section_shell(parent, owner=None):
+def _build_scrollable_content(parent, owner=None):
     parent.grid_rowconfigure(0, weight=1)
     parent.grid_columnconfigure(0, weight=1)
 
@@ -3000,10 +3060,6 @@ def _build_scrollable_section_shell(parent, owner=None):
             pass
 
     return content
-
-
-def _build_scrollable_content(parent, owner=None):
-    return _build_scrollable_section_shell(parent, owner)
 
 
 def _get_required_modalidad(window):

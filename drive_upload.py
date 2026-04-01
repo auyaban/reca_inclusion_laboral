@@ -469,6 +469,7 @@ def publish_evaluacion_accesibilidad_sheet(
     folder_name=None,
     professional_name=None,
     clear_ranges=None,
+    format_ranges=None,
     template_id=None,
 ):
     try:
@@ -483,9 +484,11 @@ def publish_evaluacion_accesibilidad_sheet(
     try:
         from google_sheets_client import (
             batch_write_sheet_updates,
+            clear_protected_ranges,
             clear_sheet_ranges,
             extract_spreadsheet_id,
             get_evaluacion_accesibilidad_template_id,
+            set_sheet_ranges_bold,
         )
     except ImportError as exc:
         _log_drive("ERROR missing_google_sheets_client")
@@ -548,9 +551,12 @@ def publish_evaluacion_accesibilidad_sheet(
         spreadsheet_id = str(copied.get("id") or "").strip()
         if not spreadsheet_id:
             raise RuntimeError("Google Drive no devolvió el ID de la copia creada.")
+        clear_protected_ranges(spreadsheet_id)
         if clear_ranges:
             clear_sheet_ranges(spreadsheet_id, clear_ranges)
         batch_write_sheet_updates(spreadsheet_id, sheet_writes)
+        if format_ranges:
+            set_sheet_ranges_bold(spreadsheet_id, format_ranges, bold=False)
     except Exception as exc:
         _log_drive(f"ERROR publish_sheet {exc}")
         if spreadsheet_id:

@@ -1,17 +1,85 @@
+param(
+    [switch]$Clean,
+    [switch]$ForceDependencyInstall
+)
+
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $root
 
 $venvPath = Join-Path $root ".venv"
+$venvCreated = $false
 if (!(Test-Path $venvPath)) {
     python -m venv $venvPath
+    $venvCreated = $true
 }
 
 $python = Join-Path $venvPath "Scripts\python.exe"
-& $python -m pip install --upgrade pip
-& $python -m pip install -r requirements.txt
-& $python -m pip install pyinstaller
+$requirementsPath = Join-Path $root "requirements.txt"
+$requirementsHashPath = Join-Path $venvPath ".requirements.sha256"
+
+function Get-FileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    return (Get-FileHash -Algorithm SHA256 $Path).Hash.ToLowerInvariant()
+}
+
+function Test-PythonModule {
+    param([Parameter(Mandatory = $true)][string]$ModuleName)
+
+    & $python -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('$ModuleName') else 1)"
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Write-Utf8NoBomFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Value
+    )
+
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Value, $encoding)
+}
+
+function Repair-TkcalendarSyntaxWarning {
+    param([Parameter(Mandatory = $true)][string]$VenvPath)
+
+    $calendarPath = Join-Path $VenvPath "Lib\site-packages\tkcalendar\calendar_.py"
+    if (!(Test-Path $calendarPath)) {
+        return
+    }
+
+    $original = Get-Content $calendarPath -Raw
+    $needle = '"Liberation\ Sans 9"'
+    $replacement = '"Liberation\\ Sans 9"'
+    if ($original.Contains($needle)) {
+        Write-Utf8NoBomFile -Path $calendarPath -Value ($original.Replace($needle, $replacement))
+        Write-Host "tkcalendar calendar_.py normalizado para evitar SyntaxWarning."
+    }
+}
+
+$requirementsHash = Get-FileSha256 $requirementsPath
+$cachedRequirementsHash = ""
+if (Test-Path $requirementsHashPath) {
+    $cachedRequirementsHash = (Get-Content $requirementsHashPath | Select-Object -First 1).Trim().ToLowerInvariant()
+}
+
+$needsDependencyInstall = $ForceDependencyInstall `
+    -or $venvCreated `
+    -or ($cachedRequirementsHash -ne $requirementsHash) `
+    -or -not (Test-PythonModule "PyInstaller")
+
+if ($needsDependencyInstall) {
+    & $python -m pip install --upgrade pip
+    & $python -m pip install -r requirements.txt
+    & $python -m pip install pyinstaller
+    Set-Content -Path $requirementsHashPath -Value "$requirementsHash`n" -Encoding utf8
+} else {
+    Write-Host "Dependencias sin cambios; se reutiliza la .venv."
+}
+
+Repair-TkcalendarSyntaxWarning -VenvPath $venvPath
 
 function Get-EnvMap {
     param([string[]]$Lines)
@@ -105,9 +173,9 @@ Set-Content -Path (Join-Path $root "installer_config.local.iss") -Value $install
 
 $pyiArgs = @(
     "--noconfirm",
-    "--clean",
     "--windowed",
     "--name", "RECA_INCLUSION_LABORAL",
+    "--additional-hooks-dir", "pyinstaller_hooks",
     "--add-data", "templates;templates",
     "--add-data", "Diccionario.txt;.",
     "--add-data", "VERSION;.",
@@ -120,5 +188,9 @@ $pyiArgs = @(
     "--hidden-import", "win32timezone",
     "app.py"
 )
+
+if ($Clean) {
+    $pyiArgs = @("--clean") + $pyiArgs
+}
 
 & $python -m PyInstaller @pyiArgs

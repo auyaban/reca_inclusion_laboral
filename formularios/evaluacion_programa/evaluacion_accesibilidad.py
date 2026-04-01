@@ -408,23 +408,48 @@ def _build_section_writes(
     return writes
 
 
+def build_google_sheet_input_ranges(*, sheet_name=SHEET_NAME, section8_max_rows=None):
+    ranges = []
+    for section_id, mapping in EXCEL_MAPPING.items():
+        if section_id == "section_8":
+            continue
+        for cell in mapping.values():
+            ranges.append(f"'{sheet_name}'!{cell}")
+
+    section_8_cfg = EXCEL_MAPPING.get("section_8", {})
+    start_row = int(section_8_cfg.get("start_row") or 0)
+    total_rows = section8_max_rows
+    if total_rows is None:
+        total_rows = int(SECTION_8.get("max_items") or 0)
+    total_rows = max(0, int(total_rows or 0))
+    if start_row and total_rows:
+        end_row = start_row + total_rows - 1
+        ranges.extend(
+            [
+                f"'{sheet_name}'!{section_8_cfg['name_col']}{start_row}:{section_8_cfg['name_col']}{end_row}",
+                f"'{sheet_name}'!{section_8_cfg['cargo_col']}{start_row}:{section_8_cfg['cargo_col']}{end_row}",
+            ]
+        )
+    return list(dict.fromkeys(ranges))
+
+
 def build_google_sheet_export_payload(cache=None):
     cache_data = dict(cache or FORM_CACHE)
     writes = []
+    max_items = int(SECTION_8.get("max_items") or 0)
     for section_id in EXCEL_MAPPING.keys():
         payload = cache_data.get(section_id, {})
         writes.extend(
             _build_section_writes(
                 section_id,
                 payload,
-                section8_max_rows=int(SECTION_8.get("max_items") or 0),
+                section8_max_rows=max_items,
                 include_section8_labels=False,
             )
         )
 
     section_8_cfg = EXCEL_MAPPING.get("section_8", {})
     start_row = int(section_8_cfg.get("start_row") or 0)
-    max_items = int(SECTION_8.get("max_items") or 0)
     clear_ranges = []
     if start_row and max_items:
         end_row = start_row + max_items - 1
@@ -437,6 +462,10 @@ def build_google_sheet_export_payload(cache=None):
         "sheet_name": SHEET_NAME,
         "writes": writes,
         "clear_ranges": clear_ranges,
+        "format_ranges": build_google_sheet_input_ranges(
+            sheet_name=SHEET_NAME,
+            section8_max_rows=max_items,
+        ),
     }
 
 

@@ -75,6 +75,47 @@ class EvaluacionAccesibilidadWindowTests(_TkTestCase):
             app.evaluacion_accesibilidad.SECTION_4["descriptions"]["Medio"],
         )
 
+    def test_section_2_1_observaciones_use_multiline_text_widget(self) -> None:
+        window = self._create_window()
+
+        window._show_section_2()
+        observaciones = window.section2_1_fields["transporte_publico"]["observaciones"]
+
+        self.assertIsInstance(observaciones, tk.Text)
+
+        observaciones.insert("1.0", "Primera linea.\nSegunda linea.")
+        window._pending_autosave()
+
+        payload = app.evaluacion_accesibilidad.get_form_cache().get("section_2_1", {})
+        self.assertEqual(
+            payload.get("transporte_publico_observaciones"),
+            "Primera linea.\nSegunda linea.",
+        )
+
+    def test_section_2_free_text_fields_use_multiline_text_widgets(self) -> None:
+        window = self._create_window()
+
+        sections = [
+            ("_show_section_2", "section2_1_fields"),
+            ("_show_section_2_2", "section2_2_fields"),
+            ("_show_section_2_3", "section2_3_fields"),
+            ("_show_section_2_4", "section2_4_fields"),
+            ("_show_section_2_5", "section2_5_fields"),
+            ("_show_section_2_6", "section2_6_fields"),
+        ]
+
+        for render_method, fields_attr in sections:
+            with self.subTest(section=fields_attr):
+                getattr(window, render_method)()
+                fields = getattr(window, fields_attr)
+                free_text_widgets = []
+                for widgets in fields.values():
+                    for key, widget in widgets.items():
+                        if key in {"observaciones", "detalle"}:
+                            free_text_widgets.append(widget)
+                            self.assertIsInstance(widget, tk.Text)
+                self.assertTrue(free_text_widgets)
+
     def test_modalidad_alias_restores_legacy_mixta_as_mixto(self) -> None:
         window = self._create_window()
         modalidad = window.fields["modalidad"]

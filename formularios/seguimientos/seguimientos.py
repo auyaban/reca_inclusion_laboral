@@ -18,11 +18,12 @@ from formularios.common import (
 )
 from google_sheets_client import (
     batch_write_sheet_updates,
+    clear_protected_ranges,
     extract_spreadsheet_id,
     get_google_sheets_service,
     get_spreadsheet,
     read_sheet_values,
-    )
+)
 import drive_upload
 from version_info import resource_path
 
@@ -916,6 +917,7 @@ def _create_native_case_record(service, folder_id, folder_name, cedula, user_row
     base_payload = _build_base_payload_from_user_row(user_row)
     if seed_path:
         base_payload = _merge_fill_empty(get_base_payload(seed_path), base_payload)
+    clear_protected_ranges(record["file_id"])
     updates = _build_base_sheet_updates(base_payload, base_sheet_name=SHEET_BASE)
     if seed_path:
         for idx in range(1, max_seguimientos + 1):

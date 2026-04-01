@@ -4,6 +4,7 @@ import re
 import sys
 from functools import lru_cache
 from pathlib import Path
+from openpyxl.utils.cell import range_boundaries
 from formularios.common import _load_env_file
 
 
@@ -204,6 +205,143 @@ def clear_sheet_ranges(spreadsheet_id_or_url, ranges):
         )
         .execute()
     )
+
+
+def list_protected_ranges(spreadsheet_id_or_url):
+    spreadsheet_id = extract_spreadsheet_id(spreadsheet_id_or_url)
+    spreadsheet = get_spreadsheet(spreadsheet_id, include_grid_data=False)
+    rows = []
+    for sheet in spreadsheet.get("sheets", []):
+        props = sheet.get("properties", {}) or {}
+        sheet_id = props.get("sheetId")
+        sheet_title = str(props.get("title") or "")
+        for protected_range in sheet.get("protectedRanges", []) or []:
+            if not isinstance(protected_range, dict):
+                continue
+            protected_range_id = protected_range.get("protectedRangeId")
+            if protected_range_id is None:
+                continue
+            rows.append(
+                {
+                    "protectedRangeId": int(protected_range_id),
+                    "sheetId": sheet_id,
+                    "sheetTitle": sheet_title,
+                    "warningOnly": bool(protected_range.get("warningOnly")),
+                    "description": str(protected_range.get("description") or ""),
+                }
+            )
+    return rows
+
+
+def clear_protected_ranges(spreadsheet_id_or_url, protected_range_ids=None):
+    spreadsheet_id = extract_spreadsheet_id(spreadsheet_id_or_url)
+    if protected_range_ids is None:
+        target_ids = [item["protectedRangeId"] for item in list_protected_ranges(spreadsheet_id)]
+    else:
+        target_ids = []
+        for protected_range_id in protected_range_ids or []:
+            if protected_range_id is None:
+                continue
+            target_ids.append(int(protected_range_id))
+    if not target_ids:
+        return {"deletedProtectedRangeIds": [], "deletedProtectedRangeCount": 0}
+
+    # Preserve order while deduplicating to avoid invalid duplicate delete requests.
+    unique_target_ids = list(dict.fromkeys(target_ids))
+    requests = [
+        {
+            "deleteProtectedRange": {
+                "protectedRangeId": protected_range_id,
+            }
+        }
+        for protected_range_id in unique_target_ids
+    ]
+    service = get_google_sheets_service()
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={"requests": requests},
+    ).execute()
+    return {
+        "deletedProtectedRangeIds": unique_target_ids,
+        "deletedProtectedRangeCount": len(unique_target_ids),
+    }
+
+
+def _split_a1_range(range_name):
+    text = str(range_name or "").strip()
+    if not text:
+        raise RuntimeError("Debe indicar un rango A1 de Google Sheets.")
+    if "!" in text:
+        sheet_name, cell_range = text.rsplit("!", 1)
+        sheet_name = sheet_name.strip()
+        if sheet_name.startswith("'") and sheet_name.endswith("'"):
+            sheet_name = sheet_name[1:-1].replace("''", "'")
+    else:
+        sheet_name = ""
+        cell_range = text
+    return sheet_name, cell_range.replace("$", "").strip()
+
+
+def set_sheet_ranges_bold(spreadsheet_id_or_url, ranges, *, bold):
+    spreadsheet_id = extract_spreadsheet_id(spreadsheet_id_or_url)
+    cleaned_ranges = [str(item or "").strip() for item in (ranges or []) if str(item or "").strip()]
+    if not cleaned_ranges:
+        return {"updatedRanges": [], "updatedRangeCount": 0}
+
+    spreadsheet = get_spreadsheet(spreadsheet_id, include_grid_data=False)
+    sheets = spreadsheet.get("sheets", []) or []
+    default_sheet_id = None
+    sheet_ids = {}
+    for sheet in sheets:
+        props = sheet.get("properties", {}) or {}
+        sheet_id = props.get("sheetId")
+        sheet_title = str(props.get("title") or "")
+        if default_sheet_id is None:
+            default_sheet_id = sheet_id
+        if sheet_title:
+            sheet_ids[sheet_title] = sheet_id
+
+    requests = []
+    applied_ranges = []
+    for range_name in list(dict.fromkeys(cleaned_ranges)):
+        sheet_name, cell_range = _split_a1_range(range_name)
+        min_col, min_row, max_col, max_row = range_boundaries(cell_range)
+        sheet_id = sheet_ids.get(sheet_name, default_sheet_id)
+        if sheet_id is None:
+            raise RuntimeError(f"No se encontró la hoja para el rango: {range_name}")
+        requests.append(
+            {
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": min_row - 1,
+                        "endRowIndex": max_row,
+                        "startColumnIndex": min_col - 1,
+                        "endColumnIndex": max_col,
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "textFormat": {
+                                "bold": bool(bold),
+                            }
+                        }
+                    },
+                    "fields": "userEnteredFormat.textFormat.bold",
+                }
+            }
+        )
+        applied_ranges.append(range_name)
+
+    service = get_google_sheets_service()
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={"requests": requests},
+    ).execute()
+    return {
+        "updatedRanges": applied_ranges,
+        "updatedRangeCount": len(applied_ranges),
+        "bold": bool(bold),
+    }
 
 
 def batch_write_sheet_updates(

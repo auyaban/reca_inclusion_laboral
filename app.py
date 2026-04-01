@@ -1021,6 +1021,7 @@ def _perform_drive_upload_attempt(job):
             upload_result = drive_upload.publish_evaluacion_accesibilidad_sheet(
                 sheet_writes=sheet_export.get("writes") or [],
                 clear_ranges=sheet_export.get("clear_ranges") or [],
+                format_ranges=sheet_export.get("format_ranges") or [],
                 base_name=remote_file_name,
                 folder_name=company_name,
             )
@@ -8451,8 +8452,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=2, column=0, sticky="w", padx=8, pady=4)
-                obs = tk.Entry(row, width=80)
-                obs.grid(row=2, column=1, columnspan=3, sticky="w", padx=4, pady=4)
+                obs = tk.Text(row, width=80, height=2, wrap="word")
+                obs.grid(row=2, column=1, columnspan=3, sticky="we", padx=4, pady=4)
+                _attach_autoexpand(obs, 2, 6)
                 self.section2_1_fields[field_id]["observaciones"] = obs
 
             elif question["type"] == "texto":
@@ -8561,8 +8563,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                obs = tk.Entry(row, width=80)
-                obs.grid(row=current_row, column=1, columnspan=3, sticky="w", padx=4, pady=4)
+                obs = tk.Text(row, width=80, height=2, wrap="word")
+                obs.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
+                _attach_autoexpand(obs, 2, 6)
                 self.section2_2_fields[field_id]["observaciones"] = obs
 
             elif question["type"] == "texto":
@@ -8600,8 +8603,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                         font=("Arial", 9, "bold"),
                         bg="white",
                     ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                    obs = tk.Entry(row, width=80)
-                    obs.grid(row=current_row, column=1, columnspan=3, sticky="w", padx=4, pady=4)
+                    obs = tk.Text(row, width=80, height=2, wrap="word")
+                    obs.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
+                    _attach_autoexpand(obs, 2, 6)
                     self.section2_2_fields[field_id]["observaciones"] = obs
 
             elif question["type"] == "lista_doble":
@@ -8760,8 +8764,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                obs = tk.Entry(row, width=80)
-                obs.grid(row=current_row, column=1, columnspan=3, sticky="w", padx=4, pady=4)
+                obs = tk.Text(row, width=80, height=2, wrap="word")
+                obs.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
+                _attach_autoexpand(obs, 2, 6)
                 self.section2_3_fields[field_id]["observaciones"] = obs
 
             elif question["type"] == "texto":
@@ -8975,8 +8980,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                obs = tk.Entry(row, width=80)
-                obs.grid(row=current_row, column=1, columnspan=3, sticky="w", padx=4, pady=4)
+                obs = tk.Text(row, width=80, height=2, wrap="word")
+                obs.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
+                _attach_autoexpand(obs, 2, 6)
                 self.section2_4_fields[field_id]["observaciones"] = obs
 
             elif question["type"] == "lista":
@@ -9032,8 +9038,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                detail = tk.Entry(row, width=80)
-                detail.grid(row=current_row, column=1, columnspan=3, sticky="w", padx=4, pady=4)
+                detail = tk.Text(row, width=80, height=2, wrap="word")
+                detail.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
+                _attach_autoexpand(detail, 2, 6)
                 self.section2_4_fields[field_id]["detalle"] = detail
 
         self._prefill_section_fields("section_2_4", self.section2_4_fields)
@@ -9107,8 +9114,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                obs = tk.Entry(row, width=80)
-                obs.grid(row=current_row, column=1, columnspan=3, sticky="w", padx=4, pady=4)
+                obs = tk.Text(row, width=80, height=2, wrap="word")
+                obs.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
+                _attach_autoexpand(obs, 2, 6)
                 self.section2_5_fields[field_id]["observaciones"] = obs
 
             elif question["type"] == "lista":
@@ -9164,8 +9172,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                detail = tk.Entry(row, width=80)
-                detail.grid(row=current_row, column=1, columnspan=3, sticky="w", padx=4, pady=4)
+                detail = tk.Text(row, width=80, height=2, wrap="word")
+                detail.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
+                _attach_autoexpand(detail, 2, 6)
                 self.section2_5_fields[field_id]["detalle"] = detail
 
         self._prefill_section_fields("section_2_5", self.section2_5_fields)
@@ -9254,8 +9263,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                detail = tk.Entry(row, width=80)
-                detail.grid(row=current_row, column=1, columnspan=3, sticky="w", padx=4, pady=4)
+                detail = tk.Text(row, width=80, height=2, wrap="word")
+                detail.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
+                _attach_autoexpand(detail, 2, 6)
                 self.section2_6_fields[field_id]["detalle"] = detail
 
         self._prefill_section_fields("section_2_6", self.section2_6_fields)

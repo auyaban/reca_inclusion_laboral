@@ -1,3 +1,10 @@
+param(
+    [Parameter(Position = 0)]
+    [string]$Version = "",
+    [switch]$CleanBuild,
+    [switch]$ForceDependencyInstall
+)
+
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -14,8 +21,8 @@ function Write-Utf8NoBomFile {
 }
 
 $versionPath = Join-Path $root "VERSION"
-if ($args[0]) {
-    $version = $args[0].TrimStart("v")
+if ($Version) {
+    $version = $Version.TrimStart("v")
     Write-Utf8NoBomFile -Path $versionPath -Value "$version`n"
 } else {
     if (!(Test-Path $versionPath)) {
@@ -42,7 +49,17 @@ if (-not (Get-Command $gh -ErrorAction SilentlyContinue)) {
 
 & $gh auth status -h github.com | Out-Null
 
-powershell -ExecutionPolicy Bypass -File build.ps1
+$buildArgs = @(
+    "-ExecutionPolicy", "Bypass",
+    "-File", "build.ps1"
+)
+if ($CleanBuild) {
+    $buildArgs += "-Clean"
+}
+if ($ForceDependencyInstall) {
+    $buildArgs += "-ForceDependencyInstall"
+}
+powershell @buildArgs
 
 & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=$version installer.iss
 

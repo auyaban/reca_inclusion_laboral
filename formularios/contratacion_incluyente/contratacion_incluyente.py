@@ -1,45 +1,58 @@
 import os
 import json
 import time
-import shutil
 from datetime import datetime
+from functools import lru_cache
 
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
-    _build_process_output_path,
-    _get_desktop_dir,
-    _next_available_file_path,
     _normalize_cedula,
     _normalize_decimal_value,
     _normalize_text,
     _parse_date_value,
     _coerce_excel_decimal_value,
-    sanitize_logo_error_cells,
-    autofit_rows,
-    clear_written_rows,
-    ws_write,
     _sanitize_filename,
     _supabase_get,
     _supabase_upsert_with_queue,
 )
 from logging_utils import log_excel_event
-from version_info import resource_path
 
 
 FORM_ID = "contratacion_incluyente"
 FORM_NAME = "Contratacion Incluyente"
+SHEET_NAME = "5. CONTRATACIÓN INCLUYENTE"
+
 TEMPLATE_VARIANT_INDIVIDUAL = "individual"
 TEMPLATE_VARIANT_GROUP_2_PLUS = "group_2_plus"
 
-SHEET_NAME_BY_VARIANT = {
-    TEMPLATE_VARIANT_INDIVIDUAL: "5. PROCESO CONTRATACION INCLUYE",
-    TEMPLATE_VARIANT_GROUP_2_PLUS: "5. PROCESO CONTRATACION INCLUYE",
+# Vinculado block geometry (unified format — one sheet for individual & group)
+VINCULADO_BLOCK_HEIGHT = 52            # rows per vinculado block (rows 19-70 for first)
+VINCULADO_FIRST_BLOCK_START_ROW = 19
+VINCULADO_SECOND_BLOCK_START_ROW = VINCULADO_FIRST_BLOCK_START_ROW + VINCULADO_BLOCK_HEIGHT
+DESARROLLO_ACTIVIDAD_CELL = "A15"      # shared across all vinculados
+GROUP_EXPORT_TITLE_CELL = "F1"
+SECTION_2_LAST_COLUMN = "Q"
+
+# Base row positions for 1 vinculado (shift by (N-1)*BLOCK_HEIGHT for N vinculados)
+SECTION_6_BASE_AJUSTES_ROW = 73        # ajustes text row
+SECTION_7_BASE_START_ROW = 79          # first asistente data row
+SECTION_7_NOMBRE_COL = "C"
+SECTION_7_CARGO_COL = "K"
+SECTION_6_TITLE_ROW_BY_TEMPLATE = {
+    TEMPLATE_VARIANT_INDIVIDUAL: 72,
+    TEMPLATE_VARIANT_GROUP_2_PLUS: 72,
+}
+SECTION_7_TITLE_ROW_BY_TEMPLATE = {
+    TEMPLATE_VARIANT_INDIVIDUAL: 78,
+    TEMPLATE_VARIANT_GROUP_2_PLUS: 78,
 }
 
-TEMPLATE_FILENAME_BY_VARIANT = {
-    TEMPLATE_VARIANT_INDIVIDUAL: "contratacion_incluyente.xlsx",
-    TEMPLATE_VARIANT_GROUP_2_PLUS: "contratacion_incluyente.xlsx",
-}
+
+def ws_write(ws, cell, value):
+    try:
+        ws[cell] = value
+    except Exception:
+        return
 
 FORM_CACHE = {}
 SECTION_1_CACHE = {}
@@ -338,7 +351,7 @@ EXCEL_MAPPING = {
     },
     "section_7": {
         "start_row": 74,
-        "rows": 3,
+        "rows": 4,
         "nombre_col": "C",
         "cargo_col": "K",
     },
@@ -417,47 +430,42 @@ EXCEL_DROPDOWN_EXPLICIT_ALIASES = {
     },
 }
 
-EXCEL_DROPDOWN_CANONICAL_OPTIONS_BY_TEMPLATE = {
-    TEMPLATE_VARIANT_INDIVIDUAL: {},
-    TEMPLATE_VARIANT_GROUP_2_PLUS: {},
-}
-
 DATE_FIELD_IDS = {
     "fecha_nacimiento",
     "fecha_firma_contrato",
     "fecha_fin",
 }
 
-SECTION_2_ANCHOR = "2. DATOS DEL VINCULADO"
-SECTION_2_LAST_COLUMN = "Q"
-SECTION_2_GROUP_BLOCK_HEIGHT = 52
-SECTION_2_GROUP_FIRST_BLOCK_START_ROW = 19
-SECTION_2_GROUP_SECOND_BLOCK_START_ROW = 71
-SECTION_2_GROUP_SHARED_ACTIVITY_CELL = "A15"
-
-SECTION_2_BLOCK_CELL_MAP = {
+VINCULADO_CELL_MAP = {
+    # Row 23 — personal info line 1
     "numero": ("A", 23),
     "nombre_oferente": ("C", 23),
     "cedula": ("H", 23),
     "certificado_porcentaje": ("K", 23),
     "discapacidad": ("L", 23),
     "telefono_oferente": ("O", 23),
+    # Row 24 — personal info line 2
     "genero": ("C", 24),
     "correo_oferente": ("G", 24),
     "fecha_nacimiento": ("M", 24),
     "edad": ("Q", 24),
+    # Row 25 — identity
     "lgtbiq": ("E", 25),
     "grupo_etnico": ("L", 25),
     "grupo_etnico_cual": ("O", 25),
+    # Row 26 — cargo / emergency
     "cargo_oferente": ("C", 26),
     "contacto_emergencia": ("I", 26),
     "parentesco": ("M", 26),
     "telefono_emergencia": ("Q", 26),
+    # Row 27 — certificado / contrato firma
     "certificado_discapacidad": ("F", 27),
     "lugar_firma_contrato": ("L", 27),
     "fecha_firma_contrato": ("Q", 27),
+    # Row 29 — datos adicionales
     "tipo_contrato": ("G", 29),
     "fecha_fin": ("N", 29),
+    # Section 5.1 Condiciones de la vacante (rows 33-45)
     "contrato_lee_nivel_apoyo": ("G", 33),
     "contrato_lee_observacion": ("L", 33),
     "contrato_lee_nota": ("M", 34),
@@ -475,6 +483,7 @@ SECTION_2_BLOCK_CELL_MAP = {
     "condiciones_salariales_frecuencia_pago": ("L", 43),
     "condiciones_salariales_forma_pago": ("L", 44),
     "condiciones_salariales_nota": ("M", 45),
+    # Section 5.2 Prestaciones de ley (rows 48-59)
     "prestaciones_cesantias_nivel_apoyo": ("G", 48),
     "prestaciones_cesantias_observacion": ("L", 48),
     "prestaciones_cesantias_nota": ("M", 49),
@@ -493,6 +502,7 @@ SECTION_2_BLOCK_CELL_MAP = {
     "prestaciones_auxilios_beneficios_nivel_apoyo": ("G", 58),
     "prestaciones_auxilios_beneficios_observacion": ("L", 58),
     "prestaciones_auxilios_beneficios_nota": ("M", 59),
+    # Section 5.3 Deberes y derechos (rows 62-70)
     "conducto_regular_nivel_apoyo": ("G", 62),
     "conducto_regular_observacion": ("L", 62),
     "descargos_observacion": ("L", 63),
@@ -507,30 +517,7 @@ SECTION_2_BLOCK_CELL_MAP = {
     "rutas_atencion_nota": ("M", 70),
 }
 
-SECTION_2_INDIVIDUAL_CELL_MAP = dict(SECTION_2_BLOCK_CELL_MAP)
-SECTION_2_INDIVIDUAL_CELL_MAP["desarrollo_actividad"] = ("A", 15)
-
-SECTION_2_GROUP_FIRST_BLOCK_CELL_MAP = dict(SECTION_2_BLOCK_CELL_MAP)
-
-SECTION_1_CELL_MAP_BY_TEMPLATE = {
-    TEMPLATE_VARIANT_INDIVIDUAL: EXCEL_MAPPING["section_1"],
-    TEMPLATE_VARIANT_GROUP_2_PLUS: dict(EXCEL_MAPPING["section_1"]),
-}
-
-SECTION_7_BASE_ROWS_BY_TEMPLATE = {
-    TEMPLATE_VARIANT_INDIVIDUAL: 3,
-    TEMPLATE_VARIANT_GROUP_2_PLUS: 4,
-}
-
-SECTION_6_TITLE_ROW_BY_TEMPLATE = {
-    TEMPLATE_VARIANT_INDIVIDUAL: 72,
-    TEMPLATE_VARIANT_GROUP_2_PLUS: 72,
-}
-
-SECTION_7_TITLE_ROW_BY_TEMPLATE = {
-    TEMPLATE_VARIANT_INDIVIDUAL: 78,
-    TEMPLATE_VARIANT_GROUP_2_PLUS: 78,
-}
+SECTION_1_CELL_MAP = EXCEL_MAPPING["section_1"]
 
 
 def register_form():
@@ -632,75 +619,33 @@ def _get_section_2_entries(payload=None):
     return [dict(entry or {}) for entry in payload]
 
 
-def _resolve_template_variant(section_2_payload=None):
-    total_vinculados = len(_get_section_2_entries(section_2_payload))
-    if total_vinculados >= 1:
-        return TEMPLATE_VARIANT_GROUP_2_PLUS
-    return TEMPLATE_VARIANT_INDIVIDUAL
-
-
-def is_group_variant(section_2_payload=None):
-    return _resolve_template_variant(section_2_payload) == TEMPLATE_VARIANT_GROUP_2_PLUS
+def _group_export_title_for_vinculados(total_vinculados):
+    total = max(0, int(total_vinculados or 0))
+    if total <= 1:
+        return "PROCESO DE CONTRATACION INCLUYENTE INDIVIDUAL"
+    if total <= 4:
+        return "PROCESO CONTRATACION INCLUYENTE GRUPAL - 2 A 4 VINCULADOS"
+    if total <= 7:
+        return "PROCESO CONTRATACION INCLUYENTE GRUPAL - 5 A 7 VINCULADOS"
+    if total <= 10:
+        return "PROCESO CONTRATACION INCLUYENTE GRUPAL - 8 A 10 VINCULADOS"
+    return "PROCESO CONTRATACION INCLUYENTE GRUPAL - MAS DE 10 VINCULADOS"
 
 
 def _section_2_group_block_start_row(entry_index):
-    return SECTION_2_GROUP_FIRST_BLOCK_START_ROW + (
-        SECTION_2_GROUP_BLOCK_HEIGHT * entry_index
-    )
+    return VINCULADO_FIRST_BLOCK_START_ROW + (VINCULADO_BLOCK_HEIGHT * int(entry_index or 0))
 
 
 def _section_2_group_insert_row(entry_index):
-    if entry_index <= 0:
+    if int(entry_index or 0) <= 0:
         raise ValueError("entry_index debe ser mayor que 0 para bloques adicionales.")
-    return SECTION_2_GROUP_SECOND_BLOCK_START_ROW + (
-        SECTION_2_GROUP_BLOCK_HEIGHT * (entry_index - 1)
-    )
+    return VINCULADO_SECOND_BLOCK_START_ROW + (VINCULADO_BLOCK_HEIGHT * (int(entry_index) - 1))
 
 
-def _section_2_inserted_block_count(total_vinculados, template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
-    if template_variant != TEMPLATE_VARIANT_GROUP_2_PLUS:
-        return 0
-    return max(0, int(total_vinculados or 0) - 1)
-
-
-def _section_row_after_section_2(base_row, total_vinculados, template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
-    return base_row + (
-        SECTION_2_GROUP_BLOCK_HEIGHT
-        * _section_2_inserted_block_count(total_vinculados, template_variant)
-    )
-
-
-def get_section_2_field_options(field_id, template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
+def get_section_2_field_options(field_id):
     if field_id == "contrato_lee_observacion":
-        if template_variant == TEMPLATE_VARIANT_GROUP_2_PLUS:
-            return list(OBS_LECTURA_CONTRATO_OPTIONS_GROUP)
-        return list(OBS_LECTURA_CONTRATO_OPTIONS_INDIVIDUAL)
+        return list(OBS_LECTURA_CONTRATO_OPTIONS_GROUP)
     return list(LIST_FIELD_OPTIONS_BY_ID.get(field_id, []))
-
-
-def _find_template_path(template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
-    def _filename_key(value):
-        return "".join(ch for ch in _normalize_text(value) if ch.isalnum())
-
-    templates_dir = resource_path("templates")
-    if not templates_dir.is_dir():
-        raise FileNotFoundError("No existe la carpeta templates.")
-    filename = TEMPLATE_FILENAME_BY_VARIANT.get(template_variant)
-    if filename:
-        exact_path = templates_dir / filename
-        if exact_path.exists():
-            return os.fspath(exact_path)
-        expected_key = _filename_key(filename)
-        for name in os.listdir(templates_dir):
-            if name.startswith("~$") or not name.lower().endswith(".xlsx"):
-                continue
-            if _filename_key(name) == expected_key:
-                return os.fspath(templates_dir / name)
-        if template_variant != TEMPLATE_VARIANT_INDIVIDUAL:
-            raise FileNotFoundError(
-                f"No se encontró el template '{filename}' para contratación incluyente."
-            )
-    raise FileNotFoundError("No se encontró el template de contratación incluyente.")
 
 
 def _normalize_dropdown_text(value):
@@ -709,34 +654,30 @@ def _normalize_dropdown_text(value):
     normalized = " ".join(normalized.split())
     return normalized.strip(" .")
 
-def _get_excel_canonical_options(field_id, template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
+@lru_cache(maxsize=None)
+def _get_excel_canonical_options(field_id):
     manual = EXCEL_DROPDOWN_MANUAL_CANONICAL_OPTIONS.get(field_id)
     if manual:
         return tuple(manual)
-
-    variant_overrides = (
-        EXCEL_DROPDOWN_CANONICAL_OPTIONS_BY_TEMPLATE.get(template_variant, {}).get(field_id)
-    )
-    if variant_overrides:
-        return tuple(variant_overrides)
-
     if field_id in EXCEL_MAPPING["section_1"]:
-        return tuple(LIST_FIELD_OPTIONS_BY_ID.get(field_id, []))
-    return tuple(get_section_2_field_options(field_id, template_variant))
+        expected_options = LIST_FIELD_OPTIONS_BY_ID.get(field_id, [])
+    else:
+        expected_options = get_section_2_field_options(field_id)
+    return tuple(expected_options)
 
 
-def normalize_excel_dropdown_value(field_id, raw_value, template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
+def normalize_excel_dropdown_value(field_id, raw_value):
     if raw_value in (None, ""):
         return raw_value
     current = str(raw_value).strip()
     if field_id in EXCEL_MAPPING["section_1"]:
         field_options = LIST_FIELD_OPTIONS_BY_ID.get(field_id)
     else:
-        field_options = get_section_2_field_options(field_id, template_variant)
+        field_options = get_section_2_field_options(field_id)
     if not field_options:
         return raw_value
 
-    canonical_options = list(_get_excel_canonical_options(field_id, template_variant) or field_options)
+    canonical_options = list(_get_excel_canonical_options(field_id) or field_options)
     current_norm = _normalize_dropdown_text(current)
 
     explicit_alias = (
@@ -756,7 +697,7 @@ def normalize_excel_dropdown_value(field_id, raw_value, template_variant=TEMPLAT
             return option
 
     _log_excel(
-        f"WARN export_dropdown_unmatched field={field_id} template_variant={template_variant} "
+        f"WARN export_dropdown_unmatched field={field_id} "
         f"value={current!r}"
     )
     return raw_value
@@ -778,21 +719,6 @@ def _coerce_excel_date_value(value):
     return raw
 
 
-def _group_export_title_for_offerentes(total_oferentes):
-    total = max(0, int(total_oferentes or 0))
-    if total <= 1:
-        return "PROCESO DE CONTRATACIÓN INCLUYENTE INDIVIDUAL"
-    if total <= 4:
-        return "PROCESO CONTRATACION INCLUYENTE GRUPAL - 2 A 4 VINCULADOS"
-    if total <= 7:
-        return "PROCESO CONTRATACION INCLUYENTE GRUPAL - 5 A 7 VINCULADOS"
-    if total <= 10:
-        return "PROCESO CONTRATACION INCLUYENTE GRUPAL - 8 A 10 VINCULADOS"
-    return "PROCESO CONTRATACION INCLUYENTE GRUPAL - MAS DE 10 VINCULADOS"
-
-
-
-
 def _infer_discapacidad_categoria(value):
     if not value:
         return None
@@ -812,8 +738,6 @@ def _infer_discapacidad_categoria(value):
     if "intelectual" in normalized or "autismo" in normalized or "autista" in normalized:
         return "Intelectual"
     return _DISCAPACIDAD_CATEGORIA_MAP.get(normalized)
-
-
 
 
 def get_usuarios_reca_cedulas(env_path=".env"):
@@ -882,29 +806,6 @@ def _log_excel(message):
         log_excel_event(message)
     except Exception:
         return
-
-
-def _ensure_output_path(template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
-    template_path = _find_template_path(template_variant=template_variant)
-    empresa_nombre = SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
-    process_name = "Proceso de Contratacion Incluyente"
-    output_path = _build_process_output_path(empresa_nombre, process_name)
-    shutil.copy2(template_path, output_path)
-    FORM_CACHE["_output_path"] = output_path
-    return output_path
-
-
-def _get_sheet_by_name(workbook, template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
-    target_name = SHEET_NAME_BY_VARIANT.get(template_variant)
-    target = _normalize_text(target_name).replace(" ", "")
-    for ws in workbook.Worksheets:
-        name_norm = _normalize_text(ws.Name).replace(" ", "")
-        if name_norm == target:
-            return ws
-    try:
-        return workbook.Worksheets(target_name)
-    except Exception as exc:
-        raise KeyError(f"No existe la hoja {target_name}.") from exc
 
 
 def get_empresa_by_nit(nit, env_path=".env"):
@@ -1056,59 +957,9 @@ def sync_usuarios_reca(env_path=".env"):
     return len(rows)
 
 
-def _find_row_by_text(ws, text):
-    cell = ws.Columns("A").Find(What=text, LookAt=1)
-    if cell is not None:
-        return cell.Row
-    cell = ws.Columns("A").Find(What=text, LookAt=2)
-    if cell is not None:
-        return cell.Row
-    target = _normalize_text(text)
-    used = ws.UsedRange
-    start_row = used.Row
-    end_row = used.Row + used.Rows.Count - 1
-    for row in range(start_row, end_row + 1):
-        value = ws.Cells(row, 1).Value
-        if not value:
-            continue
-        value_norm = _normalize_text(str(value))
-        if value_norm == target:
-            return row
-    for row in range(start_row, end_row + 1):
-        value = ws.Cells(row, 1).Value
-        if not value:
-            continue
-        value_norm = _normalize_text(str(value))
-        if target in value_norm:
-            if target.startswith("2.") or target.startswith("5.") or target.startswith("6.") or target.startswith("7."):
-                if value_norm.startswith(target):
-                    return row
-            else:
-                return row
-    raise ValueError(f"No se encontró el texto '{text}' en la columna A.")
-
-
-def _insert_person_block(ws, start_row, block_height, insert_at):
-    start_end = start_row + block_height - 1
-    dest_end = insert_at + block_height - 1
-    source = ws.Range(f"A{start_row}:{SECTION_2_LAST_COLUMN}{start_end}")
-    dest = ws.Range(f"A{insert_at}:{SECTION_2_LAST_COLUMN}{dest_end}")
-    source.Copy()
-    dest.Insert(Shift=-4121)
-    for row_offset in range(block_height):
-        ws.Rows(insert_at + row_offset).RowHeight = ws.Rows(start_row + row_offset).RowHeight
-    ws.Application.CutCopyMode = False
-
-
-def _write_section_2_entry(
-    ws,
-    entry,
-    cell_map,
-    *,
-    row_offset=0,
-    template_variant=TEMPLATE_VARIANT_INDIVIDUAL,
-):
-    for field_id, (col, row) in cell_map.items():
+def _build_section_2_entry_writes(entry, *, row_offset=0):
+    writes = []
+    for field_id, (col, row) in VINCULADO_CELL_MAP.items():
         value = entry.get(field_id, "")
         if field_id == "grupo_etnico_cual":
             grupo_etnico = _normalize_text(entry.get("grupo_etnico") or "")
@@ -1117,150 +968,121 @@ def _write_section_2_entry(
         if value == "":
             continue
         target_row = row + row_offset
-        target_ref = f"{col}{target_row}"
         if field_id == "certificado_porcentaje":
-            try:
-                target_number_format = ws.Range(target_ref).NumberFormat
-            except Exception:
-                target_number_format = None
-            value = _coerce_excel_decimal_value(value, number_format=target_number_format)
+            value = _coerce_excel_decimal_value(value)
         elif field_id in DATE_FIELD_IDS:
             value = _coerce_excel_date_value(value)
-            try:
-                if isinstance(value, datetime):
-                    ws.Range(target_ref).NumberFormat = "dd/mm/yyyy"
-                else:
-                    ws.Range(target_ref).NumberFormat = "@"
-            except Exception:
-                pass
+            if isinstance(value, datetime):
+                value = value.strftime("%d/%m/%Y")
         else:
-            value = normalize_excel_dropdown_value(
-                field_id,
-                value,
-                template_variant=template_variant,
-            )
-        _log_excel(
-            f"WRITE section=section_2 cell={target_ref} key={field_id} value={value!r}"
-        )
-        ws_write(ws, target_ref, value)
+            value = normalize_excel_dropdown_value(field_id, value)
+        writes.append({"range": f"'{SHEET_NAME}'!{col}{target_row}", "value": value})
+        _log_excel(f"WRITE section=section_2 cell={col}{target_row} key={field_id} value={value!r}")
+    return writes
 
 
-def _write_section_2_individual(ws, oferentes):
-    if not oferentes:
-        return
-    _log_excel(
-        f"SECTION section=section_2 variant=individual total={len(oferentes)}"
-    )
-    ws_write(ws, "F1", _group_export_title_for_offerentes(1))
-    _write_section_2_entry(
-        ws,
-        oferentes[0],
-        SECTION_2_INDIVIDUAL_CELL_MAP,
-        template_variant=TEMPLATE_VARIANT_INDIVIDUAL,
-    )
-
-
-def _write_section_2_group(ws, oferentes):
-    if not oferentes:
-        return
-    ws_write(ws, "F1", _group_export_title_for_offerentes(len(oferentes)))
+def _build_section_2_writes(vinculados):
+    if not vinculados:
+        return []
+    writes = [
+        {
+            "range": f"'{SHEET_NAME}'!{GROUP_EXPORT_TITLE_CELL}",
+            "value": _group_export_title_for_vinculados(len(vinculados)),
+        }
+    ]
     shared_desarrollo = ""
-    for entry in oferentes:
+    for entry in vinculados:
         shared_desarrollo = (entry.get("desarrollo_actividad") or "").strip()
         if shared_desarrollo:
             break
     if shared_desarrollo:
-        _log_excel(
-            f"WRITE section=section_2 cell={SECTION_2_GROUP_SHARED_ACTIVITY_CELL} "
-            f"key=desarrollo_actividad value={shared_desarrollo!r}"
-        )
-        ws_write(ws, SECTION_2_GROUP_SHARED_ACTIVITY_CELL, shared_desarrollo)
-
-    if len(oferentes) > 1:
-        for idx in range(1, len(oferentes)):
-            insert_at = _section_2_group_insert_row(idx)
-            _insert_person_block(
-                ws,
-                SECTION_2_GROUP_FIRST_BLOCK_START_ROW,
-                SECTION_2_GROUP_BLOCK_HEIGHT,
-                insert_at,
-            )
-            _log_excel(
-                f"INSERT section=section_2 variant=group rows={SECTION_2_GROUP_BLOCK_HEIGHT} at={insert_at}"
-            )
-
-    for idx, entry in enumerate(oferentes):
-        row_offset = _section_2_group_block_start_row(idx) - SECTION_2_GROUP_FIRST_BLOCK_START_ROW
-        _write_section_2_entry(
-            ws,
-            entry,
-            SECTION_2_GROUP_FIRST_BLOCK_CELL_MAP,
-            row_offset=row_offset,
-            template_variant=TEMPLATE_VARIANT_GROUP_2_PLUS,
-        )
+        writes.append({"range": f"'{SHEET_NAME}'!{DESARROLLO_ACTIVIDAD_CELL}", "value": shared_desarrollo})
+        _log_excel(f"WRITE section=section_2 cell={DESARROLLO_ACTIVIDAD_CELL} key=desarrollo_actividad value={shared_desarrollo!r}")
+    _log_excel(f"SECTION section=section_2 total={len(vinculados)}")
+    for idx, entry in enumerate(vinculados):
+        row_offset = VINCULADO_BLOCK_HEIGHT * idx
+        writes.extend(_build_section_2_entry_writes(entry, row_offset=row_offset))
+    return writes
 
 
-def _write_section_2(ws, oferentes, template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
-    if template_variant == TEMPLATE_VARIANT_GROUP_2_PLUS:
-        return _write_section_2_group(ws, oferentes)
-    return _write_section_2_individual(ws, oferentes)
+def _build_section_2_row_insertions(vinculados):
+    total_vinculados = len(vinculados or [])
+    if total_vinculados <= 1:
+        return []
+    return [
+        {
+            "sheet_name": SHEET_NAME,
+            "insert_at_row": _section_2_group_insert_row(1),
+            "template_start_row": VINCULADO_FIRST_BLOCK_START_ROW,
+            "template_end_row": VINCULADO_FIRST_BLOCK_START_ROW + VINCULADO_BLOCK_HEIGHT - 1,
+            "repeat_count": total_vinculados - 1,
+        }
+    ]
+
+
+def _build_section_6_writes(payload, num_vinculados=1):
+    if not payload:
+        return []
+    shift = max(0, num_vinculados - 1) * VINCULADO_BLOCK_HEIGHT
+    ajustes_row = SECTION_6_BASE_AJUSTES_ROW + shift
+    ajustes_value = payload.get("ajustes_recomendaciones", "")
+    writes = []
+    if ajustes_value:
+        writes.append({"range": f"'{SHEET_NAME}'!A{ajustes_row}", "value": ajustes_value})
+        _log_excel(f"WRITE section=section_6 cell=A{ajustes_row} key=ajustes_recomendaciones")
+    return writes
+
+
+def _build_section_7_writes(payload, num_vinculados=1):
+    if not payload:
+        return []
+    shift = max(0, num_vinculados - 1) * VINCULADO_BLOCK_HEIGHT
+    start_row = SECTION_7_BASE_START_ROW + shift
+    writes = []
+    for idx, entry in enumerate(payload):
+        row = start_row + idx
+        nombre = (entry.get("nombre") or "").strip()
+        cargo = (entry.get("cargo") or "").strip()
+        if nombre:
+            writes.append({"range": f"'{SHEET_NAME}'!{SECTION_7_NOMBRE_COL}{row}", "value": nombre})
+        if cargo:
+            writes.append({"range": f"'{SHEET_NAME}'!{SECTION_7_CARGO_COL}{row}", "value": cargo})
+    return writes
 
 
 def _write_section_6(ws, payload, template_variant=TEMPLATE_VARIANT_INDIVIDUAL, total_vinculados=0):
-    if not payload:
-        return
-    title_row = _section_row_after_section_2(
-        SECTION_6_TITLE_ROW_BY_TEMPLATE[template_variant],
-        total_vinculados,
-        template_variant,
-    )
-    ajustes_row = title_row + 1
-    ajustes_value = payload.get("ajustes_recomendaciones", "")
-    _log_excel(
-        f"WRITE section=section_6 cell=A{ajustes_row} key=ajustes_recomendaciones value={ajustes_value!r}"
-    )
-    ws_write(ws, f"A{ajustes_row}", ajustes_value)
+    for write in _build_section_6_writes(payload, num_vinculados=max(1, int(total_vinculados or 1))):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
 
 
 def _write_section_7(ws, payload, template_variant=TEMPLATE_VARIANT_INDIVIDUAL, total_vinculados=0):
+    for write in _build_section_7_writes(payload, num_vinculados=max(1, int(total_vinculados or 1))):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
+
+
+def _build_section_7_row_insertions(payload, num_vinculados=1):
     if not payload:
-        return
+        return []
     mapping = EXCEL_MAPPING.get("section_7", {})
-    title_row = _section_row_after_section_2(
-        SECTION_7_TITLE_ROW_BY_TEMPLATE[template_variant],
-        total_vinculados,
-        template_variant,
-    )
-    start_row = title_row + 1
-    base_rows = SECTION_7_BASE_ROWS_BY_TEMPLATE.get(template_variant, mapping.get("rows", 3))
-    nombre_col = mapping.get("nombre_col", "C")
-    cargo_col = mapping.get("cargo_col", "K")
-    total = len(payload)
-    if total > base_rows:
-        insert_at = start_row + base_rows
-        template_row = start_row + base_rows - 1
-        for _ in range(total - base_rows):
-            ws.Rows(insert_at).Insert()
-            ws.Rows(template_row).Copy(ws.Rows(insert_at))
-            insert_at += 1
-            _log_excel(
-                f"INSERT section=section_7 rows=1 at={insert_at - 1}"
-            )
-    for idx, entry in enumerate(payload):
-        row = start_row + idx
-        nombre = entry.get("nombre", "")
-        cargo = entry.get("cargo", "")
-        _log_excel(
-            f"WRITE section=section_7 cell={nombre_col}{row} key=nombre value={nombre!r}"
-        )
-        _log_excel(
-            f"WRITE section=section_7 cell={cargo_col}{row} key=cargo value={cargo!r}"
-        )
-        ws_write(ws, f"{nombre_col}{row}", nombre)
-        ws_write(ws, f"{cargo_col}{row}", cargo)
+    base_rows = int(mapping.get("rows", 3) or 3)
+    total_rows = len(payload)
+    if total_rows <= base_rows:
+        return []
+    shift = max(0, num_vinculados - 1) * VINCULADO_BLOCK_HEIGHT
+    start_row = SECTION_7_BASE_START_ROW + shift
+    return [
+        {
+            "sheet_name": SHEET_NAME,
+            "start_row": start_row,
+            "base_rows": base_rows,
+            "total_rows": total_rows,
+        }
+    ]
 
 
-def _write_section_1(ws, payload, template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
+def _build_section_1_writes(payload):
     if not payload:
         payload = SECTION_1_CACHE
     if not payload:
@@ -1269,68 +1091,66 @@ def _write_section_1(ws, payload, template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
                 payload = FORM_CACHE.get("section_1", {}) or SECTION_1_CACHE
         except Exception:
             payload = payload or {}
-    mapping = SECTION_1_CELL_MAP_BY_TEMPLATE.get(template_variant, EXCEL_MAPPING.get("section_1", {}))
-    for key, cell in mapping.items():
+    writes = []
+    for key, cell in SECTION_1_CELL_MAP.items():
         if key in payload:
-            value = normalize_excel_dropdown_value(
-                key,
-                payload.get(key),
-                template_variant=template_variant,
-            )
-            ws_write(ws, cell, value)
-            _log_excel(
-                f"WRITE section=section_1 cell={cell} key={key} value={value!r}"
-            )
+            value = normalize_excel_dropdown_value(key, payload[key])
+            writes.append({"range": f"'{SHEET_NAME}'!{cell}", "value": value})
+            _log_excel(f"WRITE section=section_1 cell={cell} key={key} value={value!r}")
+    return writes
 
 
 def export_to_excel(clear_cache=True):
-    clear_written_rows()
     if not FORM_CACHE.get("section_1") and cache_file_exists():
         load_cache_from_file()
-    section_2_payload = FORM_CACHE.get("section_2", [])
-    template_variant = _resolve_template_variant(section_2_payload)
-    output_path = _ensure_output_path(template_variant=template_variant)
-    _log_excel(f"START export_all output={output_path}")
-    try:
-        import win32com.client as win32
-    except ImportError as exc:
-        _log_excel("ERROR export_all error=pywin32_not_installed")
-        raise RuntimeError("pywin32 no esta instalado. Instala con pip install pywin32.") from exc
-    excel = win32.DispatchEx("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
-    wb = None
-    try:
-        wb = excel.Workbooks.Open(output_path)
-        ws = _get_sheet_by_name(wb, template_variant=template_variant)
-        total_vinculados = len(_get_section_2_entries(section_2_payload))
-        _write_section_1(ws, FORM_CACHE.get("section_1", {}), template_variant=template_variant)
-        _write_section_2(ws, section_2_payload, template_variant=template_variant)
-        _write_section_6(
-            ws,
-            FORM_CACHE.get("section_6", {}),
-            template_variant=template_variant,
-            total_vinculados=total_vinculados,
-        )
-        _write_section_7(
-            ws,
+
+    from google_sheets_client import get_master_template_id
+    from drive_upload import publish_sheet_from_template
+
+    vinculados = _get_section_2_entries(FORM_CACHE.get("section_2", []))
+    num_vinculados = len(vinculados)
+
+    _log_excel(f"START export_all (Google Sheets) vinculados={num_vinculados}")
+
+    empresa_nombre = SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
+    base_name = _sanitize_filename(empresa_nombre)
+
+    writes = []
+    writes.extend(_build_section_1_writes(FORM_CACHE.get("section_1", {})))
+    writes.extend(_build_section_2_writes(vinculados))
+    writes.extend(_build_section_6_writes(FORM_CACHE.get("section_6", {}), num_vinculados=num_vinculados))
+    writes.extend(_build_section_7_writes(FORM_CACHE.get("section_7", []), num_vinculados=num_vinculados))
+    row_insertions = []
+    row_insertions.extend(_build_section_2_row_insertions(vinculados))
+    row_insertions.extend(
+        _build_section_7_row_insertions(
             FORM_CACHE.get("section_7", []),
-            template_variant=template_variant,
-            total_vinculados=total_vinculados,
+            num_vinculados=num_vinculados,
         )
-        sanitize_logo_error_cells(wb)
-        autofit_rows(ws, log_fn=_log_excel)
-        wb.Save()
-        _log_excel("SUCCESS export_all")
-    except Exception as exc:
-        _log_excel(f"ERROR export_all error={exc!r}")
-        raise
-    finally:
-        if wb is not None:
-            wb.Close(SaveChanges=True)
-        excel.Quit()
+    )
+
+    # Extract checkbox cells (marked with _checkbox flag)
+    checkbox_cells = [w for w in writes if w.get("_checkbox")]
+    writes = [{k: v for k, v in w.items() if k != "_checkbox"} for w in writes]
+
+    result = publish_sheet_from_template(
+        template_id=get_master_template_id(),
+        sheet_writes=writes,
+        base_name=base_name,
+        folder_name=_sanitize_filename(empresa_nombre),
+        row_insertions=row_insertions or None,
+        checkbox_cells=checkbox_cells or None,
+    )
+
+    _log_excel("SUCCESS export_all")
+
     if clear_cache:
         clear_cache_file()
         clear_form_cache()
-    return output_path
+
+    return {
+        "output_path": result.get("webViewLink", ""),
+        "drive_file_id": result.get("file_id", ""),
+        "already_in_drive": True,
+    }
 

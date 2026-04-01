@@ -191,6 +191,25 @@ class CompletionPayloadTests(unittest.TestCase):
         self.assertEqual(parsed["nombre_profesional"], "")
         self.assertEqual(parsed["candidatos_profesional"], ["Leidy Novoa"])
 
+    def test_google_sheets_url_does_not_degrade_attachment_filename(self) -> None:
+        result = completion_payloads.build_completion_payload(
+            "sensibilizacion",
+            "Sensibilizacion",
+            {
+                "section_1": {
+                    "fecha_visita": "2026-03-17",
+                    "nombre_empresa": "Empresa Demo",
+                    "nit_empresa": "900123456",
+                    "modalidad": "Mixta",
+                }
+            },
+            output_path="https://docs.google.com/spreadsheets/d/abc123/edit",
+            session_id="session-4b",
+            app_version="2.0.0",
+        )
+
+        self.assertEqual(result["payload_normalized"]["attachment"]["filename"], "Sensibilizacion")
+
     def test_builds_followup_payload(self) -> None:
         result = completion_payloads.build_followup_completion_payload(
             case_ref=r"C:\tmp\seguimiento.xlsx",
@@ -260,6 +279,7 @@ class CompletionPayloadTests(unittest.TestCase):
         self.assertNotIn("_last_saved_at", raw_cache)
         self.assertNotIn("_last_saved_section", raw_cache)
         self.assertNotIn("_last_saved_source", raw_cache)
+        self.assertIn("section_1", raw_cache)
 
 
 if __name__ == "__main__":

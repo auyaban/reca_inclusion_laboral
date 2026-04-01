@@ -1,30 +1,21 @@
 import copy
 import json
 import os
-import shutil
 import time
 
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
-    _build_process_output_path,
-    _get_desktop_dir,
-    _next_available_file_path,
     _normalize_cedula,
-    _normalize_text,
-    sanitize_logo_error_cells,
-    autofit_rows,
-    clear_written_rows,
-    ws_write,
     _sanitize_filename,
     _supabase_get,
+    build_sheet_updates,
 )
 from logging_utils import log_excel_event
-from version_info import resource_path
 
 
 FORM_ID = "induccion_operativa"
 FORM_NAME = "Induccion Operativa"
-SHEET_NAME = "7. INDUCCION OPERATIVA"
+SHEET_NAME = "7. INDUCCIÓN OPERATIVA"
 
 FORM_CACHE = {}
 SECTION_1_CACHE = {}
@@ -507,13 +498,6 @@ EXCEL_MAPPING = {
     }
 }
 SECTION_2_TEMPLATE_ROW = 16
-SECTION_3_TITLE_ROW = 17
-SECTION_4_TITLE_ROW = 30
-SECTION_5_TITLE_ROW = 57
-SECTION_6_TITLE_ROW = 62
-SECTION_7_TITLE_ROW = 64
-SECTION_8_TITLE_ROW = 66
-SECTION_9_TITLE_ROW = 70
 SECTION_2_COL_MAP = {
     "numero": "A",
     "nombre_oferente": "B",
@@ -521,6 +505,36 @@ SECTION_2_COL_MAP = {
     "telefono_oferente": "M",
     "cargo_oferente": "P",
 }
+
+# Fixed row positions from master Google Sheet (no dynamic search needed)
+SECTION_3_TITLE_ROW = 17
+SECTION_4_TITLE_ROW = 30
+SECTION_5_TITLE_ROW = 57
+SECTION_6_ANCHOR_ROW = 62
+SECTION_7_ANCHOR_ROW = 64
+SECTION_8_ANCHOR_ROW = 66
+SECTION_6_TITLE_ROW = 62
+SECTION_7_TITLE_ROW = 64
+SECTION_8_TITLE_ROW = 66
+SECTION_9_TITLE_ROW = 70
+SECTION_9_START_ROW = 71
+SECTION_9_NOMBRE_COL = "C"
+SECTION_9_CARGO_COL = "L"
+
+
+def ws_write(ws, cell, value):
+    try:
+        ws[cell] = value
+    except Exception:
+        return
+
+
+def _section_2_inserted_row_count(total_vinculados):
+    return max(0, int(total_vinculados or 0) - 1)
+
+
+def _row_after_section_2(base_row, total_vinculados):
+    return base_row + _section_2_inserted_row_count(total_vinculados)
 
 
 def register_form():
@@ -762,23 +776,6 @@ def confirm_section_9(payload):
     return payload
 
 
-def _find_template_path():
-    templates_dir = resource_path("templates")
-    if not templates_dir.is_dir():
-        raise FileNotFoundError("No existe la carpeta templates.")
-    for name in os.listdir(templates_dir):
-        if name.startswith("~$"):
-            continue
-        normalized = _normalize_text(name).replace("_", "")
-        if (
-            "induccion" in normalized
-            and "operativa" in normalized
-            and normalized.endswith(".xlsx")
-        ):
-            return os.fspath(templates_dir / name)
-    raise FileNotFoundError("No se encontró el template de induccion operativa.")
-
-
 def _get_log_dir():
     output_path = FORM_CACHE.get("_output_path")
     if output_path:
@@ -797,91 +794,35 @@ def _log_excel(message):
         return
 
 
-def _ensure_output_path():
-    template_path = _find_template_path()
-    empresa_nombre = SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
-    process_name = "Proceso de Induccion Operativa"
-    output_path = _build_process_output_path(empresa_nombre, process_name)
-    shutil.copy2(template_path, output_path)
-    FORM_CACHE["_output_path"] = output_path
-    return output_path
+# ---------------------------------------------------------------------------
+# Google Sheets write builders
+# ---------------------------------------------------------------------------
 
-
-def _get_sheet_by_name(workbook):
-    target = _normalize_text(SHEET_NAME).replace(" ", "")
-    for ws in workbook.Worksheets:
-        name_norm = _normalize_text(ws.Name).replace(" ", "")
-        if name_norm == target:
-            return ws
-    raise KeyError(f"No existe la hoja {SHEET_NAME}.")
-
-
-def _find_row_by_text(ws, text):
-    cell = ws.Columns("A").Find(What=text, LookAt=1)
-    if cell is not None:
-        return cell.Row
-    cell = ws.Columns("A").Find(What=text, LookAt=2)
-    if cell is not None:
-        return cell.Row
-    target = _normalize_text(text)
-    used = ws.UsedRange
-    start_row = used.Row
-    end_row = used.Row + used.Rows.Count - 1
-    for row in range(start_row, end_row + 1):
-        value = ws.Cells(row, 1).Value
-        if not value:
-            continue
-        value_norm = _normalize_text(str(value))
-        if value_norm == target or target in value_norm:
-            return row
-    raise ValueError(f"No se encontró el texto '{text}' en la columna A.")
-
-
-def _insert_vinculado_row(ws, insert_at):
-    ws.Rows(insert_at).Insert()
-    ws.Rows(SECTION_2_TEMPLATE_ROW).Copy(ws.Rows(insert_at))
-    ws.Rows(insert_at).RowHeight = ws.Rows(SECTION_2_TEMPLATE_ROW).RowHeight
-
-
-def _section_2_inserted_row_count(total_vinculados):
-    return max(0, int(total_vinculados or 0) - 1)
-
-
-def _row_after_section_2(base_row, total_vinculados):
-    return base_row + _section_2_inserted_row_count(total_vinculados)
-
-
-def _write_section_1(ws, payload):
+def _build_section_1_writes(payload):
     if not payload:
         payload = SECTION_1_CACHE
-    if not payload:
-        return
-    mapping = EXCEL_MAPPING.get("section_1", {})
-    for key, cell in mapping.items():
-        if key in payload:
-            ws_write(ws, cell, payload.get(key))
+    return build_sheet_updates(SHEET_NAME, EXCEL_MAPPING.get("section_1", {}), payload or {})
 
 
-def _write_section_2(ws, payload):
+def _build_section_2_writes(payload):
     if not payload:
-        return
-    total = len(payload)
-    if total > 1:
-        for _ in range(total - 1):
-            _insert_vinculado_row(ws, SECTION_3_TITLE_ROW)
+        return []
+    writes = []
     for idx, row_data in enumerate(payload):
         target_row = SECTION_2_TEMPLATE_ROW + idx
         for field_id, col in SECTION_2_COL_MAP.items():
             value = row_data.get(field_id, "")
             if value in (None, ""):
                 continue
-            ws_write(ws, f"{col}{target_row}", value)
+            writes.append({"range": f"'{SHEET_NAME}'!{col}{target_row}", "value": value})
+    return writes
 
 
-def _write_section_3(ws, payload, total_vinculados=0):
+def _build_section_3_writes(payload, total_vinculados=0):
     if not payload:
-        return
+        return []
     base_offset = _section_2_inserted_row_count(total_vinculados)
+    writes = []
     for item in SECTION_3["items"]:
         item_id = item["id"]
         row_payload = payload.get(item_id, {}) if isinstance(payload, dict) else {}
@@ -889,17 +830,19 @@ def _write_section_3(ws, payload, total_vinculados=0):
         ejecucion = (row_payload.get("ejecucion") or "").strip()
         observaciones = (row_payload.get("observaciones") or "").strip()
         if ejecucion:
-            ws_write(ws, f"H{target_row}", ejecucion)
+            writes.append({"range": f"'{SHEET_NAME}'!H{target_row}", "value": ejecucion})
         if observaciones:
-            ws_write(ws, f"K{target_row}", observaciones)
+            writes.append({"range": f"'{SHEET_NAME}'!K{target_row}", "value": observaciones})
+    return writes
 
 
-def _write_section_4(ws, payload, total_vinculados=0):
+def _build_section_4_writes(payload, total_vinculados=0):
     if not payload:
-        return
-    base_offset = _section_2_inserted_row_count(total_vinculados)
+        return []
     if not isinstance(payload, dict):
-        return
+        return []
+    base_offset = _section_2_inserted_row_count(total_vinculados)
+    writes = []
     item_payload = payload.get("items", {})
     note_payload = payload.get("notes", {})
     for block in SECTION_4["blocks"]:
@@ -909,79 +852,153 @@ def _write_section_4(ws, payload, total_vinculados=0):
             nivel = (values.get("nivel_apoyo") or "").strip()
             observaciones = (values.get("observaciones") or "").strip()
             if nivel:
-                ws_write(ws, f"J{row}", nivel)
+                writes.append({"range": f"'{SHEET_NAME}'!J{row}", "value": nivel})
             if observaciones:
-                ws_write(ws, f"N{row}", observaciones)
+                writes.append({"range": f"'{SHEET_NAME}'!N{row}", "value": observaciones})
         note_row = block["note_row"] + base_offset
         note_value = (note_payload.get(block["id"]) or "").strip()
         if note_value:
-            ws_write(ws, f"B{note_row}", note_value)
+            writes.append({"range": f"'{SHEET_NAME}'!B{note_row}", "value": note_value})
+    return writes
 
 
-def _write_section_5(ws, payload, total_vinculados=0):
+def _build_section_5_writes(payload, total_vinculados=0):
     if not payload:
-        return
+        return []
     base_offset = _section_2_inserted_row_count(total_vinculados)
+    writes = []
     for row_cfg in SECTION_5["rows"]:
         row = row_cfg["row"] + base_offset
         values = payload.get(row_cfg["id"], {}) if isinstance(payload, dict) else {}
         nivel = (values.get("nivel_apoyo_requerido") or "").strip()
         observaciones = (values.get("observaciones") or "").strip()
         if nivel:
-            ws_write(ws, f"H{row}", nivel)
+            writes.append({"range": f"'{SHEET_NAME}'!H{row}", "value": nivel})
         if observaciones:
-            ws_write(ws, f"M{row}", observaciones)
+            writes.append({"range": f"'{SHEET_NAME}'!M{row}", "value": observaciones})
+    return writes
 
 
-def _write_section_6(ws, payload, total_vinculados=0):
+def _build_section_6_writes(payload, total_vinculados=0):
     if not payload:
-        return
+        return []
     value = (payload.get("ajustes_requeridos") or "").strip()
-    if value:
-        ws_write(ws, f"A{_row_after_section_2(SECTION_6_TITLE_ROW + 1, total_vinculados)}", value)
+    if not value:
+        return []
+    return [{"range": f"'{SHEET_NAME}'!A{_row_after_section_2(SECTION_6_ANCHOR_ROW + 1, total_vinculados)}", "value": value}]
 
 
-def _write_section_7(ws, payload, total_vinculados=0):
+def _build_section_7_writes(payload, total_vinculados=0):
     if not payload:
-        return
+        return []
     fecha = (payload.get("fecha_primer_seguimiento") or "").strip()
-    if fecha:
-        ws_write(ws, f"G{_row_after_section_2(SECTION_7_TITLE_ROW + 1, total_vinculados)}", fecha)
+    if not fecha:
+        return []
+    return [{"range": f"'{SHEET_NAME}'!G{_row_after_section_2(SECTION_7_ANCHOR_ROW + 1, total_vinculados)}", "value": fecha}]
 
 
-def _write_section_8(ws, payload, total_vinculados=0):
+def _build_section_8_writes(payload, total_vinculados=0):
     if not payload:
-        return
+        return []
     texto = (payload.get("observaciones_recomendaciones") or "").strip()
-    if texto:
-        ws_write(ws, f"A{_row_after_section_2(SECTION_8_TITLE_ROW + 1, total_vinculados)}", texto)
+    if not texto:
+        return []
+    return [{"range": f"'{SHEET_NAME}'!A{_row_after_section_2(SECTION_8_ANCHOR_ROW + 1, total_vinculados)}", "value": texto}]
 
 
-def _write_section_9(ws, payload, total_vinculados=0):
+def _build_section_9_writes(payload, total_vinculados=0):
     if not payload:
-        return
-    title_row = _row_after_section_2(SECTION_9_TITLE_ROW, total_vinculados)
-    start_row = title_row + 1
-    base_rows = SECTION_9["rows"]
-    total = len(payload)
-
-    if total > base_rows:
-        insert_at = start_row + base_rows
-        template_row = start_row + base_rows - 1
-        for _ in range(total - base_rows):
-            ws.Rows(insert_at).Insert()
-            ws.Rows(template_row).Copy(ws.Rows(insert_at))
-            ws.Rows(insert_at).RowHeight = ws.Rows(template_row).RowHeight
-            insert_at += 1
-
+        return []
+    start_row = _row_after_section_2(SECTION_9_START_ROW, total_vinculados)
+    writes = []
     for idx, entry in enumerate(payload):
         row = start_row + idx
         nombre = (entry.get("nombre") or "").strip()
         cargo = (entry.get("cargo") or "").strip()
         if nombre:
-            ws_write(ws, f"C{row}", nombre)
+            writes.append({"range": f"'{SHEET_NAME}'!{SECTION_9_NOMBRE_COL}{row}", "value": nombre})
         if cargo:
-            ws_write(ws, f"L{row}", cargo)
+            writes.append({"range": f"'{SHEET_NAME}'!{SECTION_9_CARGO_COL}{row}", "value": cargo})
+    return writes
+
+
+def _write_section_2(ws, payload):
+    for write in _build_section_2_writes(payload):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
+
+
+def _write_section_3(ws, payload, total_vinculados=0):
+    for write in _build_section_3_writes(payload, total_vinculados=total_vinculados):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
+
+
+def _write_section_4(ws, payload, total_vinculados=0):
+    for write in _build_section_4_writes(payload, total_vinculados=total_vinculados):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
+
+
+def _write_section_5(ws, payload, total_vinculados=0):
+    for write in _build_section_5_writes(payload, total_vinculados=total_vinculados):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
+
+
+def _write_section_6(ws, payload, total_vinculados=0):
+    for write in _build_section_6_writes(payload, total_vinculados=total_vinculados):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
+
+
+def _write_section_7(ws, payload, total_vinculados=0):
+    for write in _build_section_7_writes(payload, total_vinculados=total_vinculados):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
+
+
+def _write_section_8(ws, payload, total_vinculados=0):
+    for write in _build_section_8_writes(payload, total_vinculados=total_vinculados):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
+
+
+def _write_section_9(ws, payload, total_vinculados=0):
+    for write in _build_section_9_writes(payload, total_vinculados=total_vinculados):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
+
+
+def _build_section_2_row_insertions(payload):
+    total_rows = len(payload or [])
+    if total_rows <= 1:
+        return []
+    return [
+        {
+            "sheet_name": SHEET_NAME,
+            "start_row": SECTION_2_TEMPLATE_ROW,
+            "base_rows": 1,
+            "total_rows": total_rows,
+        }
+    ]
+
+
+def _build_section_9_row_insertions(payload, total_vinculados=0):
+    if not payload:
+        return []
+    base_rows = int(SECTION_9.get("rows", 4) or 4)
+    total_rows = len(payload)
+    if total_rows <= base_rows:
+        return []
+    return [
+        {
+            "sheet_name": SHEET_NAME,
+            "start_row": _row_after_section_2(SECTION_9_START_ROW, total_vinculados),
+            "base_rows": base_rows,
+            "total_rows": total_rows,
+        }
+    ]
 
 
 def _has_meaningful_values(value):
@@ -1014,40 +1031,45 @@ def _validate_cache_before_export():
 
 
 def export_to_excel(clear_cache=True):
-    clear_written_rows()
-    output_path = _ensure_output_path()
     if not FORM_CACHE.get("section_1") and cache_file_exists():
         load_cache_from_file()
     _validate_cache_before_export()
-    try:
-        import win32com.client as win32
-    except ImportError as exc:
-        raise RuntimeError("pywin32 no esta instalado. Instala con pip install pywin32.") from exc
-    excel = win32.DispatchEx("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
-    wb = None
-    try:
-        wb = excel.Workbooks.Open(output_path)
-        ws = _get_sheet_by_name(wb)
-        total_vinculados = len(FORM_CACHE.get("section_2", []) or [])
-        _write_section_1(ws, FORM_CACHE.get("section_1", {}))
-        _write_section_2(ws, FORM_CACHE.get("section_2", []))
-        _write_section_3(ws, FORM_CACHE.get("section_3", {}), total_vinculados=total_vinculados)
-        _write_section_4(ws, FORM_CACHE.get("section_4", {}), total_vinculados=total_vinculados)
-        _write_section_5(ws, FORM_CACHE.get("section_5", {}), total_vinculados=total_vinculados)
-        _write_section_6(ws, FORM_CACHE.get("section_6", {}), total_vinculados=total_vinculados)
-        _write_section_7(ws, FORM_CACHE.get("section_7", {}), total_vinculados=total_vinculados)
-        _write_section_8(ws, FORM_CACHE.get("section_8", {}), total_vinculados=total_vinculados)
-        _write_section_9(ws, FORM_CACHE.get("section_9", []), total_vinculados=total_vinculados)
-        sanitize_logo_error_cells(wb)
-        autofit_rows(ws, log_fn=_log_excel)
-        wb.Save()
-    finally:
-        if wb is not None:
-            wb.Close(SaveChanges=True)
-        excel.Quit()
+
+    from google_sheets_client import get_master_template_id
+    from drive_upload import publish_sheet_from_template
+
+    empresa_nombre = SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
+    base_name = _sanitize_filename(empresa_nombre)
+    total_vinculados = len(FORM_CACHE.get("section_2", []) or [])
+
+    writes = []
+    writes.extend(_build_section_1_writes(FORM_CACHE.get("section_1", {})))
+    writes.extend(_build_section_2_writes(FORM_CACHE.get("section_2", [])))
+    writes.extend(_build_section_3_writes(FORM_CACHE.get("section_3", {}), total_vinculados=total_vinculados))
+    writes.extend(_build_section_4_writes(FORM_CACHE.get("section_4", {}), total_vinculados=total_vinculados))
+    writes.extend(_build_section_5_writes(FORM_CACHE.get("section_5", {}), total_vinculados=total_vinculados))
+    writes.extend(_build_section_6_writes(FORM_CACHE.get("section_6", {}), total_vinculados=total_vinculados))
+    writes.extend(_build_section_7_writes(FORM_CACHE.get("section_7", {}), total_vinculados=total_vinculados))
+    writes.extend(_build_section_8_writes(FORM_CACHE.get("section_8", {}), total_vinculados=total_vinculados))
+    writes.extend(_build_section_9_writes(FORM_CACHE.get("section_9", []), total_vinculados=total_vinculados))
+    row_insertions = []
+    row_insertions.extend(_build_section_2_row_insertions(FORM_CACHE.get("section_2", [])))
+    row_insertions.extend(_build_section_9_row_insertions(FORM_CACHE.get("section_9", []), total_vinculados=total_vinculados))
+
+    result = publish_sheet_from_template(
+        template_id=get_master_template_id(),
+        sheet_writes=writes,
+        base_name=base_name,
+        folder_name=_sanitize_filename(empresa_nombre),
+        row_insertions=row_insertions or None,
+    )
+
     if clear_cache:
         clear_cache_file()
         clear_form_cache()
-    return output_path
+
+    return {
+        "output_path": result.get("webViewLink", ""),
+        "drive_file_id": result.get("file_id", ""),
+        "already_in_drive": True,
+    }

@@ -1,59 +1,29 @@
-import json
 import os
+import json
 import time
 import re
-import shutil
-import unicodedata
 
-from google_sheets_client import _load_config as _load_sheets_config, read_sheet_values
+from google_sheets_client import read_sheet_values
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
-    format_checkbox_symbol,
-    write_checkbox_symbol,
-    sanitize_logo_error_cells,
-    autofit_rows,
-    clear_written_rows,
-    ws_write,
-    _build_process_output_path,
-    _get_desktop_dir,
-    _load_env_file,
-    _next_available_file_path,
+    build_sheet_updates,
     _normalize_text,
     _sanitize_filename,
-    _supabase_patch_with_queue,
 )
 from logging_utils import log_excel_event
 from version_info import resource_path
 
 
 FORM_NAME = "Condiciones de Vacante"
-SHEET_NAME = "3. REVISIÓN DE LAS CONDICIONES"
+SHEET_NAME = "3. REVISIÓN DE LAS CONDICIONES DE LA VACANTE"
 
 FORM_CACHE = {}
 SECTION_1_CACHE = {}
 _DISABILITY_DICT = None
 
-DEFAULT_OFFICIAL_DICTIONARY_SPREADSHEET_ID = "1pMGkp7TKiCeNvRAE1Cu9zVmlSVYSAI9Kuq9YRbhckW8"
+OFFICIAL_DICTIONARY_SPREADSHEET_ID = "1pMGkp7TKiCeNvRAE1Cu9zVmlSVYSAI9Kuq9YRbhckW8"
 OFFICIAL_DICTIONARY_SHEET = "caracterizacion"
 OFFICIAL_DICTIONARY_RANGE = f"'{OFFICIAL_DICTIONARY_SHEET}'!A52:B73"
-
-
-def _load_runtime_env():
-    try:
-        return _load_env_file(".env") or {}
-    except Exception:
-        return {}
-
-
-def _get_official_dictionary_spreadsheet_id():
-    runtime_env = _load_runtime_env()
-    raw = str(
-        os.getenv("GOOGLE_SHEETS_CONDICIONES_VACANTE_DICTIONARY_ID")
-        or runtime_env.get("GOOGLE_SHEETS_CONDICIONES_VACANTE_DICTIONARY_ID")
-        or _load_sheets_config().get("google_sheets_condiciones_vacante_dictionary_id")
-        or DEFAULT_OFFICIAL_DICTIONARY_SPREADSHEET_ID
-    ).strip()
-    return raw or DEFAULT_OFFICIAL_DICTIONARY_SPREADSHEET_ID
 
 
 SECTION_1 = {
@@ -299,11 +269,11 @@ EXCEL_MAPPING = {
     "section_6": {
         "start_row": 153,
         "discapacidad_col": "A",
-        "descripcion_col": "L",
+        "descripcion_col": "G",
         "base_rows": 4,
     },
     "section_7": {
-        "observaciones_recomendaciones": "A158",
+        "observaciones_recomendaciones": "A159",
     },
     "section_8": {
         "start_row": 161,
@@ -312,30 +282,16 @@ EXCEL_MAPPING = {
         "rows": 3,
     },
 }
+
 SECTION_7_TITLE_ROW = 158
 SECTION_8_TITLE_ROW = 160
 
 
-def _section_6_extra_rows(payload) -> int:
-    total = len(payload or [])
-    base_rows = EXCEL_MAPPING["section_6"]["base_rows"]
-    return max(0, total - base_rows)
-
-
-def _section_7_title_row_for_payload(section_6_payload) -> int:
-    return SECTION_7_TITLE_ROW + _section_6_extra_rows(section_6_payload)
-
-
-def _section_7_content_row_for_payload(section_6_payload) -> int:
-    return _section_7_title_row_for_payload(section_6_payload) + 1
-
-
-def _section_8_title_row_for_payload(section_6_payload) -> int:
-    return SECTION_8_TITLE_ROW + _section_6_extra_rows(section_6_payload)
-
-
-def _section_8_start_row_for_payload(section_6_payload) -> int:
-    return _section_8_title_row_for_payload(section_6_payload) + 1
+def ws_write(ws, cell, value):
+    try:
+        ws[cell] = value
+    except Exception:
+        return
 
 
 def _get_cache_dir():
@@ -395,17 +351,6 @@ def clear_form_cache():
     SECTION_1_CACHE.clear()
 
 
-def _find_template_path():
-    templates_dir = resource_path("templates")
-    if not templates_dir.is_dir():
-        raise FileNotFoundError("No existe la carpeta templates.")
-    for name in os.listdir(templates_dir):
-        normalized = _normalize_text(name).replace("_", "")
-        if "revision" in normalized and "condicion" in normalized and normalized.endswith(".xlsx"):
-            return os.fspath(templates_dir / name)
-    raise FileNotFoundError("No se encontró el template de revision de condiciones.")
-
-
 def _get_log_dir():
     output_path = FORM_CACHE.get("_output_path")
     if output_path:
@@ -422,71 +367,6 @@ def _log_excel(message):
         log_excel_event(message)
     except Exception:
         return
-
-
-def _ensure_output_path():
-    output_path = FORM_CACHE.get("_output_path")
-    if output_path and os.path.exists(output_path):
-        return output_path
-    template_path = _find_template_path()
-    empresa_nombre = SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
-    process_name = "Revision de las Condiciones de la Vacante"
-    output_path = _build_process_output_path(empresa_nombre, process_name)
-    if not os.path.exists(output_path):
-        shutil.copy2(template_path, output_path)
-    FORM_CACHE["_output_path"] = output_path
-    return output_path
-
-
-def get_output_path():
-    output_path = FORM_CACHE.get("_output_path")
-    if output_path and os.path.exists(output_path):
-        return output_path
-    return None
-
-
-def _get_sheet_by_name(workbook):
-    target = _normalize_text(SHEET_NAME).replace(" ", "")
-    for ws in workbook.Worksheets:
-        name_norm = _normalize_text(ws.Name).replace(" ", "")
-        if name_norm == target:
-            return ws
-    try:
-        return workbook.Worksheets(SHEET_NAME)
-    except Exception as exc:
-        raise KeyError(f"No existe la hoja {SHEET_NAME}.") from exc
-
-
-def _find_row_by_text(ws, text):
-    cell = ws.Columns("A").Find(What=text, LookAt=1)
-    if cell is not None:
-        return cell.Row
-    cell = ws.Columns("A").Find(What=text, LookAt=2)
-    if cell is not None:
-        return cell.Row
-    target = _normalize_text(text)
-    used = ws.UsedRange
-    start_row = used.Row
-    end_row = used.Row + used.Rows.Count - 1
-    for row in range(start_row, end_row + 1):
-        value = ws.Cells(row, 1).Value
-        if not value:
-            continue
-        value_norm = _normalize_text(str(value))
-        if value_norm == target:
-            return row
-    for row in range(start_row, end_row + 1):
-        value = ws.Cells(row, 1).Value
-        if not value:
-            continue
-        value_norm = _normalize_text(str(value))
-        if target in value_norm:
-            if target.startswith("7.") or target.startswith("8."):
-                if value_norm.startswith(target):
-                    return row
-            else:
-                return row
-    raise ValueError(f"No se encontró el texto '{text}' en la columna A.")
 
 
 def set_section_cache(section_id, payload):
@@ -596,60 +476,10 @@ def confirm_section_7(payload):
 def confirm_section_8(payload):
     if payload is None:
         raise ValueError("section_8 requerida")
-    normalized = _normalize_section_8_payload(payload)
-    tamano_field_id = SECTION_8["tamano_field_id"]
-    tamano_value = normalized.get(tamano_field_id, "")
-    if not tamano_value:
-        raise ValueError("Selecciona el tamano de la empresa.")
-    if tamano_value not in set(SECTION_8.get("tamano_options") or []):
-        raise ValueError("Selecciona un tamano de empresa valido.")
-    _sync_company_size_to_supabase(tamano_value)
-    set_section_cache("section_8", normalized)
+    set_section_cache("section_8", payload)
     FORM_CACHE["_last_section"] = "section_8"
     save_cache_to_file()
-    return normalized
-
-
-def _normalize_section_8_payload(payload):
-    tamano_field_id = SECTION_8["tamano_field_id"]
-    if isinstance(payload, dict):
-        tamano_value = str(payload.get(tamano_field_id) or "").strip()
-        asistentes = payload.get("asistentes") or []
-    elif isinstance(payload, list):
-        tamano_value = ""
-        asistentes = payload
-    else:
-        raise ValueError("section_8 requerida")
-
-    normalized_asistentes = []
-    for item in asistentes:
-        if not isinstance(item, dict):
-            continue
-        normalized_asistentes.append(
-            {
-                "nombre": str(item.get("nombre") or "").strip(),
-                "cargo": str(item.get("cargo") or "").strip(),
-            }
-        )
-
-    return {
-        tamano_field_id: tamano_value,
-        "asistentes": normalized_asistentes,
-    }
-
-
-def _sync_company_size_to_supabase(tamano_value):
-    nit_empresa = str(SECTION_1_CACHE.get("nit_empresa") or "").strip()
-    if not nit_empresa:
-        raise ValueError("No hay NIT de empresa para actualizar el tamano.")
-
-    result = _supabase_patch_with_queue(
-        "empresas",
-        {"nit_empresa": nit_empresa},
-        {"tamaño": tamano_value},
-    )
-    if result.get("status") == "synced" and not result.get("data"):
-        raise RuntimeError("No se encontro la empresa para guardar el tamano.")
+    return payload
 
 
 SECTION_2 = {
@@ -1087,8 +917,6 @@ SECTION_7_TEMPLATE_BUTTONS = [
 SECTION_8 = {
     "title": "8. ASISTENTES",
     "rows": 3,
-    "tamano_field_id": "tamano_empresa",
-    "tamano_options": ["Menos de 50", "Mas de 51"],
     "nombres": [
         "Sandra Milena Pachón Rojas",
         "Sara Zambrano",
@@ -1155,7 +983,7 @@ def _looks_like_disability_heading(text):
 
 
 def _load_disability_descriptions_from_sheet():
-    rows = read_sheet_values(_get_official_dictionary_spreadsheet_id(), OFFICIAL_DICTIONARY_RANGE)
+    rows = read_sheet_values(OFFICIAL_DICTIONARY_SPREADSHEET_ID, OFFICIAL_DICTIONARY_RANGE)
     entries = {}
     for row in rows or []:
         if not row:
@@ -1236,144 +1064,250 @@ def normalize_disability_key(value):
     return _normalize_key(value)
 
 
-def _write_section_with_ws(ws, section_id, payload):
+def _get_section_6_extra_rows(cache_data=None):
+    cache = FORM_CACHE if cache_data is None else (cache_data or {})
+    section_6_rows = list(cache.get("section_6") or [])
+    base_rows = int(EXCEL_MAPPING.get("section_6", {}).get("base_rows", 4) or 4)
+    return max(0, len(section_6_rows) - base_rows)
+
+
+def _section_6_extra_rows(section_6_payload=None):
+    if section_6_payload is None:
+        return _get_section_6_extra_rows()
+    cache_snapshot = {"section_6": list(section_6_payload or [])}
+    return _get_section_6_extra_rows(cache_snapshot)
+
+
+def _section_7_content_row_for_payload(section_6_payload=None):
+    return SECTION_7_TITLE_ROW + 1 + _section_6_extra_rows(section_6_payload)
+
+
+def _section_8_start_row_for_payload(section_6_payload=None):
+    return SECTION_8_TITLE_ROW + 1 + _section_6_extra_rows(section_6_payload)
+
+
+def _shift_cell_reference(cell_ref, row_delta):
+    text = str(cell_ref or "").strip()
+    if row_delta <= 0 or not text:
+        return text
+    match = re.match(r"^([A-Z]+)(\d+)$", text, re.IGNORECASE)
+    if not match:
+        return text
+    column = match.group(1).upper()
+    row = int(match.group(2))
+    return f"{column}{row + row_delta}"
+
+
+def _build_section_writes(section_id, payload):
+    """Return a list of {"range": ..., "value": ...} dicts for *section_id*."""
     if section_id == "section_6":
         mapping = EXCEL_MAPPING["section_6"]
         start_row = mapping["start_row"]
-        base_rows = mapping["base_rows"]
-        total = len(payload or [])
-        if total > base_rows:
-            insert_at = start_row + base_rows
-            template_row = start_row + base_rows - 1
-            for _ in range(total - base_rows):
-                ws.Rows(insert_at).Insert()
-                ws.Rows(template_row).Copy(ws.Rows(insert_at))
+        writes = []
         for idx, entry in enumerate(payload or []):
             row = start_row + idx
             discapacidad = entry.get("discapacidad", "")
-            _log_excel(
-                f"WRITE section=section_6 cell={mapping['discapacidad_col']}{row} key=discapacidad value={discapacidad!r}"
-            )
-            ws_write(ws, f"{mapping['discapacidad_col']}{row}", discapacidad)
-        return
+            if discapacidad:
+                writes.append({
+                    "range": f"'{SHEET_NAME}'!{mapping['discapacidad_col']}{row}",
+                    "value": discapacidad,
+                })
+        return writes
 
     if section_id == "section_7":
         if not payload:
-            return
+            return []
+        row_offset = _get_section_6_extra_rows()
+        cell = EXCEL_MAPPING["section_7"].get("observaciones_recomendaciones", "A159")
+        cell = _shift_cell_reference(cell, row_offset)
         value = payload.get("observaciones_recomendaciones", "")
-        write_row = _section_7_content_row_for_payload(FORM_CACHE.get("section_6"))
-        _log_excel(
-            f"WRITE section=section_7 cell=A{write_row} key=observaciones_recomendaciones value={value!r}"
-        )
-        ws_write(ws, f"A{write_row}", value)
-        return
+        if not value:
+            return []
+        return [{"range": f"'{SHEET_NAME}'!{cell}", "value": value}]
 
     if section_id == "section_8":
-        section8_payload = _normalize_section_8_payload(payload) if payload else {}
-        asistentes = section8_payload.get("asistentes") or []
-        if not asistentes:
-            return
-        start_row = _section_8_start_row_for_payload(FORM_CACHE.get("section_6"))
-        base_rows = EXCEL_MAPPING["section_8"].get("rows", 3)
-        total = len(asistentes)
-        if total > base_rows:
-            insert_at = start_row + base_rows
-            template_row = start_row + base_rows - 1
-            for _ in range(total - base_rows):
-                ws.Rows(insert_at).Insert()
-                ws.Rows(template_row).Copy(ws.Rows(insert_at))
-        for idx, entry in enumerate(asistentes):
+        if not payload:
+            return []
+        mapping = EXCEL_MAPPING["section_8"]
+        start_row = int(mapping["start_row"]) + _get_section_6_extra_rows()
+        name_col = mapping["name_col"]
+        cargo_col = mapping["cargo_col"]
+        writes = []
+        for idx, entry in enumerate(payload):
             row = start_row + idx
             nombre = entry.get("nombre", "")
             cargo = entry.get("cargo", "")
-            _log_excel(
-                f"WRITE section=section_8 cell=E{row} key=nombre value={nombre!r}"
-            )
-            _log_excel(
-                f"WRITE section=section_8 cell=L{row} key=cargo value={cargo!r}"
-            )
-            ws_write(ws, f"E{row}", nombre)
-            ws_write(ws, f"L{row}", cargo)
-        return
+            if nombre:
+                writes.append({"range": f"'{SHEET_NAME}'!{name_col}{row}", "value": nombre})
+            if cargo:
+                writes.append({"range": f"'{SHEET_NAME}'!{cargo_col}{row}", "value": cargo})
+        return writes
 
     mapping = EXCEL_MAPPING.get(section_id)
     if not mapping:
-        return
+        return []
+
     if section_id == "section_2_1":
         checkbox_ids = {item[0] for item in SECTION_2_1.get("checkboxes", [])}
+        writes = []
         for key, cell in mapping.items():
             if key in payload:
                 value = payload.get(key)
                 if key in checkbox_ids:
-                    symbol = format_checkbox_symbol(value)
-                    _log_excel(
-                        f"WRITE section={section_id} cell={cell} key={key} checkbox_symbol={symbol!r}"
-                    )
-                    write_checkbox_symbol(ws, cell, value)
-                else:
-                    _log_excel(
-                        f"WRITE section={section_id} cell={cell} key={key} value={value!r}"
-                    )
-                    ws_write(ws, cell, value)
+                    value = bool(value)
+                if value is None:
+                    value = ""
+                writes.append({"range": f"'{SHEET_NAME}'!{cell}", "value": value, "_checkbox": key in checkbox_ids})
+        return writes
+
+    return build_sheet_updates(SHEET_NAME, mapping, payload or {})
+
+
+def _build_row_insertions(cache):
+    row_insertions = []
+
+    section_6 = list((cache or {}).get("section_6") or [])
+    section_6_cfg = EXCEL_MAPPING.get("section_6", {})
+    section_6_base_rows = int(section_6_cfg.get("base_rows", 4) or 4)
+    if section_6 and len(section_6) > section_6_base_rows:
+        row_insertions.append(
+            {
+                "sheet_name": SHEET_NAME,
+                "start_row": int(section_6_cfg["start_row"]),
+                "base_rows": section_6_base_rows,
+                "total_rows": len(section_6),
+            }
+        )
+
+    section_8 = list((cache or {}).get("section_8") or [])
+    section_8_cfg = EXCEL_MAPPING.get("section_8", {})
+    section_8_base_rows = int(section_8_cfg.get("rows", 3) or 3)
+    if section_8 and len(section_8) > section_8_base_rows:
+        row_insertions.append(
+            {
+                "sheet_name": SHEET_NAME,
+                "start_row": int(section_8_cfg["start_row"]),
+                "base_rows": section_8_base_rows,
+                "total_rows": len(section_8),
+            }
+        )
+
+    return row_insertions
+
+
+def _write_section_with_ws(ws, section_id, payload):
+    if section_id == "section_6":
+        mapping = EXCEL_MAPPING["section_6"]
+        start_row = int(mapping["start_row"])
+        base_rows = int(mapping.get("base_rows", 4) or 4)
+        rows = list(payload or [])
+        extra_rows = max(0, len(rows) - base_rows)
+        insert_row = start_row + base_rows
+        for _ in range(extra_rows):
+            ws.Rows(insert_row).Insert()
+            ws.Rows(insert_row - 1).Copy(ws.Rows(insert_row))
+        for idx, entry in enumerate(rows):
+            discapacidad = str((entry or {}).get("discapacidad") or "").strip()
+            if not discapacidad:
+                continue
+            row = start_row + idx
+            _log_excel(f"WRITE section=section_6 cell=A{row} key=discapacidad")
+            ws_write(ws, f"A{row}", discapacidad)
         return
-    for key, cell in mapping.items():
-        if key in payload:
-            value = payload.get(key)
-            _log_excel(
-                f"WRITE section={section_id} cell={cell} key={key} value={value!r}"
-            )
-            ws_write(ws, cell, value)
+
+    if section_id == "section_7":
+        value = str((payload or {}).get("observaciones_recomendaciones") or "").strip()
+        if not value:
+            return
+        write_row = _section_7_content_row_for_payload(FORM_CACHE.get("section_6") or [])
+        _log_excel(f"WRITE section=section_7 cell=A{write_row} key=observaciones_recomendaciones")
+        ws_write(ws, f"A{write_row}", value)
+        return
+
+    if section_id == "section_8":
+        if isinstance(payload, dict):
+            rows = list(payload.get("asistentes") or [])
+        else:
+            rows = list(payload or [])
+        start_row = _section_8_start_row_for_payload(FORM_CACHE.get("section_6") or [])
+        base_rows = int(EXCEL_MAPPING.get("section_8", {}).get("rows", 3) or 3)
+        extra_rows = max(0, len(rows) - base_rows)
+        insert_row = start_row + base_rows
+        for _ in range(extra_rows):
+            ws.Rows(insert_row).Insert()
+            ws.Rows(insert_row - 1).Copy(ws.Rows(insert_row))
+        for idx, entry in enumerate(rows):
+            row = start_row + idx
+            nombre = str((entry or {}).get("nombre") or "").strip()
+            cargo = str((entry or {}).get("cargo") or "").strip()
+            if nombre:
+                _log_excel(f"WRITE section=section_8 cell=E{row} key=nombre")
+                ws_write(ws, f"E{row}", nombre)
+            if cargo:
+                _log_excel(f"WRITE section=section_8 cell=L{row} key=cargo")
+                ws_write(ws, f"L{row}", cargo)
+        return
+
+    for write in _build_section_writes(section_id, payload):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        _log_excel(f"WRITE section={section_id} cell={cell}")
+        ws_write(ws, cell, write.get("value", ""))
 
 
 def export_to_excel(progress_callback=None):
-    clear_written_rows()
-    output_path = _ensure_output_path()
-    _log_excel(f"START export_all output={output_path}")
-    try:
-        import win32com.client as win32
-    except ImportError as exc:
-        _log_excel("ERROR export_all error=pywin32_not_installed")
-        raise RuntimeError("pywin32 no esta instalado. Instala con pip install pywin32.") from exc
+    if not FORM_CACHE.get("section_1") and cache_file_exists():
+        load_cache_from_file()
 
-    excel = win32.DispatchEx("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
-    wb = None
-    try:
-        wb = excel.Workbooks.Open(output_path)
-        ws = _get_sheet_by_name(wb)
-        section_order = [
-            "section_1",
-            "section_2",
-            "section_2_1",
-            "section_3",
-            "section_4",
-            "section_5",
-            "section_6",
-            "section_7",
-            "section_8",
-        ]
-        for section_id in section_order:
-            payload = FORM_CACHE.get(section_id, {})
-            _log_excel(f"SECTION export_all section={section_id}")
-            if progress_callback:
-                progress_callback(section_id)
-            _write_section_with_ws(ws, section_id, payload)
-        sanitize_logo_error_cells(wb)
-        autofit_rows(ws, log_fn=_log_excel)
-        _log_excel("AUTOFIT_COMPLETE")
-        wb.Save()
-        _log_excel("SUCCESS export_all")
-    except Exception as exc:
-        _log_excel(f"ERROR export_all error={exc!r}")
-        raise
-    finally:
-        if wb is not None:
-            wb.Close(SaveChanges=True)
-        excel.Quit()
+    from google_sheets_client import get_master_template_id
+    from drive_upload import publish_sheet_from_template
+
+    _log_excel("START export_all (Google Sheets)")
+
+    writes = []
+    section_order = [
+        "section_1",
+        "section_2",
+        "section_2_1",
+        "section_3",
+        "section_4",
+        "section_5",
+        "section_6",
+        "section_7",
+        "section_8",
+    ]
+    for section_id in section_order:
+        payload = FORM_CACHE.get(section_id, {})
+        _log_excel(f"SECTION export_all section={section_id}")
+        if progress_callback:
+            progress_callback(section_id)
+        writes.extend(_build_section_writes(section_id, payload))
+
+    checkbox_cells = [w for w in writes if w.get("_checkbox")]
+    writes = [{k: v for k, v in w.items() if k != "_checkbox"} for w in writes]
+
+    empresa_nombre = SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
+    base_name = _sanitize_filename(empresa_nombre)
+    row_insertions = _build_row_insertions(FORM_CACHE)
+
+    result = publish_sheet_from_template(
+        template_id=get_master_template_id(),
+        sheet_writes=writes,
+        base_name=base_name,
+        folder_name=_sanitize_filename(empresa_nombre),
+        row_insertions=row_insertions or None,
+        checkbox_cells=checkbox_cells,
+    )
+
+    _log_excel("SUCCESS export_all (Google Sheets)")
+
     clear_cache_file()
     clear_form_cache()
-    return output_path
+
+    return {
+        "output_path": result.get("webViewLink", ""),
+        "drive_file_id": result.get("file_id", ""),
+        "already_in_drive": True,
+    }
 
 def register_form():
     return {

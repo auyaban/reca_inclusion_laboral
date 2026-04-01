@@ -9,7 +9,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from google_sheets_client import (
-    export_spreadsheet_to_excel,
     get_default_spreadsheet_id,
     get_spreadsheet,
     read_sheet_values,
@@ -39,10 +38,6 @@ def _build_parser():
     parser.add_argument(
         "--write-json",
         help='JSON de matriz 2D para escritura, por ejemplo [["hola","mundo"]].',
-    )
-    parser.add_argument(
-        "--export-xlsx",
-        help="Ruta local de salida para exportar el spreadsheet a un .xlsx.",
     )
     return parser
 
@@ -77,10 +72,6 @@ def main():
         values = json.loads(args.write_json)
         result = write_sheet_values(spreadsheet, args.write_range, values)
         print(json.dumps({"write_result": result}, ensure_ascii=False, indent=2))
-
-    if args.export_xlsx:
-        output = export_spreadsheet_to_excel(spreadsheet, Path(args.export_xlsx))
-        print(json.dumps({"exported_to": str(output)}, ensure_ascii=False, indent=2))
 
     return 0
 

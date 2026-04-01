@@ -1,27 +1,19 @@
 import json
 import os
-import shutil
 import time
 
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
-    _build_process_output_path,
-    _get_desktop_dir,
-    _next_available_file_path,
     _normalize_text,
-    sanitize_logo_error_cells,
-    autofit_rows,
-    clear_written_rows,
-    ws_write,
     _sanitize_filename,
+    build_sheet_updates,
 )
 from logging_utils import log_excel_event
-from version_info import resource_path
 
 
 FORM_ID = "sensibilizacion"
 FORM_NAME = "Sensibilizacion"
-SHEET_NAME = "8. SENSIBILIZACION"
+SHEET_NAME = "8. SENSIBILIZACIÓN"
 
 FORM_CACHE = {}
 SECTION_1_CACHE = {}
@@ -108,8 +100,6 @@ SECTION_2 = {"title": "2. PRESENTACION DE LOS TEMAS DE LA SENSIBILIZACION"}
 SECTION_3 = {"title": "3. OBSERVACIONES"}
 SECTION_4 = {"title": "4. REGISTRO FOTOGRAFICO"}
 SECTION_5 = {"title": "5. ASISTENTES", "rows": 4}
-SECTION_3_TITLE_ROW = 25
-SECTION_5_TITLE_ROW = 31
 
 SECTION_1_SUPABASE_MAP = evaluacion_accesibilidad.SECTION_1_SUPABASE_MAP.copy()
 
@@ -265,19 +255,6 @@ def confirm_section_5(payload):
     return payload
 
 
-def _find_template_path():
-    templates_dir = resource_path("templates")
-    if not templates_dir.is_dir():
-        raise FileNotFoundError("No existe la carpeta templates.")
-    for name in os.listdir(templates_dir):
-        if name.startswith("~$"):
-            continue
-        normalized = _normalize_text(name).replace("_", "")
-        if "sensibilizacion" in normalized and normalized.endswith(".xlsx"):
-            return os.fspath(templates_dir / name)
-    raise FileNotFoundError("No se encontró el template de sensibilizacion.")
-
-
 def _get_log_dir():
     output_path = FORM_CACHE.get("_output_path")
     if output_path:
@@ -296,118 +273,110 @@ def _log_excel(message):
         return
 
 
-def _ensure_output_path():
-    template_path = _find_template_path()
-    empresa_nombre = SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
-    process_name = "Sensibilizacion"
-    output_path = _build_process_output_path(empresa_nombre, process_name)
-    shutil.copy2(template_path, output_path)
-    FORM_CACHE["_output_path"] = output_path
-    return output_path
+SECTION_3_TITLE_ROW = 25
+SECTION_3_OBSERVACIONES_ROW = 26
+SECTION_5_TITLE_ROW = 31
+SECTION_5_START_ROW = 32
+SECTION_5_NOMBRE_COL = "C"
+SECTION_5_CARGO_COL = "K"
 
 
-def _get_sheet_by_name(workbook):
-    target = _normalize_text(SHEET_NAME).replace(" ", "")
-    for ws in workbook.Worksheets:
-        name_norm = _normalize_text(ws.Name).replace(" ", "")
-        if name_norm == target:
-            return ws
-    raise KeyError(f"No existe la hoja {SHEET_NAME}.")
+def ws_write(ws, cell, value):
+    try:
+        ws[cell] = value
+    except Exception:
+        return
 
 
-def _find_row_by_text(ws, text):
-    cell = ws.Columns("A").Find(What=text, LookAt=1)
-    if cell is not None:
-        return cell.Row
-    cell = ws.Columns("A").Find(What=text, LookAt=2)
-    if cell is not None:
-        return cell.Row
-    target = _normalize_text(text)
-    used = ws.UsedRange
-    start_row = used.Row
-    end_row = used.Row + used.Rows.Count - 1
-    for row in range(start_row, end_row + 1):
-        value = ws.Cells(row, 1).Value
-        if not value:
-            continue
-        value_norm = _normalize_text(str(value))
-        if value_norm == target or target in value_norm:
-            return row
-    raise ValueError(f"No se encontró el texto '{text}' en la columna A.")
-
-
-def _write_section_1(ws, payload):
+def _build_section_1_writes(payload):
     if not payload:
         payload = SECTION_1_CACHE
-    if not payload:
-        return
-    mapping = EXCEL_MAPPING.get("section_1", {})
-    for key, cell in mapping.items():
-        if key in payload:
-            ws_write(ws, cell, payload.get(key))
+    return build_sheet_updates(SHEET_NAME, EXCEL_MAPPING.get("section_1", {}), payload or {})
 
 
-def _write_section_3(ws, payload):
+def _build_section_3_writes(payload):
     if not payload:
-        return
+        return []
     texto = (payload.get("observaciones") or "").strip()
-    if texto:
-        ws_write(ws, f"A{SECTION_3_TITLE_ROW + 1}", texto)
+    if not texto:
+        return []
+    return [{"range": f"'{SHEET_NAME}'!A{SECTION_3_OBSERVACIONES_ROW}", "value": texto}]
 
 
-def _write_section_5(ws, payload):
+def _build_section_5_writes(payload):
     if not payload:
-        return
-    start_row = SECTION_5_TITLE_ROW + 1
-    base_rows = SECTION_5["rows"]
-    total = len(payload)
-
-    if total > base_rows:
-        insert_at = start_row + base_rows
-        template_row = start_row + base_rows - 1
-        for _ in range(total - base_rows):
-            ws.Rows(insert_at).Insert()
-            ws.Rows(template_row).Copy(ws.Rows(insert_at))
-            ws.Rows(insert_at).RowHeight = ws.Rows(template_row).RowHeight
-            insert_at += 1
-
+        return []
+    writes = []
     for idx, entry in enumerate(payload):
-        row = start_row + idx
+        row = SECTION_5_START_ROW + idx
         nombre = (entry.get("nombre") or "").strip()
         cargo = (entry.get("cargo") or "").strip()
         if nombre:
-            ws_write(ws, f"C{row}", nombre)
+            writes.append({"range": f"'{SHEET_NAME}'!{SECTION_5_NOMBRE_COL}{row}", "value": nombre})
         if cargo:
-            ws_write(ws, f"K{row}", cargo)
+            writes.append({"range": f"'{SHEET_NAME}'!{SECTION_5_CARGO_COL}{row}", "value": cargo})
+    return writes
+
+
+def _build_section_5_row_insertions(payload):
+    if not payload:
+        return []
+    base_rows = int(SECTION_5.get("rows", 4) or 4)
+    total_rows = len(payload)
+    if total_rows <= base_rows:
+        return []
+    return [
+        {
+            "sheet_name": SHEET_NAME,
+            "start_row": SECTION_5_START_ROW,
+            "base_rows": base_rows,
+            "total_rows": total_rows,
+        }
+    ]
+
+
+def _write_section_3(ws, payload):
+    for write in _build_section_3_writes(payload):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
+
+
+def _write_section_5(ws, payload):
+    for write in _build_section_5_writes(payload):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
 
 
 def export_to_excel(clear_cache=True):
-    clear_written_rows()
-    output_path = _ensure_output_path()
     if not FORM_CACHE.get("section_1") and cache_file_exists():
         load_cache_from_file()
-    try:
-        import win32com.client as win32
-    except ImportError as exc:
-        raise RuntimeError("pywin32 no esta instalado. Instala con pip install pywin32.") from exc
-    excel = win32.DispatchEx("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
-    wb = None
-    try:
-        wb = excel.Workbooks.Open(output_path)
-        ws = _get_sheet_by_name(wb)
-        _write_section_1(ws, FORM_CACHE.get("section_1", {}))
-        _write_section_3(ws, FORM_CACHE.get("section_3", {}))
-        _write_section_5(ws, FORM_CACHE.get("section_5", []))
-        sanitize_logo_error_cells(wb)
-        autofit_rows(ws, log_fn=_log_excel)
-        wb.Save()
-    finally:
-        if wb is not None:
-            wb.Close(SaveChanges=True)
-        excel.Quit()
+
+    from google_sheets_client import get_master_template_id
+    from drive_upload import publish_sheet_from_template
+
+    empresa_nombre = SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
+    base_name = _sanitize_filename(empresa_nombre)
+
+    writes = []
+    writes.extend(_build_section_1_writes(FORM_CACHE.get("section_1", {})))
+    writes.extend(_build_section_3_writes(FORM_CACHE.get("section_3", {})))
+    writes.extend(_build_section_5_writes(FORM_CACHE.get("section_5", [])))
+    row_insertions = _build_section_5_row_insertions(FORM_CACHE.get("section_5", []))
+
+    result = publish_sheet_from_template(
+        template_id=get_master_template_id(),
+        sheet_writes=writes,
+        base_name=base_name,
+        folder_name=_sanitize_filename(empresa_nombre),
+        row_insertions=row_insertions or None,
+    )
+
     if clear_cache:
         clear_cache_file()
         clear_form_cache()
-    return output_path
+
+    return {
+        "output_path": result.get("webViewLink", ""),
+        "drive_file_id": result.get("file_id", ""),
+        "already_in_drive": True,
+    }

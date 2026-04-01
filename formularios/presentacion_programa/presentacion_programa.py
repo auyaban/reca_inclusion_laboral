@@ -1,26 +1,21 @@
 import os
 import json
 import re
-import shutil
 import time
 from formularios.common import (
-    format_checkbox_symbol,
-    write_checkbox_symbol,
-    _build_process_output_path,
-    _get_desktop_dir,
-    _next_available_file_path,
     _normalize_text,
-    sanitize_logo_error_cells,
-    autofit_rows,
-    clear_written_rows,
-    ws_write,
     _sanitize_filename,
     _supabase_get,
+    build_sheet_updates,
 )
 from logging_utils import log_excel_event
-from version_info import resource_path
 
 FORM_NAME = "Presentacion/Reactivacion del programa de inclusion laboral"
+
+SHEET_NAMES = {
+    "presentacion": "1. PRESENTACIÓN DEL PROGRAMA IL",
+    "reactivacion": "1.2 REACTIVACIÓN DEL PROGRAMA IL",
+}
 
 SECTIONS = [
     "1. DATOS GENERALES",
@@ -475,20 +470,20 @@ EXCEL_MAPPING = {
         "correo_asesor": "Q14",
     },
     "section_3_item_8": {
-        "Responsabilidad Social Empresarial": "U38",
-        "Objetivos y metas para la diversidad, equidad e inclusion.": "U39",
-        "Avances a nivel global de impacto en Colombia": "U40",
-        "Beneficios Tributarios": "U41",
-        "Beneficios en la contratacion de poblacion en riesgo de exclusion": "U42",
-        "Ventaja en licitaciones publicas": "U43",
-        "Cumplimiento de la normativa establecida por el Estado Colombiano.": "U44",
-        "Experiencia en la vinculacion de personas en condicion de discapacidad.": "U45",
+        "Responsabilidad Social Empresarial": "U60",
+        "Objetivos y metas para la diversidad, equidad e inclusion.": "U61",
+        "Avances a nivel global de impacto en Colombia": "U62",
+        "Beneficios Tributarios": "U63",
+        "Beneficios en la contratacion de poblacion en riesgo de exclusion": "U64",
+        "Ventaja en licitaciones publicas": "U65",
+        "Cumplimiento de la normativa establecida por el Estado Colombiano.": "U66",
+        "Experiencia en la vinculacion de personas en condicion de discapacidad.": "U67",
     },
     "section_4": {
-        "acuerdos_observaciones": "A49",
+        "acuerdos_observaciones": "A71",
     },
     "section_5": {
-        "start_row": 53,
+        "start_row": 75,
         "name_col": "C",
         "cargo_col": "N",
     },
@@ -658,154 +653,140 @@ def get_form_cache():
     return dict(FORM_CACHE)
 
 
-def _get_log_dir(output_path=None):
-    if output_path:
-        base_dir = os.path.dirname(output_path)
-    else:
-        base_dir = os.getcwd()
-    log_dir = os.path.join(base_dir, "logs")
-    os.makedirs(log_dir, exist_ok=True)
-    return log_dir
-
-
-def _log_excel(message, output_path=None):
+def _log_excel(message):
     try:
-        _ = output_path
         log_excel_event(message)
     except Exception:
         return
 
 
-def _find_template_path(tipo_visita=None):
-    templates_dir = resource_path("templates")
-    if not templates_dir.is_dir():
-        raise FileNotFoundError("No existe la carpeta templates.")
-    visit_type = (tipo_visita or "").strip().lower()
-    keyword = "reactivacion" if visit_type == "reactivacion" else "presentacion"
-    for name in os.listdir(templates_dir):
-        normalized = _normalize_text(name)
-        if keyword in normalized and normalized.endswith(".xlsx"):
-            return os.fspath(templates_dir / name)
-    raise FileNotFoundError("No se encontró el template correspondiente.")
+def _resolve_sheet_name(tipo_visita=None):
+    """Return the Google Sheets tab name for the given visit type."""
+    visit_type = _normalize_text(tipo_visita or "presentacion")
+    if visit_type == "reactivacion":
+        return SHEET_NAMES["reactivacion"]
+    return SHEET_NAMES["presentacion"]
+
+
+def _build_section_1_writes(sheet_name, payload):
+    """Build Google Sheets writes for section 1 (company data)."""
+    if not payload:
+        payload = SECTION_1_CACHE
+    return build_sheet_updates(sheet_name, EXCEL_MAPPING.get("section_1", {}), payload or {})
+
+
+def _build_section_3_item8_writes(sheet_name, payload):
+    """Build Google Sheets writes for section 3 item 8 (motivation checkboxes)."""
+    if not payload:
+        return []
+    writes = []
+    normalized_payload = {
+        _normalize_text(key): bool(value)
+        for key, value in payload.items()
+    }
+    for key, cell in EXCEL_MAPPING.get("section_3_item_8", {}).items():
+        value = normalized_payload.get(
+            _normalize_text(key),
+            bool(payload.get(key, False)),
+        )
+        writes.append({"range": f"'{sheet_name}'!{cell}", "value": bool(value), "_checkbox": True})
+    return writes
+
+
+def _build_section_4_writes(sheet_name, payload):
+    """Build Google Sheets writes for section 4 (agreements/observations)."""
+    if not payload:
+        return []
+    return build_sheet_updates(sheet_name, EXCEL_MAPPING.get("section_4", {}), payload or {})
+
+
+def _build_section_5_writes(sheet_name, payload):
+    """Build Google Sheets writes for section 5 (attendees)."""
+    if not payload:
+        return []
+    writes = []
+    section_5_cfg = EXCEL_MAPPING["section_5"]
+    start_row = section_5_cfg["start_row"]
+    name_col = section_5_cfg["name_col"]
+    cargo_col = section_5_cfg["cargo_col"]
+    for idx, entry in enumerate(payload):
+        row = start_row + idx
+        nombre = (entry.get("nombre") or "").strip()
+        cargo = (entry.get("cargo") or "").strip()
+        if nombre:
+            writes.append({"range": f"'{sheet_name}'!{name_col}{row}", "value": nombre})
+        if cargo:
+            writes.append({"range": f"'{sheet_name}'!{cargo_col}{row}", "value": cargo})
+    return writes
+
+
+def _build_section_5_row_insertions(sheet_name, payload):
+    if not payload:
+        return []
+    section_5_cfg = EXCEL_MAPPING["section_5"]
+    base_rows = int(section_5_cfg.get("rows", 3) or 3)
+    total_rows = len(payload)
+    if total_rows <= base_rows:
+        return []
+    return [
+        {
+            "sheet_name": sheet_name,
+            "start_row": int(section_5_cfg["start_row"]),
+            "base_rows": base_rows,
+            "total_rows": total_rows,
+        }
+    ]
 
 
 def export_to_excel(cache=None):
-    clear_written_rows()
     if cache is None:
         cache = FORM_CACHE
-    section_1 = cache.get("section_1") or {}
-    section_3_item_8 = cache.get("section_3_item_8") or {}
-    section_4 = cache.get("section_4") or {}
-    section_5 = cache.get("section_5") or []
+    if not cache.get("section_1") and cache_file_exists():
+        load_cache_from_file()
+        cache = FORM_CACHE
 
+    from google_sheets_client import get_master_template_id
+    from drive_upload import publish_sheet_from_template
+
+    section_1 = cache.get("section_1") or {}
     tipo_visita_raw = section_1.get("tipo_visita") or "Presentacion"
-    tipo_visita = _normalize_text(tipo_visita_raw)
-    template_path = _find_template_path(tipo_visita=tipo_visita)
+    sheet_name = _resolve_sheet_name(tipo_visita_raw)
 
     empresa_nombre = section_1.get("nombre_empresa") or "Empresa"
-
+    tipo_visita = _normalize_text(tipo_visita_raw)
     prefix = "Reactivacion" if tipo_visita == "reactivacion" else "Presentacion"
-    process_name = f"{prefix} del Programa de Inclusion Laboral"
-    output_path = _build_process_output_path(empresa_nombre, process_name)
-    shutil.copy2(template_path, output_path)
-    _log_excel(f"START export_all output={output_path}", output_path)
+    base_name = _sanitize_filename(empresa_nombre)
 
-    try:
-        import win32com.client as win32
-    except ImportError as exc:
-        raise RuntimeError("pywin32 no está instalado. Instala con pip install pywin32.") from exc
+    _log_excel(f"START export_all sheet={sheet_name}")
 
-    excel = win32.DispatchEx("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
-    wb = None
-    try:
-        wb = excel.Workbooks.Open(output_path)
-        ws = wb.Worksheets(1)
+    writes = []
+    writes.extend(_build_section_1_writes(sheet_name, section_1))
+    writes.extend(_build_section_3_item8_writes(sheet_name, cache.get("section_3_item_8", {})))
+    writes.extend(_build_section_4_writes(sheet_name, cache.get("section_4", {})))
+    writes.extend(_build_section_5_writes(sheet_name, cache.get("section_5", [])))
+    row_insertions = _build_section_5_row_insertions(sheet_name, cache.get("section_5", []))
 
-        for key, cell in EXCEL_MAPPING["section_1"].items():
-            if key in section_1:
-                value = section_1.get(key)
-                _log_excel(
-                    f"WRITE section=section_1 cell={cell} key={key} value={value!r}",
-                    output_path,
-                )
-                ws_write(ws, cell, value)
+    checkbox_cells = [w for w in writes if w.get("_checkbox")]
+    writes = [{k: v for k, v in w.items() if k != "_checkbox"} for w in writes]
 
-        normalized_section_3_item_8 = {
-            _normalize_text(key): bool(value)
-            for key, value in section_3_item_8.items()
-        }
-        for key, cell in EXCEL_MAPPING["section_3_item_8"].items():
-            value = normalized_section_3_item_8.get(
-                _normalize_text(key),
-                bool(section_3_item_8.get(key, False)),
-            )
-            symbol = format_checkbox_symbol(value)
-            _log_excel(
-                f"WRITE section=section_3_item_8 cell={cell} key={key} "
-                f"checkbox_value={value!r} checkbox_symbol={symbol!r}",
-                output_path,
-            )
-            write_checkbox_symbol(ws, cell, value)
+    result = publish_sheet_from_template(
+        template_id=get_master_template_id(),
+        sheet_writes=writes,
+        base_name=base_name,
+        folder_name=_sanitize_filename(empresa_nombre),
+        row_insertions=row_insertions or None,
+        checkbox_cells=checkbox_cells,
+    )
 
-        for key, cell in EXCEL_MAPPING["section_4"].items():
-            if key in section_4:
-                value = section_4.get(key)
-                _log_excel(
-                    f"WRITE section=section_4 cell={cell} key={key} value={value!r}",
-                    output_path,
-                )
-                ws_write(ws, cell, value)
-
-        section_5_cfg = EXCEL_MAPPING["section_5"]
-        start_row = section_5_cfg["start_row"]
-        name_col = section_5_cfg["name_col"]
-        cargo_col = section_5_cfg["cargo_col"]
-        total = len(section_5)
-        template_row = start_row + 2
-        if total > 3:
-            insert_at = start_row + 3
-            extra_rows = total - 3
-            for _ in range(extra_rows):
-                ws.Rows(insert_at).Insert()
-                ws.Rows(template_row).Copy()
-                ws.Rows(insert_at).PasteSpecial(-4122)
-                insert_at += 1
-
-        for idx in range(total):
-            row = start_row + idx
-            entry = section_5[idx]
-            nombre = entry.get("nombre", "")
-            cargo = entry.get("cargo", "")
-            _log_excel(
-                f"WRITE section=section_5 cell={name_col}{row} key=nombre value={nombre!r}",
-                output_path,
-            )
-            _log_excel(
-                f"WRITE section=section_5 cell={cargo_col}{row} key=cargo value={cargo!r}",
-                output_path,
-            )
-            ws_write(ws, f"{name_col}{row}", nombre)
-            ws_write(ws, f"{cargo_col}{row}", cargo)
-            if idx >= 3:
-                ws_write(ws, f"A{row}", "Nombre completo:")
-                ws_write(ws, f"L{row}", "Cargo:")
-
-        sanitize_logo_error_cells(wb)
-        autofit_rows(ws, log_fn=lambda msg: _log_excel(msg, output_path))
-        wb.Save()
-        _log_excel("SUCCESS export_all", output_path)
-    except Exception as exc:
-        _log_excel(f"ERROR export_all error={exc!r}", output_path)
-        raise
-    finally:
-        if wb is not None:
-            wb.Close(SaveChanges=True)
-        excel.Quit()
+    _log_excel("SUCCESS export_all")
     clear_cache_file()
     clear_form_cache()
-    return output_path
+
+    return {
+        "output_path": result.get("webViewLink", ""),
+        "drive_file_id": result.get("file_id", ""),
+        "already_in_drive": True,
+    }
 
 
 def register_form():

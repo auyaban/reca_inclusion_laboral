@@ -10,6 +10,121 @@ import drive_upload
 
 
 class DriveResilienceTests(unittest.TestCase):
+    def test_background_finalization_skips_local_exists_for_remote_sheet_exports(self) -> None:
+        captured = {}
+
+        class _DummyHub:
+            def __init__(self) -> None:
+                self.current_session_id = "session-demo"
+
+            def track_form_finished(self, form_id):
+                captured["tracked_form_id"] = form_id
+
+            def finalize_form_delivery(self, output_path, **kwargs):
+                captured["finalize_call"] = {"output_path": output_path, **kwargs}
+                return {
+                    "status": "synced",
+                    "output_path": output_path,
+                    "remote_url": kwargs.get("drive_job", {}).get("remote_url", ""),
+                    "drive_file_id": kwargs.get("drive_job", {}).get("drive_file_id", ""),
+                    "error": "",
+                }
+
+        class _DummyWindow:
+            def __init__(self) -> None:
+                self.master = _DummyHub()
+                self._finalize_in_progress = False
+                self.destroyed = False
+
+            def destroy(self):
+                self.destroyed = True
+
+        class _DummyLoading:
+            def close(self):
+                captured["loading_closed"] = True
+
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None, **kwargs):
+                self._target = target
+
+            def start(self):
+                if self._target is not None:
+                    self._target()
+
+        window = _DummyWindow()
+        loading = _DummyLoading()
+
+        with patch.object(app, "_guard_form_action", return_value=False):
+            with patch.object(app.threading, "Thread", _ImmediateThread):
+                with patch.object(app, "HubWindow", _DummyHub):
+                    with patch.object(app, "_safe_widget_after", side_effect=lambda _window, fn: fn()):
+                        with patch.object(app, "_update_loading_async", return_value=None):
+                            with patch.object(app, "_finalize_export_flow", return_value=None):
+                                with patch.object(app, "_return_to_hub", return_value=None):
+                                    with patch.object(app.os.path, "exists", side_effect=AssertionError("os.path.exists should not run for remote exports")):
+                                        app._start_background_finalization(
+                                            window,
+                                            loading,
+                                            form_name="Demo",
+                                            company_name="Empresa Demo",
+                                            form_id="demo_remote",
+                                            worker_fn=lambda: {
+                                                "output_path": "https://docs.google.com/spreadsheets/d/sheet-123/edit",
+                                                "drive_file_id": "sheet-123",
+                                                "already_in_drive": True,
+                                            },
+                                        )
+
+        self.assertTrue(window.destroyed)
+        self.assertEqual(captured["tracked_form_id"], "demo_remote")
+        self.assertEqual(
+            captured["finalize_call"]["output_path"],
+            "https://docs.google.com/spreadsheets/d/sheet-123/edit",
+        )
+        self.assertEqual(
+            captured["finalize_call"]["drive_job"],
+            {
+                "status": "synced",
+                "drive_file_id": "sheet-123",
+                "remote_url": "https://docs.google.com/spreadsheets/d/sheet-123/edit",
+            },
+        )
+
+    def test_finalize_form_delivery_does_not_enqueue_synced_remote_sheet(self) -> None:
+        class _DummyHub:
+            def create_form_completion_record(self, *args, **kwargs):
+                return "registro-demo"
+
+        dummy = _DummyHub()
+        remote_url = "https://docs.google.com/spreadsheets/d/sheet-123/edit"
+
+        with patch.object(app, "_update_form_completion_upload_status", return_value=True) as update_status:
+            with patch.object(app, "_enqueue_drive_upload_job") as enqueue_job:
+                result = app.HubWindow.finalize_form_delivery(
+                    dummy,
+                    remote_url,
+                    form_name="Demo",
+                    company_name="Empresa Demo",
+                    drive_job={
+                        "status": "synced",
+                        "drive_file_id": "sheet-123",
+                        "remote_url": remote_url,
+                    },
+                )
+
+        self.assertEqual(result["status"], "synced")
+        self.assertEqual(result["remote_url"], remote_url)
+        enqueue_job.assert_not_called()
+        update_status.assert_called_once_with(
+            "registro-demo",
+            upload_status="synced",
+            upload_error="",
+            upload_attempted_at=unittest.mock.ANY,
+            uploaded_at=unittest.mock.ANY,
+            path_formato=remote_url,
+            drive_file_id="sheet-123",
+        )
+
     def test_drive_probe_read_only_skips_write_check(self) -> None:
         fake_google = types.ModuleType("google")
         fake_google_oauth2 = types.ModuleType("google.oauth2")
@@ -62,6 +177,19 @@ class DriveResilienceTests(unittest.TestCase):
                     return_value={"ok": True},
                 ) as drive_probe:
                     result = app.probe_startup_services(require_drive_write=False)
+
+        self.assertTrue(result["internet"]["ok"])
+        drive_probe.assert_called_once_with(log_enabled=False, require_write=False)
+
+    def test_probe_startup_services_defaults_to_read_only_drive_probe(self) -> None:
+        with patch.object(app, "check_internet", return_value={"ok": True}):
+            with patch.object(app, "probe_supabase_service", return_value={"ok": True}):
+                with patch.object(
+                    app.drive_upload,
+                    "probe_drive_service",
+                    return_value={"ok": True},
+                ) as drive_probe:
+                    result = app.probe_startup_services()
 
         self.assertTrue(result["internet"]["ok"])
         drive_probe.assert_called_once_with(log_enabled=False, require_write=False)

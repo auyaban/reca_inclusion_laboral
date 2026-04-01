@@ -3,6 +3,7 @@ import re
 import shutil
 import io
 import tempfile
+import uuid
 from pathlib import Path
 
 from openpyxl import load_workbook
@@ -15,6 +16,10 @@ from formularios.common import (
     sanitize_logo_error_cells,
     _sanitize_filename,
     _supabase_get,
+)
+from google_api_requests import (
+    execute_google_create_with_confirmation,
+    execute_google_request_with_retry,
 )
 from google_sheets_client import (
     batch_write_sheet_updates,
@@ -196,11 +201,11 @@ def _batch_read_sheet_values(spreadsheet_id_or_url, ranges):
     if not cleaned:
         return {}
     service = get_google_sheets_service()
-    response = (
+    response = execute_google_request_with_retry(
         service.spreadsheets()
         .values()
-        .batchGet(spreadsheetId=spreadsheet_id, ranges=cleaned)
-        .execute()
+        .batchGet(spreadsheetId=spreadsheet_id, ranges=cleaned),
+        operation_name="seguimientos.batch_read_values",
     )
     return {item.get("range"): item.get("values", []) for item in response.get("valueRanges", [])}
 
@@ -255,13 +260,16 @@ def _find_named_folder(service, parent_id, folder_name):
         "mimeType='application/vnd.google-apps.folder' "
         f"and name='{safe_name}' and '{parent_id}' in parents and trashed=false"
     )
-    result = service.files().list(
-        q=query,
-        fields="files(id,name,webViewLink)",
-        includeItemsFromAllDrives=True,
-        supportsAllDrives=True,
-        pageSize=5,
-    ).execute()
+    result = execute_google_request_with_retry(
+        service.files().list(
+            q=query,
+            fields="files(id,name,webViewLink)",
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True,
+            pageSize=5,
+        ),
+        operation_name="seguimientos.find_named_folder",
+    )
     files = result.get("files", [])
     return files[0] if files else None
 
@@ -275,15 +283,41 @@ def _ensure_seguimientos_folder(service):
 
 
 def _list_drive_files(service, folder_id):
-    result = service.files().list(
-        q=f"'{folder_id}' in parents and trashed=false",
-        fields="files(id,name,mimeType,webViewLink,modifiedTime,parents,appProperties)",
-        includeItemsFromAllDrives=True,
-        supportsAllDrives=True,
-        pageSize=100,
-        orderBy="modifiedTime desc",
-    ).execute()
+    result = execute_google_request_with_retry(
+        service.files().list(
+            q=f"'{folder_id}' in parents and trashed=false",
+            fields="files(id,name,mimeType,webViewLink,modifiedTime,parents,appProperties)",
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True,
+            pageSize=100,
+            orderBy="modifiedTime desc",
+        ),
+        operation_name="seguimientos.list_drive_files",
+    )
     return list(result.get("files", []))
+
+
+def _find_drive_file_by_request_id(service, folder_id, filename, request_id):
+    safe_name = str(filename or "").replace("'", "\\'")
+    query = (
+        f"mimeType='{GOOGLE_SHEETS_MIME}' "
+        f"and name='{safe_name}' and '{folder_id}' in parents and trashed=false"
+    )
+    result = execute_google_request_with_retry(
+        service.files().list(
+            q=query,
+            fields="files(id,name,mimeType,webViewLink,parents,appProperties)",
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True,
+            pageSize=5,
+        ),
+        operation_name="seguimientos.find_drive_file_by_request_id",
+    )
+    for item in result.get("files", []):
+        app_properties = item.get("appProperties") or {}
+        if str(app_properties.get("request_id") or "").strip() == str(request_id or "").strip():
+            return item
+    return None
 
 
 def _find_case_folder_drive(service, cedula, nombre_usuario=""):
@@ -862,10 +896,13 @@ def _set_sheet_visibility(spreadsheet_id, max_seguimientos):
         )
     if not requests:
         return
-    service.spreadsheets().batchUpdate(
-        spreadsheetId=spreadsheet_id,
-        body={"requests": requests},
-    ).execute()
+    execute_google_request_with_retry(
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": requests},
+        ),
+        operation_name="seguimientos.set_sheet_visibility",
+    )
 
 
 def _merge_fill_empty(existing_payload, new_payload):
@@ -886,20 +923,26 @@ def _merge_fill_empty(existing_payload, new_payload):
 
 def _create_native_case_record(service, folder_id, folder_name, cedula, user_row, max_seguimientos, seed_path=None):
     template_id = get_seguimientos_template_id()
-    copied = service.files().copy(
-        fileId=template_id,
-        body={
-            "name": folder_name,
-            "parents": [folder_id],
-            "appProperties": {
-                "kind": "seguimiento_il",
-                "cedula": cedula,
-                "max_seguimientos": str(max_seguimientos),
+    request_id = uuid.uuid4().hex
+    copied = execute_google_create_with_confirmation(
+        lambda: service.files().copy(
+            fileId=template_id,
+            body={
+                "name": folder_name,
+                "parents": [folder_id],
+                "appProperties": {
+                    "kind": "seguimiento_il",
+                    "request_id": request_id,
+                    "cedula": str(cedula),
+                    "max_seguimientos": str(max_seguimientos),
+                },
             },
-        },
-        fields="id,name,mimeType,webViewLink,parents,appProperties",
-        supportsAllDrives=True,
-    ).execute()
+            fields="id,name,mimeType,webViewLink,parents,appProperties",
+            supportsAllDrives=True,
+        ),
+        lambda: _find_drive_file_by_request_id(service, folder_id, folder_name, request_id),
+        operation_name="seguimientos.copy_native_case",
+    )
     record = {
         "source": "drive",
         "cedula": cedula,
@@ -941,7 +984,7 @@ def ensure_case_record(cedula, user_row, is_compensar):
                 )
             except Exception:
                 existing["max_seguimientos"] = 6 if bool(is_compensar) else 3
-        elif existing.get("local_path"):
+        elif existing.get("local_path") and existing.get("source") != "legacy_local":
             wb = _load_workbook_safe(existing["local_path"])
             _fill_sheet_base(wb, user_row)
             _sync_ponderado_from_payload(wb, _build_base_payload_from_user_row(user_row), overwrite=False)
@@ -1015,12 +1058,15 @@ def sync_case_record_from_local(record, local_path):
     if mime_type == GOOGLE_SHEETS_MIME:
         return
     media = MediaFileUpload(local_path, mimetype=XLSX_MIME, resumable=False)
-    service.files().update(
-        fileId=record["file_id"],
-        media_body=media,
-        fields="id,name,modifiedTime,webViewLink",
-        supportsAllDrives=True,
-    ).execute()
+    execute_google_request_with_retry(
+        service.files().update(
+            fileId=record["file_id"],
+            media_body=media,
+            fields="id,name,modifiedTime,webViewLink",
+            supportsAllDrives=True,
+        ),
+        operation_name="seguimientos.sync_case_record_from_local",
+    )
 
 
 def _get_base_sheet_name_from_spreadsheet(spreadsheet):

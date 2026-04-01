@@ -1,28 +1,20 @@
 import json
 import os
-import shutil
 import time
+from functools import lru_cache
 
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
-    _build_process_output_path,
-    _get_desktop_dir,
-    _next_available_file_path,
     _normalize_cedula,
     _normalize_decimal_value,
     _normalize_text,
     _parse_date_value,
     _coerce_excel_decimal_value,
-    sanitize_logo_error_cells,
-    autofit_rows,
-    clear_written_rows,
-    ws_write,
     _sanitize_filename,
     _supabase_get,
     _supabase_upsert_with_queue,
 )
 from logging_utils import log_excel_event
-from version_info import resource_path
 
 FORM_ID = "seleccion_incluyente"
 FORM_NAME = "Proceso de Seleccion Incluyente"
@@ -127,20 +119,40 @@ SECTION_1_SUPABASE_MAP = evaluacion_accesibilidad.SECTION_1_SUPABASE_MAP.copy()
 FORM_CACHE = {}
 SECTION_1_CACHE = {}
 
-SHEET_NAME = "4. PROCESO DE SELECCION INCLUYE"
-SECTION_2_ANCHOR = "2. DATOS DEL OFERENTE"
-SECTION_2_TEMPLATE_ANCHOR_ROW = 14
-SECTION_2_LAST_COLUMN = "U"
+
+SHEET_NAME = "4. SELECCIÓN INCLUYENTE"
+
 TEMPLATE_VARIANT_INDIVIDUAL = "individual"
 TEMPLATE_VARIANT_GROUP_2_PLUS = "group_2_plus"
-SECTION_2_GROUP_BLOCK_HEIGHT = 61
-SECTION_2_GROUP_SHARED_ACTIVITY_CELL = "A14"
-SECTION_2_GROUP_FIRST_BLOCK_START_ROW = 16
-SECTION_2_GROUP_SECOND_BLOCK_START_ROW = 77
-TEMPLATE_FILENAME_BY_VARIANT = {
-    TEMPLATE_VARIANT_INDIVIDUAL: "seleccion_incluyente.xlsx",
-    TEMPLATE_VARIANT_GROUP_2_PLUS: "seleccion_incluyente.xlsx",
+
+# Oferente block geometry (unified format — one sheet for individual & group)
+OFERENTE_BLOCK_HEIGHT = 61          # rows per oferente block (rows 16-76 for first)
+OFERENTE_FIRST_BLOCK_START_ROW = 16
+OFERENTE_SECOND_BLOCK_START_ROW = OFERENTE_FIRST_BLOCK_START_ROW + OFERENTE_BLOCK_HEIGHT
+DESARROLLO_ACTIVIDAD_CELL = "A14"   # shared across all oferentes
+GROUP_EXPORT_TITLE_CELL = "G1"
+OFERENTE_TITLE_COL = "A"
+SECTION_2_LAST_COLUMN = "U"
+
+# Base row positions for 1 oferente (shift by (N-1)*BLOCK_HEIGHT for N oferentes)
+SECTION_5_BASE_AJUSTES_ROW = 78     # ajustes text row
+SECTION_5_BASE_NOTA_ROW = 79        # nota row
+SECTION_6_BASE_START_ROW = 84       # first asistente data row
+SECTION_5_TITLE_ROW_BY_TEMPLATE = {
+    TEMPLATE_VARIANT_INDIVIDUAL: 77,
+    TEMPLATE_VARIANT_GROUP_2_PLUS: 77,
 }
+SECTION_6_TITLE_ROW_BY_TEMPLATE = {
+    TEMPLATE_VARIANT_INDIVIDUAL: 83,
+    TEMPLATE_VARIANT_GROUP_2_PLUS: 83,
+}
+
+
+def ws_write(ws, cell, value):
+    try:
+        ws[cell] = value
+    except Exception:
+        return
 
 AJUSTES_ENTREVISTA_TEMPLATES = {
     "preparacion_proceso": """
@@ -934,7 +946,7 @@ SECTION_5 = {
 
 SECTION_6 = {
     "title": "6. ASISTENTES",
-    "rows": 4,
+    "rows": 2,
 }
 
 SECTION_1_FIELD_MAP = {field["id"]: field for field in SECTION_1["fields"]}
@@ -945,26 +957,47 @@ LIST_FIELD_OPTIONS_BY_ID = {
     if field.get("type") == "lista"
 }
 
-SECTION_2_CELL_MAP = {
-    "numero": ("A", 17),
-    "nombre_oferente": ("C", 17),
-    "cedula": ("H", 17),
-    "certificado_porcentaje": ("K", 17),
-    "discapacidad": ("L", 17),
-    "telefono_oferente": ("O", 17),
-    "resultado_certificado": ("R", 17),
-    "cargo_oferente": ("A", 19),
-    "nombre_contacto_emergencia": ("F", 19),
-    "parentesco": ("I", 19),
-    "telefono_emergencia": ("K", 19),
-    "fecha_nacimiento": ("N", 19),
-    "edad": ("S", 19),
-    "pendiente_otros_oferentes": ("G", 20),
-    "lugar_firma_contrato": ("L", 20),
-    "fecha_firma_contrato": ("R", 20),
-    "cuenta_pension": ("I", 21),
-    "tipo_pension": ("Q", 21),
-    "desarrollo_actividad": ("A", 23),
+SECTION_1_CELL_MAP = {
+    "fecha_visita": "F7",
+    "modalidad": "N7",
+    "nombre_empresa": "F8",
+    "ciudad_empresa": "N8",
+    "direccion_empresa": "F9",
+    "nit_empresa": "N9",
+    "correo_1": "F10",
+    "telefono_empresa": "N10",
+    "contacto_empresa": "F11",
+    "cargo": "N11",
+    "asesor": "F12",
+    "sede_empresa": "N12",
+}
+
+# Cell map for one oferente block.  (col, row) tuples — row is 1-indexed.
+# For oferente N, add (N-1)*OFERENTE_BLOCK_HEIGHT to each row.
+OFERENTE_CELL_MAP = {
+    # Row 19 — personal info line 1
+    "numero": ("A", 19),
+    "nombre_oferente": ("C", 19),
+    "cedula": ("H", 19),
+    "certificado_porcentaje": ("K", 19),
+    "discapacidad": ("L", 19),
+    "telefono_oferente": ("O", 19),
+    "resultado_certificado": ("R", 19),
+    # Row 21 — personal info line 2 (row 20 = labels)
+    "cargo_oferente": ("A", 21),
+    "nombre_contacto_emergencia": ("F", 21),
+    "parentesco": ("I", 21),
+    "telefono_emergencia": ("K", 21),
+    "fecha_nacimiento": ("N", 21),
+    "edad": ("S", 21),
+    # Row 22 — pendiente / contrato
+    "pendiente_otros_oferentes": ("G", 22),
+    "lugar_firma_contrato": ("L", 22),
+    "fecha_firma_contrato": ("R", 22),
+    # Row 23 — pension
+    "cuenta_pension": ("I", 23),
+    "tipo_pension": ("Q", 23),
+    # Section 4 — Caracterización (4.1 Condiciones médicas, rows 27+)
     "medicamentos_nivel_apoyo": ("I", 27),
     "medicamentos_conocimiento": ("N", 27),
     "medicamentos_horarios": ("N", 28),
@@ -979,158 +1012,71 @@ SECTION_2_CELL_MAP = {
     "controles_asistencia": ("N", 34),
     "controles_frecuencia": ("N", 35),
     "controles_nota": ("O", 36),
-    "desplazamiento_nivel_apoyo": ("I", 40),
-    "desplazamiento_modo": ("N", 40),
-    "desplazamiento_transporte": ("N", 41),
-    "desplazamiento_nota": ("O", 42),
-    "ubicacion_nivel_apoyo": ("I", 43),
-    "ubicacion_ciudad": ("N", 43),
-    "ubicacion_aplicaciones": ("N", 44),
-    "ubicacion_nota": ("O", 45),
-    "dinero_nivel_apoyo": ("I", 46),
-    "dinero_reconocimiento": ("N", 46),
-    "dinero_manejo": ("N", 47),
-    "dinero_medios": ("N", 48),
-    "dinero_nota": ("O", 49),
-    "presentacion_nivel_apoyo": ("I", 50),
-    "presentacion_personal": ("N", 50),
-    "presentacion_nota": ("O", 51),
-    "comunicacion_escrita_nivel_apoyo": ("I", 52),
-    "comunicacion_escrita_apoyo": ("N", 52),
-    "comunicacion_escrita_nota": ("N", 53),
-    "comunicacion_verbal_nivel_apoyo": ("I", 54),
-    "comunicacion_verbal_apoyo": ("N", 54),
-    "comunicacion_verbal_nota": ("O", 55),
-    "decisiones_nivel_apoyo": ("I", 56),
-    "toma_decisiones": ("N", 56),
-    "toma_decisiones_nota": ("O", 57),
-    "aseo_nivel_apoyo": ("I", 58),
-    "alimentacion": ("N", 58),
-    "aseo_criar_apoyo": ("Q", 59),
-    "aseo_comunicacion_apoyo": ("Q", 60),
-    "aseo_ayudas_apoyo": ("Q", 61),
-    "aseo_alimentacion": ("U", 59),
-    "aseo_movilidad_funcional": ("U", 60),
-    "aseo_higiene_aseo": ("U", 61),
-    "aseo_nota": ("O", 62),
-    "instrumentales_nivel_apoyo": ("I", 63),
-    "instrumentales_actividades": ("N", 63),
-    "instrumentales_criar_apoyo": ("Q", 64),
-    "instrumentales_finanzas": ("U", 64),
-    "instrumentales_comunicacion_apoyo": ("Q", 65),
-    "instrumentales_cocina_limpieza": ("U", 65),
-    "instrumentales_movilidad_apoyo": ("Q", 66),
-    "instrumentales_crear_hogar": ("U", 66),
-    "instrumentales_salud_cuenta_apoyo": ("U", 67),
-    "instrumentales_nota": ("O", 68),
-    "actividades_nivel_apoyo": ("I", 69),
-    "actividades_apoyo": ("N", 69),
-    "actividades_esparcimiento_apoyo": ("Q", 70),
-    "actividades_esparcimiento_cuenta_apoyo": ("U", 70),
-    "actividades_complementarios_apoyo": ("Q", 71),
-    "actividades_complementarios_cuenta_apoyo": ("U", 71),
-    "actividades_subsidios_cuenta_apoyo": ("U", 72),
-    "actividades_nota": ("O", 73),
-    "discriminacion_nivel_apoyo": ("I", 74),
-    "discriminacion": ("N", 74),
-    "discriminacion_violencia_apoyo": ("Q", 75),
-    "discriminacion_violencia_cuenta_apoyo": ("U", 75),
-    "discriminacion_vulneracion_apoyo": ("Q", 76),
-    "discriminacion_vulneracion_cuenta_apoyo": ("U", 76),
-    "discriminacion_nota": ("O", 77),
+    # 4.2 Habilidades básicas (rows 39+)
+    "desplazamiento_nivel_apoyo": ("I", 39),
+    "desplazamiento_modo": ("N", 39),
+    "desplazamiento_transporte": ("N", 40),
+    "desplazamiento_nota": ("O", 41),
+    "ubicacion_nivel_apoyo": ("I", 42),
+    "ubicacion_ciudad": ("N", 42),
+    "ubicacion_aplicaciones": ("N", 43),
+    "ubicacion_nota": ("O", 44),
+    "dinero_nivel_apoyo": ("I", 45),
+    "dinero_reconocimiento": ("N", 45),
+    "dinero_manejo": ("N", 46),
+    "dinero_medios": ("N", 47),
+    "dinero_nota": ("O", 48),
+    "presentacion_nivel_apoyo": ("I", 49),
+    "presentacion_personal": ("N", 49),
+    "presentacion_nota": ("O", 50),
+    "comunicacion_escrita_nivel_apoyo": ("I", 51),
+    "comunicacion_escrita_apoyo": ("N", 51),
+    "comunicacion_escrita_nota": ("N", 52),
+    "comunicacion_verbal_nivel_apoyo": ("I", 53),
+    "comunicacion_verbal_apoyo": ("N", 53),
+    "comunicacion_verbal_nota": ("O", 54),
+    "decisiones_nivel_apoyo": ("I", 55),
+    "toma_decisiones": ("N", 55),
+    "toma_decisiones_nota": ("O", 56),
+    "aseo_nivel_apoyo": ("I", 57),
+    "alimentacion": ("N", 57),
+    "aseo_criar_apoyo": ("Q", 58),
+    "aseo_comunicacion_apoyo": ("Q", 59),
+    "aseo_ayudas_apoyo": ("Q", 60),
+    "aseo_alimentacion": ("U", 58),
+    "aseo_movilidad_funcional": ("U", 59),
+    "aseo_higiene_aseo": ("U", 60),
+    "aseo_nota": ("O", 61),
+    "instrumentales_nivel_apoyo": ("I", 62),
+    "instrumentales_actividades": ("N", 62),
+    "instrumentales_criar_apoyo": ("Q", 63),
+    "instrumentales_finanzas": ("U", 63),
+    "instrumentales_comunicacion_apoyo": ("Q", 64),
+    "instrumentales_cocina_limpieza": ("U", 64),
+    "instrumentales_movilidad_apoyo": ("Q", 65),
+    "instrumentales_crear_hogar": ("U", 65),
+    "instrumentales_salud_cuenta_apoyo": ("U", 66),
+    "instrumentales_nota": ("O", 67),
+    "actividades_nivel_apoyo": ("I", 68),
+    "actividades_apoyo": ("N", 68),
+    "actividades_esparcimiento_apoyo": ("Q", 69),
+    "actividades_esparcimiento_cuenta_apoyo": ("U", 69),
+    "actividades_complementarios_apoyo": ("Q", 70),
+    "actividades_complementarios_cuenta_apoyo": ("U", 70),
+    "actividades_subsidios_cuenta_apoyo": ("U", 71),
+    "actividades_nota": ("O", 72),
+    "discriminacion_nivel_apoyo": ("I", 73),
+    "discriminacion": ("N", 73),
+    "discriminacion_violencia_apoyo": ("Q", 74),
+    "discriminacion_violencia_cuenta_apoyo": ("U", 74),
+    "discriminacion_vulneracion_apoyo": ("Q", 75),
+    "discriminacion_vulneracion_cuenta_apoyo": ("U", 75),
+    "discriminacion_nota": ("O", 76),
 }
 
-_DISCAPACIDAD_CATEGORIA_MAP = {
-    "discapacidad visual perdida total de la vision": "Visual",
-    "discapacidad visual baja vision": "Visual",
-    "discapacidad auditiva": "Auditiva",
-    "discapacidad auditiva hipoacusia": "Auditiva",
-    "trastorno de espectro autista": "Intelectual",
-    "discapacidad intelectual": "Intelectual",
-    "discapacidad fisica": "Física",
-    "discapacidad fisica usuario en silla de ruedas": "Física",
-    "discapacidad psicosocial": "Psicosocial",
-    "discapacidad multiple": "Múltiple",
-    "no aplica": None,
-}
+SECTION_6_NOMBRE_COL = "E"
+SECTION_6_CARGO_COL = "M"
 
-EXCEL_MAPPING = {
-    "section_1": {
-        "fecha_visita": "F7",
-        "modalidad": "N7",
-        "nombre_empresa": "F8",
-        "ciudad_empresa": "N8",
-        "direccion_empresa": "F9",
-        "nit_empresa": "N9",
-        "correo_1": "F10",
-        "telefono_empresa": "N10",
-        "contacto_empresa": "F11",
-        "cargo": "N11",
-        "caja_compensacion": "F12",
-        "sede_empresa": "N12",
-        "asesor": "F13",
-        "profesional_asignado": "N13",
-    },
-    "section_6": {
-        "start_row": 85,
-        "rows": 4,
-        "nombre_col": "E",
-        "cargo_col": "M",
-    },
-}
-
-SECTION_1_CELL_MAP_BY_TEMPLATE = {
-    TEMPLATE_VARIANT_INDIVIDUAL: EXCEL_MAPPING["section_1"],
-    TEMPLATE_VARIANT_GROUP_2_PLUS: {
-        "fecha_visita": "F7",
-        "modalidad": "N7",
-        "nombre_empresa": "F8",
-        "ciudad_empresa": "N8",
-        "direccion_empresa": "F9",
-        "nit_empresa": "N9",
-        "correo_1": "F10",
-        "telefono_empresa": "N10",
-        "contacto_empresa": "F11",
-        "cargo": "N11",
-        "asesor": "F12",
-        "sede_empresa": "N12",
-    },
-}
-
-SECTION_2_GROUP_FIRST_BLOCK_CELL_MAP = dict(SECTION_2_CELL_MAP)
-SECTION_2_GROUP_FIRST_BLOCK_CELL_MAP.update(
-    {
-        "numero": ("A", 19),
-        "nombre_oferente": ("C", 19),
-        "cedula": ("H", 19),
-        "certificado_porcentaje": ("K", 19),
-        "discapacidad": ("L", 19),
-        "telefono_oferente": ("O", 19),
-        "resultado_certificado": ("R", 19),
-        "cargo_oferente": ("A", 21),
-        "nombre_contacto_emergencia": ("F", 21),
-        "parentesco": ("I", 21),
-        "telefono_emergencia": ("K", 21),
-        "fecha_nacimiento": ("N", 21),
-        "edad": ("S", 21),
-        "pendiente_otros_oferentes": ("G", 22),
-        "lugar_firma_contrato": ("L", 22),
-        "fecha_firma_contrato": ("R", 22),
-        "cuenta_pension": ("I", 23),
-        "tipo_pension": ("Q", 23),
-    }
-)
-SECTION_2_GROUP_FIRST_BLOCK_CELL_MAP.pop("desarrollo_actividad", None)
-for _field_id, (_col, _row) in list(SECTION_2_GROUP_FIRST_BLOCK_CELL_MAP.items()):
-    if _row >= 40:
-        SECTION_2_GROUP_FIRST_BLOCK_CELL_MAP[_field_id] = (_col, _row - 1)
-
-SECTION_2_INDIVIDUAL_CELL_MAP = dict(SECTION_2_GROUP_FIRST_BLOCK_CELL_MAP)
-
-SECTION_6_BASE_ROWS_BY_TEMPLATE = {
-    TEMPLATE_VARIANT_INDIVIDUAL: 4,
-    TEMPLATE_VARIANT_GROUP_2_PLUS: 2,
-}
 
 EXCEL_DROPDOWN_MANUAL_CANONICAL_OPTIONS = {
     "tipo_pension": [
@@ -1142,39 +1088,9 @@ EXCEL_DROPDOWN_MANUAL_CANONICAL_OPTIONS = {
         "Pensión régimen especial (fuerzas militares)",
         "No aplica",
     ],
-    "desplazamiento_transporte": [
-        "Caminando.",
-        "Bicicleta.",
-        "Transmilenio, Sitp.",
-        "Vehículo propio.",
-        "Vehículo especial.",
-        "No aplica.",
-    ],
     # El dropdown del template tiene una comilla residual en una opción;
     # preservamos el texto limpio de la UI para no exportar ese artefacto.
     "discapacidad": list(LIST_FIELD_OPTIONS_BY_ID.get("discapacidad", [])),
-}
-
-EXCEL_DROPDOWN_EXPLICIT_ALIASES = {
-    "tipo_pension": {
-        "regimen especial": "Pensión régimen especial (fuerzas militares)",
-        "pension regimen especial": "Pensión régimen especial (fuerzas militares)",
-    },
-}
-
-EXCEL_DROPDOWN_CANONICAL_OPTIONS_BY_TEMPLATE = {
-    TEMPLATE_VARIANT_INDIVIDUAL: {},
-    TEMPLATE_VARIANT_GROUP_2_PLUS: {},
-}
-
-SECTION_5_TITLE_ROW_BY_TEMPLATE = {
-    TEMPLATE_VARIANT_INDIVIDUAL: 77,
-    TEMPLATE_VARIANT_GROUP_2_PLUS: 77,
-}
-
-SECTION_6_TITLE_ROW_BY_TEMPLATE = {
-    TEMPLATE_VARIANT_INDIVIDUAL: 83,
-    TEMPLATE_VARIANT_GROUP_2_PLUS: 83,
 }
 
 
@@ -1303,71 +1219,28 @@ def _get_section_2_entries(payload=None):
     return [dict(entry or {}) for entry in payload]
 
 
-def _resolve_template_variant(section_2_payload=None):
-    total_oferentes = len(_get_section_2_entries(section_2_payload))
-    if total_oferentes >= 1:
-        return TEMPLATE_VARIANT_GROUP_2_PLUS
-    return TEMPLATE_VARIANT_INDIVIDUAL
+def _group_export_title_for_oferentes(total_oferentes):
+    total = max(0, int(total_oferentes or 0))
+    if total <= 1:
+        return "PROCESO DE SELECCION INCLUYENTE INDIVIDUAL"
+    if total <= 4:
+        return "PROCESO DE SELECCION INCLUYENTE GRUPAL - 2 A 4 OFERENTES"
+    if total <= 7:
+        return "PROCESO DE SELECCION INCLUYENTE GRUPAL - 5 A 7 OFERENTES"
+    if total <= 10:
+        return "PROCESO DE SELECCION INCLUYENTE GRUPAL - 8 A 10 OFERENTES"
+    return "PROCESO DE SELECCION INCLUYENTE GRUPAL - MAS DE 10 OFERENTES"
 
 
 def _section_2_group_block_start_row(entry_index):
-    return SECTION_2_GROUP_FIRST_BLOCK_START_ROW + (
-        SECTION_2_GROUP_BLOCK_HEIGHT * entry_index
-    )
+    return OFERENTE_FIRST_BLOCK_START_ROW + (OFERENTE_BLOCK_HEIGHT * int(entry_index or 0))
 
 
 def _section_2_group_insert_row(entry_index):
-    if entry_index <= 0:
+    if int(entry_index or 0) <= 0:
         raise ValueError("entry_index debe ser mayor que 0 para bloques adicionales.")
-    return SECTION_2_GROUP_SECOND_BLOCK_START_ROW + (
-        SECTION_2_GROUP_BLOCK_HEIGHT * (entry_index - 1)
-    )
+    return OFERENTE_SECOND_BLOCK_START_ROW + (OFERENTE_BLOCK_HEIGHT * (int(entry_index) - 1))
 
-
-def _section_2_inserted_block_count(total_oferentes, template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
-    if template_variant != TEMPLATE_VARIANT_GROUP_2_PLUS:
-        return 0
-    return max(0, int(total_oferentes or 0) - 1)
-
-
-def _section_row_after_section_2(base_row, total_oferentes, template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
-    return base_row + (
-        SECTION_2_GROUP_BLOCK_HEIGHT
-        * _section_2_inserted_block_count(total_oferentes, template_variant)
-    )
-
-
-
-
-def _find_template_path(template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
-    def _filename_key(value):
-        return "".join(ch for ch in _normalize_text(value) if ch.isalnum())
-
-    templates_dir = resource_path("templates")
-    if not templates_dir.is_dir():
-        raise FileNotFoundError("No existe la carpeta templates.")
-    filename = TEMPLATE_FILENAME_BY_VARIANT.get(template_variant)
-    if filename:
-        exact_path = templates_dir / filename
-        if exact_path.exists():
-            return os.fspath(exact_path)
-        expected_key = _filename_key(filename)
-        for name in os.listdir(templates_dir):
-            if name.startswith("~$") or not name.lower().endswith(".xlsx"):
-                continue
-            if _filename_key(name) == expected_key:
-                return os.fspath(templates_dir / name)
-        if template_variant != TEMPLATE_VARIANT_INDIVIDUAL:
-            raise FileNotFoundError(
-                f"No se encontró el template '{filename}' para seleccion incluyente."
-            )
-    for name in os.listdir(templates_dir):
-        if name.startswith("~$"):
-            continue
-        normalized = _normalize_text(name).replace("_", "")
-        if "seleccion" in normalized and "incluyente" in normalized and normalized.endswith(".xlsx"):
-            return os.fspath(templates_dir / name)
-    raise FileNotFoundError("No se encontró el template de seleccion incluyente.")
 
 
 def _normalize_dropdown_text(value):
@@ -1377,21 +1250,16 @@ def _normalize_dropdown_text(value):
     return normalized.strip(" .")
 
 
-def _get_excel_canonical_options(field_id, template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
+@lru_cache(maxsize=None)
+def _get_excel_canonical_options(field_id):
     manual = EXCEL_DROPDOWN_MANUAL_CANONICAL_OPTIONS.get(field_id)
     if manual:
         return tuple(manual)
-
-    variant_overrides = (
-        EXCEL_DROPDOWN_CANONICAL_OPTIONS_BY_TEMPLATE.get(template_variant, {}).get(field_id)
-    )
-    if variant_overrides:
-        return tuple(variant_overrides)
-
-    return tuple(LIST_FIELD_OPTIONS_BY_ID.get(field_id, []))
+    expected_options = LIST_FIELD_OPTIONS_BY_ID.get(field_id, [])
+    return tuple(expected_options)
 
 
-def normalize_excel_dropdown_value(field_id, raw_value, template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
+def normalize_excel_dropdown_value(field_id, raw_value):
     if raw_value in (None, ""):
         return raw_value
     current = str(raw_value).strip()
@@ -1399,19 +1267,8 @@ def normalize_excel_dropdown_value(field_id, raw_value, template_variant=TEMPLAT
     if not field_options:
         return raw_value
 
-    canonical_options = list(
-        _get_excel_canonical_options(
-            field_id,
-            template_variant=template_variant,
-        ) or field_options
-    )
+    canonical_options = list(_get_excel_canonical_options(field_id) or field_options)
     current_norm = _normalize_dropdown_text(current)
-
-    explicit_alias = (
-        EXCEL_DROPDOWN_EXPLICIT_ALIASES.get(field_id, {}).get(current_norm)
-    )
-    if explicit_alias:
-        return explicit_alias
 
     for option in canonical_options:
         if _normalize_dropdown_text(option) == current_norm:
@@ -1424,7 +1281,7 @@ def normalize_excel_dropdown_value(field_id, raw_value, template_variant=TEMPLAT
             return option
 
     _log_excel(
-        f"WARN export_dropdown_unmatched field={field_id} template_variant={template_variant} "
+        f"WARN export_dropdown_unmatched field={field_id} "
         f"value={current!r}"
     )
     return raw_value
@@ -1448,58 +1305,6 @@ def _log_excel(message):
         return
 
 
-def _ensure_output_path(template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
-    template_path = _find_template_path(template_variant=template_variant)
-    empresa_nombre = SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
-    process_name = "Proceso de Seleccion Incluyente"
-    output_path = _build_process_output_path(empresa_nombre, process_name)
-    shutil.copy2(template_path, output_path)
-    FORM_CACHE["_output_path"] = output_path
-    return output_path
-
-
-def _get_sheet_by_name(workbook):
-    target = _normalize_text(SHEET_NAME).replace(" ", "")
-    for ws in workbook.Worksheets:
-        name_norm = _normalize_text(ws.Name).replace(" ", "")
-        if name_norm == target:
-            return ws
-    try:
-        return workbook.Worksheets(SHEET_NAME)
-    except Exception as exc:
-        raise KeyError(f"No existe la hoja {SHEET_NAME}.") from exc
-
-
-def _find_row_by_text(ws, text):
-    cell = ws.Columns("A").Find(What=text, LookAt=1)
-    if cell is not None:
-        return cell.Row
-    cell = ws.Columns("A").Find(What=text, LookAt=2)
-    if cell is not None:
-        return cell.Row
-    target = _normalize_text(text)
-    used = ws.UsedRange
-    start_row = used.Row
-    end_row = used.Row + used.Rows.Count - 1
-    for row in range(start_row, end_row + 1):
-        value = ws.Cells(row, 1).Value
-        if not value:
-            continue
-        value_norm = _normalize_text(str(value))
-        if value_norm == target:
-            return row
-    for row in range(start_row, end_row + 1):
-        value = ws.Cells(row, 1).Value
-        if not value:
-            continue
-        value_norm = _normalize_text(str(value))
-        if target in value_norm:
-            if target.startswith("2.") or target.startswith("5."):
-                if value_norm.startswith(target):
-                    return row
-            else:
-                return row
-    raise ValueError(f"No se encontró el texto '{text}' en la columna A.")
 
 
 def get_usuarios_reca_cedulas(env_path=".env"):
@@ -1658,7 +1463,7 @@ def sync_usuarios_reca(env_path=".env"):
     return len(rows)
 
 
-def _write_section_1(ws, payload, template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
+def _build_section_1_writes(payload):
     if not payload:
         payload = SECTION_1_CACHE
     if not payload:
@@ -1667,253 +1472,194 @@ def _write_section_1(ws, payload, template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
                 payload = FORM_CACHE.get("section_1", {}) or SECTION_1_CACHE
         except Exception:
             payload = payload or {}
-    mapping = SECTION_1_CELL_MAP_BY_TEMPLATE.get(
-        template_variant,
-        EXCEL_MAPPING.get("section_1", {}),
-    )
-    for key, cell in mapping.items():
+    writes = []
+    for key, cell in SECTION_1_CELL_MAP.items():
         if key in payload:
-            value = payload.get(key)
-            value = normalize_excel_dropdown_value(
-                key,
-                value,
-                template_variant=template_variant,
-            )
-            ws_write(ws, cell, value)
-            _log_excel(
-                f"WRITE section=section_1 cell={cell} key={key} value={value!r}"
-            )
+            value = normalize_excel_dropdown_value(key, payload[key])
+            writes.append({"range": f"'{SHEET_NAME}'!{cell}", "value": value})
+            _log_excel(f"WRITE section=section_1 cell={cell} key={key} value={value!r}")
+    return writes
 
 
-def _insert_person_block(ws, start_row, block_height, insert_at):
-    start_end = start_row + block_height - 1
-    dest_end = insert_at + block_height - 1
-    source = ws.Range(f"A{start_row}:{SECTION_2_LAST_COLUMN}{start_end}")
-    dest = ws.Range(f"A{insert_at}:{SECTION_2_LAST_COLUMN}{dest_end}")
-    source.Copy()
-    dest.Insert(Shift=-4121)
-    for row_offset in range(block_height):
-        ws.Rows(insert_at + row_offset).RowHeight = ws.Rows(start_row + row_offset).RowHeight
-    ws.Application.CutCopyMode = False
-
-
-def _write_section_2_entry(ws, entry, cell_map, *, row_offset=0, template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
-    for field_id, (col, row) in cell_map.items():
+def _build_section_2_entry_writes(entry, *, row_offset=0):
+    writes = []
+    for field_id, (col, row) in OFERENTE_CELL_MAP.items():
         value = entry.get(field_id, "")
         if value == "":
             continue
-        target_ref = f"{col}{row + row_offset}"
         if field_id == "certificado_porcentaje":
-            try:
-                target_number_format = ws.Range(target_ref).NumberFormat
-            except Exception:
-                target_number_format = None
-            value = _coerce_excel_decimal_value(value, number_format=target_number_format)
+            value = _coerce_excel_decimal_value(value)
         else:
-            value = normalize_excel_dropdown_value(
-                field_id,
-                value,
-                template_variant=template_variant,
-            )
-        _log_excel(
-            f"WRITE section=section_2 cell={target_ref} key={field_id} value={value!r}"
-        )
-        ws_write(ws, target_ref, value)
+            value = normalize_excel_dropdown_value(field_id, value)
+        target_row = row + row_offset
+        writes.append({"range": f"'{SHEET_NAME}'!{col}{target_row}", "value": value})
+        _log_excel(f"WRITE section=section_2 cell={col}{target_row} key={field_id} value={value!r}")
+    return writes
 
 
-def _write_section_2_individual(ws, oferentes):
+def _build_section_2_writes(oferentes):
     if not oferentes:
-        return
-    _log_excel(f"SECTION section=section_2 variant=individual total={len(oferentes)}")
-    ws_write(ws, "G1", _group_export_title_for_offerentes(1))
-    shared_desarrollo = (oferentes[0].get("desarrollo_actividad") or "").strip()
-    if shared_desarrollo:
-        _log_excel(
-            f"WRITE section=section_2 cell={SECTION_2_GROUP_SHARED_ACTIVITY_CELL} "
-            f"key=desarrollo_actividad value={shared_desarrollo!r}"
-        )
-        ws_write(ws, SECTION_2_GROUP_SHARED_ACTIVITY_CELL, shared_desarrollo)
-    ws_write(ws, f"A{SECTION_2_GROUP_FIRST_BLOCK_START_ROW}", "OFERENTE 1")
-    _log_excel(
-        "WRITE section=section_2 cell="
-        f"A{SECTION_2_GROUP_FIRST_BLOCK_START_ROW} key=oferente_titulo value='OFERENTE 1'"
-    )
-    _write_section_2_entry(
-        ws,
-        oferentes[0],
-        SECTION_2_INDIVIDUAL_CELL_MAP,
-        template_variant=TEMPLATE_VARIANT_INDIVIDUAL,
-    )
-
-
-def _group_export_title_for_offerentes(total_oferentes):
-    total = max(0, int(total_oferentes or 0))
-    if total <= 1:
-        return "PROCESO DE SELECCION INCLUYENTE INDIVIDUAL"
-    if total <= 4:
-        return "PROCESO DE SELECCION INCLUYENTE GRUPAL - 2 A 4 OFERENTES"
-    if total <= 7:
-        return "PROCESO DE SELECCION INCLUYENTE GRUPAL - 5 A 7 OFERENTES"
-    if total <= 10:
-        return "PROCESO DE SELECCION INCLUYENTE GRUPAL - 8 A 10 OFERENTES"
-    return "PROCESO DE SELECCION INCLUYENTE GRUPAL - MAS DE 10 OFERENTES"
-
-
-def _write_section_2_group(ws, oferentes):
-    if not oferentes:
-        return
-    ws_write(ws, "G1", _group_export_title_for_offerentes(len(oferentes)))
+        return []
+    writes = [
+        {
+            "range": f"'{SHEET_NAME}'!{GROUP_EXPORT_TITLE_CELL}",
+            "value": _group_export_title_for_oferentes(len(oferentes)),
+        }
+    ]
+    # Write shared desarrollo_actividad
     shared_desarrollo = ""
     for entry in oferentes:
         shared_desarrollo = (entry.get("desarrollo_actividad") or "").strip()
         if shared_desarrollo:
             break
     if shared_desarrollo:
-        _log_excel(
-            f"WRITE section=section_2 cell={SECTION_2_GROUP_SHARED_ACTIVITY_CELL} "
-            f"key=desarrollo_actividad value={shared_desarrollo!r}"
-        )
-        ws_write(ws, SECTION_2_GROUP_SHARED_ACTIVITY_CELL, shared_desarrollo)
-
-    if len(oferentes) > 1:
-        for idx in range(1, len(oferentes)):
-            insert_at = _section_2_group_insert_row(idx)
-            _insert_person_block(
-                ws,
-                SECTION_2_GROUP_FIRST_BLOCK_START_ROW,
-                SECTION_2_GROUP_BLOCK_HEIGHT,
-                insert_at,
-            )
-            _log_excel(
-                f"INSERT section=section_2 variant=group rows={SECTION_2_GROUP_BLOCK_HEIGHT} at={insert_at}"
-            )
-
+        writes.append({"range": f"'{SHEET_NAME}'!{DESARROLLO_ACTIVIDAD_CELL}", "value": shared_desarrollo})
+        _log_excel(f"WRITE section=section_2 cell={DESARROLLO_ACTIVIDAD_CELL} key=desarrollo_actividad value={shared_desarrollo!r}")
+    _log_excel(f"SECTION section=section_2 total={len(oferentes)}")
     for idx, entry in enumerate(oferentes):
-        row_offset = SECTION_2_GROUP_BLOCK_HEIGHT * idx
         title_row = _section_2_group_block_start_row(idx)
-        ws_write(ws, f"A{title_row}", f"OFERENTE {idx + 1}")
-        _log_excel(
-            f"WRITE section=section_2 cell=A{title_row} key=oferente_titulo value={'OFERENTE ' + str(idx + 1)!r}"
+        writes.append(
+            {
+                "range": f"'{SHEET_NAME}'!{OFERENTE_TITLE_COL}{title_row}",
+                "value": f"OFERENTE {idx + 1}",
+            }
         )
-        _write_section_2_entry(
-            ws,
-            entry,
-            SECTION_2_GROUP_FIRST_BLOCK_CELL_MAP,
-            row_offset=row_offset,
-            template_variant=TEMPLATE_VARIANT_GROUP_2_PLUS,
-        )
+        row_offset = OFERENTE_BLOCK_HEIGHT * idx
+        writes.extend(_build_section_2_entry_writes(entry, row_offset=row_offset))
+    return writes
 
 
-def _write_section_2(ws, oferentes, template_variant=TEMPLATE_VARIANT_INDIVIDUAL):
-    if template_variant == TEMPLATE_VARIANT_GROUP_2_PLUS:
-        return _write_section_2_group(ws, oferentes)
-    return _write_section_2_individual(ws, oferentes)
+def _build_section_2_row_insertions(oferentes):
+    total_oferentes = len(oferentes or [])
+    if total_oferentes <= 1:
+        return []
+    return [
+        {
+            "sheet_name": SHEET_NAME,
+            "insert_at_row": _section_2_group_insert_row(1),
+            "template_start_row": OFERENTE_FIRST_BLOCK_START_ROW,
+            "template_end_row": OFERENTE_FIRST_BLOCK_START_ROW + OFERENTE_BLOCK_HEIGHT - 1,
+            "repeat_count": total_oferentes - 1,
+        }
+    ]
 
 
-def _write_section_5(ws, payload, template_variant=TEMPLATE_VARIANT_INDIVIDUAL, total_oferentes=0):
+def _build_section_5_writes(payload, num_oferentes=1):
     if not payload:
-        return
-    title_row = _section_row_after_section_2(
-        SECTION_5_TITLE_ROW_BY_TEMPLATE[template_variant],
-        total_oferentes,
-        template_variant,
-    )
-    ajustes_row = title_row + 1
-    nota_row = title_row + 2
+        return []
+    shift = max(0, num_oferentes - 1) * OFERENTE_BLOCK_HEIGHT
+    ajustes_row = SECTION_5_BASE_AJUSTES_ROW + shift
+    nota_row = SECTION_5_BASE_NOTA_ROW + shift
     ajustes_value = payload.get("ajustes_recomendaciones", "")
     nota_value = payload.get("nota", "")
     nota_value = f"Nota: {nota_value}" if nota_value else "Nota:"
-    _log_excel(
-        f"WRITE section=section_5 cell=A{ajustes_row} key=ajustes_recomendaciones value={ajustes_value!r}"
-    )
-    _log_excel(
-        f"WRITE section=section_5 cell=A{nota_row} key=nota value={nota_value!r}"
-    )
-    ws_write(ws, f"A{ajustes_row}", ajustes_value)
-    ws_write(ws, f"A{nota_row}", nota_value)
+    writes = []
+    if ajustes_value:
+        writes.append({"range": f"'{SHEET_NAME}'!A{ajustes_row}", "value": ajustes_value})
+    writes.append({"range": f"'{SHEET_NAME}'!A{nota_row}", "value": nota_value})
+    _log_excel(f"WRITE section=section_5 ajustes_row={ajustes_row} nota_row={nota_row}")
+    return writes
+
+
+def _build_section_6_writes(payload, num_oferentes=1):
+    if not payload:
+        return []
+    shift = max(0, num_oferentes - 1) * OFERENTE_BLOCK_HEIGHT
+    start_row = SECTION_6_BASE_START_ROW + shift
+    writes = []
+    for idx, entry in enumerate(payload):
+        row = start_row + idx
+        nombre = (entry.get("nombre") or "").strip()
+        cargo = (entry.get("cargo") or "").strip()
+        if nombre:
+            writes.append({"range": f"'{SHEET_NAME}'!{SECTION_6_NOMBRE_COL}{row}", "value": nombre})
+        if cargo:
+            writes.append({"range": f"'{SHEET_NAME}'!{SECTION_6_CARGO_COL}{row}", "value": cargo})
+    return writes
+
+
+def _write_section_5(ws, payload, template_variant=TEMPLATE_VARIANT_INDIVIDUAL, total_oferentes=0):
+    for write in _build_section_5_writes(payload, num_oferentes=max(1, int(total_oferentes or 1))):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
 
 
 def _write_section_6(ws, payload, template_variant=TEMPLATE_VARIANT_INDIVIDUAL, total_oferentes=0):
+    for write in _build_section_6_writes(payload, num_oferentes=max(1, int(total_oferentes or 1))):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
+
+
+def _build_section_6_row_insertions(payload, num_oferentes=1):
     if not payload:
-        return
-    mapping = EXCEL_MAPPING.get("section_6", {})
-    title_row = _section_row_after_section_2(
-        SECTION_6_TITLE_ROW_BY_TEMPLATE[template_variant],
-        total_oferentes,
-        template_variant,
-    )
-    start_row = title_row + 1
-    base_rows = SECTION_6_BASE_ROWS_BY_TEMPLATE.get(template_variant, mapping.get("rows", 4))
-    nombre_col = mapping.get("nombre_col", "E")
-    cargo_col = mapping.get("cargo_col", "M")
-    total = len(payload)
-    if total > base_rows:
-        insert_at = start_row + base_rows
-        template_row = start_row + base_rows - 1
-        for _ in range(total - base_rows):
-            ws.Rows(insert_at).Insert()
-            ws.Rows(template_row).Copy(ws.Rows(insert_at))
-            insert_at += 1
-    for idx, entry in enumerate(payload):
-        row = start_row + idx
-        nombre = entry.get("nombre", "")
-        cargo = entry.get("cargo", "")
-        _log_excel(
-            f"WRITE section=section_6 cell={nombre_col}{row} key=nombre value={nombre!r}"
-        )
-        _log_excel(
-            f"WRITE section=section_6 cell={cargo_col}{row} key=cargo value={cargo!r}"
-        )
-        ws_write(ws, f"{nombre_col}{row}", nombre)
-        ws_write(ws, f"{cargo_col}{row}", cargo)
+        return []
+    base_rows = int(SECTION_6.get("rows", 4) or 4)
+    total_rows = len(payload)
+    if total_rows <= base_rows:
+        return []
+    shift = max(0, num_oferentes - 1) * OFERENTE_BLOCK_HEIGHT
+    start_row = SECTION_6_BASE_START_ROW + shift
+    return [
+        {
+            "sheet_name": SHEET_NAME,
+            "start_row": start_row,
+            "base_rows": base_rows,
+            "total_rows": total_rows,
+        }
+    ]
 
 
 def export_to_excel(clear_cache=True):
-    clear_written_rows()
-    section_2_payload = FORM_CACHE.get("section_2", [])
-    template_variant = _resolve_template_variant(section_2_payload)
-    output_path = _ensure_output_path(template_variant=template_variant)
-    _log_excel(f"START export_all output={output_path}")
-    try:
-        import win32com.client as win32
-    except ImportError as exc:
-        _log_excel("ERROR export_all error=pywin32_not_installed")
-        raise RuntimeError("pywin32 no esta instalado. Instala con pip install pywin32.") from exc
-    excel = win32.DispatchEx("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
-    wb = None
-    try:
-        wb = excel.Workbooks.Open(output_path)
-        ws = _get_sheet_by_name(wb)
-        total_oferentes = len(_get_section_2_entries(section_2_payload))
-        _write_section_1(ws, FORM_CACHE.get("section_1", {}), template_variant=template_variant)
-        _write_section_2(ws, section_2_payload, template_variant=template_variant)
-        _write_section_5(
-            ws,
-            FORM_CACHE.get("section_5", {}),
-            template_variant=template_variant,
-            total_oferentes=total_oferentes,
-        )
-        _write_section_6(
-            ws,
+    if not FORM_CACHE.get("section_1") and cache_file_exists():
+        load_cache_from_file()
+
+    from google_sheets_client import get_master_template_id
+    from drive_upload import publish_sheet_from_template
+
+    oferentes = _get_section_2_entries(FORM_CACHE.get("section_2", []))
+    num_oferentes = len(oferentes)
+
+    _log_excel(f"START export_all (Google Sheets) oferentes={num_oferentes}")
+
+    empresa_nombre = SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
+    base_name = _sanitize_filename(empresa_nombre)
+
+    writes = []
+    writes.extend(_build_section_1_writes(FORM_CACHE.get("section_1", {})))
+    writes.extend(_build_section_2_writes(oferentes))
+    writes.extend(_build_section_5_writes(FORM_CACHE.get("section_5", {}), num_oferentes=num_oferentes))
+    writes.extend(_build_section_6_writes(FORM_CACHE.get("section_6", []), num_oferentes=num_oferentes))
+    row_insertions = []
+    row_insertions.extend(_build_section_2_row_insertions(oferentes))
+    row_insertions.extend(
+        _build_section_6_row_insertions(
             FORM_CACHE.get("section_6", []),
-            template_variant=template_variant,
-            total_oferentes=total_oferentes,
+            num_oferentes=num_oferentes,
         )
-        sanitize_logo_error_cells(wb)
-        autofit_rows(ws, log_fn=_log_excel)
-        wb.Save()
-        _log_excel("SUCCESS export_all")
-    except Exception as exc:
-        _log_excel(f"ERROR export_all error={exc!r}")
-        raise
-    finally:
-        if wb is not None:
-            wb.Close(SaveChanges=True)
-        excel.Quit()
+    )
+
+    # Extract checkbox cells (marked with _checkbox flag)
+    checkbox_cells = [w for w in writes if w.get("_checkbox")]
+    writes = [{k: v for k, v in w.items() if k != "_checkbox"} for w in writes]
+
+    result = publish_sheet_from_template(
+        template_id=get_master_template_id(),
+        sheet_writes=writes,
+        base_name=base_name,
+        folder_name=_sanitize_filename(empresa_nombre),
+        row_insertions=row_insertions or None,
+        checkbox_cells=checkbox_cells or None,
+    )
+
+    _log_excel("SUCCESS export_all")
+
     if clear_cache:
         clear_cache_file()
         clear_form_cache()
-    return output_path
+
+    return {
+        "output_path": result.get("webViewLink", ""),
+        "drive_file_id": result.get("file_id", ""),
+        "already_in_drive": True,
+    }
 

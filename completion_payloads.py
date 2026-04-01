@@ -4,6 +4,7 @@ import copy
 import hashlib
 import os
 import re
+from urllib.parse import urlparse
 import unicodedata
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -151,7 +152,16 @@ def _build_attachment(
     document_kind: str,
     document_label: str,
 ) -> dict[str, Any]:
-    filename = _normalize_filename(Path(output_path).name if output_path else form_name)
+    filename_source = form_name
+    clean_output_path = _clean_text(output_path)
+    if clean_output_path:
+        parsed = urlparse(clean_output_path)
+        if parsed.scheme and parsed.netloc:
+            if "docs.google.com" not in parsed.netloc or "/spreadsheets/d/" not in parsed.path:
+                filename_source = Path(parsed.path).name or form_name
+        else:
+            filename_source = Path(clean_output_path).name or form_name
+    filename = _normalize_filename(filename_source)
     return {
         "filename": filename,
         "document_kind": document_kind,

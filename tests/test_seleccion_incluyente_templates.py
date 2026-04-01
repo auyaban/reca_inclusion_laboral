@@ -1,212 +1,106 @@
 from __future__ import annotations
 
-import os
 import unittest
-
-from openpyxl import load_workbook
 
 from formularios.seleccion_incluyente import seleccion_incluyente as si
 
 
-class SeleccionIncluyenteTemplateTests(unittest.TestCase):
-    @staticmethod
-    def _variant_map(variant: str):
-        if variant == si.TEMPLATE_VARIANT_GROUP_2_PLUS:
-            return si.SECTION_2_GROUP_FIRST_BLOCK_CELL_MAP
-        return si.SECTION_2_INDIVIDUAL_CELL_MAP
+class SeleccionIncluyenteUnifiedTests(unittest.TestCase):
+    def test_sheet_name_is_unified(self) -> None:
+        self.assertEqual(si.SHEET_NAME, "4. SELECCIÓN INCLUYENTE")
 
-    def _expected_canonical_options(self, field_id: str, variant: str):
-        return tuple(si._get_excel_canonical_options(field_id, template_variant=variant))
+    def test_oferente_cell_map_has_expected_keys(self) -> None:
+        required_keys = {"numero", "nombre_oferente", "cedula", "discapacidad", "telefono_oferente"}
+        self.assertTrue(required_keys.issubset(si.OFERENTE_CELL_MAP.keys()))
 
-    def test_resolve_template_variant_uses_group_layout_for_one_or_more_offerentes(self) -> None:
-        self.assertEqual(si._resolve_template_variant([]), si.TEMPLATE_VARIANT_INDIVIDUAL)
-        self.assertEqual(
-            si._resolve_template_variant([{"numero": "1"}]),
-            si.TEMPLATE_VARIANT_GROUP_2_PLUS,
-        )
-        self.assertEqual(
-            si._resolve_template_variant([{"numero": "1"}, {"numero": "2"}]),
-            si.TEMPLATE_VARIANT_GROUP_2_PLUS,
-        )
-        self.assertEqual(
-            si._resolve_template_variant([{"numero": "1"}, {"numero": "2"}, {"numero": "3"}, {"numero": "4"}]),
-            si.TEMPLATE_VARIANT_GROUP_2_PLUS,
-        )
-        self.assertEqual(
-            si._resolve_template_variant([{"numero": "1"}, {"numero": "2"}, {"numero": "3"}, {"numero": "4"}, {"numero": "5"}]),
-            si.TEMPLATE_VARIANT_GROUP_2_PLUS,
-        )
+    def test_section_1_cell_map_has_expected_keys(self) -> None:
+        required_keys = {"fecha_visita", "nombre_empresa", "modalidad"}
+        self.assertTrue(required_keys.issubset(si.SECTION_1_CELL_MAP.keys()))
 
-    def test_individual_template_mapping_keeps_expected_rows(self) -> None:
-        mapping = si.SECTION_2_INDIVIDUAL_CELL_MAP
-        self.assertEqual(mapping["numero"], ("A", 19))
-        self.assertEqual(mapping["cargo_oferente"], ("A", 21))
-        self.assertEqual(mapping["fecha_nacimiento"], ("N", 21))
-        self.assertEqual(mapping["desplazamiento_nivel_apoyo"], ("I", 39))
-        self.assertEqual(mapping["aseo_nivel_apoyo"], ("I", 57))
-        self.assertEqual(mapping["discriminacion_nivel_apoyo"], ("I", 73))
-        self.assertNotIn("desarrollo_actividad", mapping)
+    def test_block_height_is_positive(self) -> None:
+        self.assertGreater(si.OFERENTE_BLOCK_HEIGHT, 0)
 
-    def test_group_template_mapping_matches_corrected_rows(self) -> None:
-        mapping = si.SECTION_2_GROUP_FIRST_BLOCK_CELL_MAP
-        self.assertEqual(mapping["numero"], ("A", 19))
-        self.assertEqual(mapping["nombre_oferente"], ("C", 19))
-        self.assertEqual(mapping["cargo_oferente"], ("A", 21))
-        self.assertEqual(mapping["fecha_nacimiento"], ("N", 21))
-        self.assertEqual(mapping["pendiente_otros_oferentes"], ("G", 22))
-        self.assertEqual(mapping["cuenta_pension"], ("I", 23))
-        self.assertEqual(mapping["desplazamiento_nivel_apoyo"], ("I", 39))
-        self.assertEqual(mapping["ubicacion_nivel_apoyo"], ("I", 42))
-        self.assertEqual(mapping["dinero_nivel_apoyo"], ("I", 45))
-        self.assertEqual(mapping["presentacion_nivel_apoyo"], ("I", 49))
-        self.assertEqual(mapping["comunicacion_escrita_nivel_apoyo"], ("I", 51))
-        self.assertEqual(mapping["comunicacion_verbal_nivel_apoyo"], ("I", 53))
-        self.assertEqual(mapping["decisiones_nivel_apoyo"], ("I", 55))
-        self.assertEqual(mapping["aseo_nivel_apoyo"], ("I", 57))
-        self.assertEqual(mapping["instrumentales_nivel_apoyo"], ("I", 62))
-        self.assertEqual(mapping["actividades_nivel_apoyo"], ("I", 68))
-        self.assertEqual(mapping["discriminacion_nivel_apoyo"], ("I", 73))
-        self.assertNotIn("desarrollo_actividad", mapping)
+    def test_section_6_row_insertions_use_section_constant(self) -> None:
+        payload = [{"nombre": f"Asistente {idx}", "cargo": "Profesional"} for idx in range(5)]
+        insertions = si._build_section_6_row_insertions(payload, num_oferentes=2)
 
-    def test_individual_and_group_use_same_section_2_template_layout(self) -> None:
-        self.assertEqual(si.SECTION_2_INDIVIDUAL_CELL_MAP, si.SECTION_2_GROUP_FIRST_BLOCK_CELL_MAP)
-        self.assertEqual(si.SECTION_2_GROUP_SHARED_ACTIVITY_CELL, "A14")
-
-    def test_group_template_file_exists(self) -> None:
-        path = si._find_template_path(si.TEMPLATE_VARIANT_GROUP_2_PLUS)
-        self.assertTrue(os.path.exists(path))
-        self.assertTrue(path.lower().endswith("seleccion_incluyente.xlsx"))
-
-    def test_certificado_porcentaje_cell_is_percent_formatted_in_template(self) -> None:
-        path = si._find_template_path(si.TEMPLATE_VARIANT_GROUP_2_PLUS)
-        wb = load_workbook(path, read_only=True)
-        try:
-            ws = wb[wb.sheetnames[0]]
-            self.assertIn("%", ws["K19"].number_format)
-        finally:
-            wb.close()
-
-    def test_group_block_rows_expand_from_single_template_block(self) -> None:
-        self.assertEqual(si._section_2_group_block_start_row(0), 16)
-        self.assertEqual(si._section_2_group_block_start_row(1), 77)
-        self.assertEqual(si._section_2_group_block_start_row(2), 138)
-        self.assertEqual(si._section_2_group_insert_row(1), 77)
-        self.assertEqual(si._section_2_group_insert_row(2), 138)
-
-    def test_group_export_title_for_offerentes_uses_expected_ranges(self) -> None:
+        self.assertEqual(len(insertions), 1)
+        self.assertEqual(insertions[0]["sheet_name"], si.SHEET_NAME)
         self.assertEqual(
-            si._group_export_title_for_offerentes(1),
-            "PROCESO DE SELECCION INCLUYENTE INDIVIDUAL",
+            insertions[0]["start_row"],
+            si.SECTION_6_BASE_START_ROW + si.OFERENTE_BLOCK_HEIGHT,
         )
-        self.assertEqual(
-            si._group_export_title_for_offerentes(2),
-            "PROCESO DE SELECCION INCLUYENTE GRUPAL - 2 A 4 OFERENTES",
-        )
-        self.assertEqual(
-            si._group_export_title_for_offerentes(4),
-            "PROCESO DE SELECCION INCLUYENTE GRUPAL - 2 A 4 OFERENTES",
-        )
-        self.assertEqual(
-            si._group_export_title_for_offerentes(5),
-            "PROCESO DE SELECCION INCLUYENTE GRUPAL - 5 A 7 OFERENTES",
-        )
-        self.assertEqual(
-            si._group_export_title_for_offerentes(7),
-            "PROCESO DE SELECCION INCLUYENTE GRUPAL - 5 A 7 OFERENTES",
-        )
-        self.assertEqual(
-            si._group_export_title_for_offerentes(8),
-            "PROCESO DE SELECCION INCLUYENTE GRUPAL - 8 A 10 OFERENTES",
-        )
-        self.assertEqual(
-            si._group_export_title_for_offerentes(10),
-            "PROCESO DE SELECCION INCLUYENTE GRUPAL - 8 A 10 OFERENTES",
-        )
-        self.assertEqual(
-            si._group_export_title_for_offerentes(11),
-            "PROCESO DE SELECCION INCLUYENTE GRUPAL - MAS DE 10 OFERENTES",
-        )
+        self.assertEqual(insertions[0]["base_rows"], si.SECTION_6["rows"])
+        self.assertEqual(insertions[0]["total_rows"], 5)
 
-    def test_normalize_excel_dropdown_value_maps_tipo_pension(self) -> None:
-        value = si.normalize_excel_dropdown_value(
-            "tipo_pension",
-            "Regimen especial",
-            template_variant=si.TEMPLATE_VARIANT_INDIVIDUAL,
-        )
-        self.assertEqual(value, "Pensión régimen especial (fuerzas militares)")
+    def test_selection_template_uses_two_base_attendee_rows(self) -> None:
+        self.assertEqual(si.SECTION_6["rows"], 2)
 
-    def test_normalize_excel_dropdown_value_maps_transport_using_canonical_template_text(self) -> None:
-        value = si.normalize_excel_dropdown_value(
-            "desplazamiento_transporte",
-            "Vehiculo especial.",
-            template_variant=si.TEMPLATE_VARIANT_GROUP_2_PLUS,
-        )
-        self.assertEqual(value, "Vehículo especial.")
+    def test_section_2_group_row_insertions_clone_full_block(self) -> None:
+        payload = [{"numero": str(idx + 1)} for idx in range(3)]
+        insertions = si._build_section_2_row_insertions(payload)
 
-    def test_all_section_2_list_fields_normalize_against_declared_canonical_options_for_each_variant(self) -> None:
-        variants = (
-            si.TEMPLATE_VARIANT_INDIVIDUAL,
-            si.TEMPLATE_VARIANT_GROUP_2_PLUS,
+        self.assertEqual(len(insertions), 1)
+        self.assertEqual(insertions[0]["sheet_name"], si.SHEET_NAME)
+        self.assertEqual(insertions[0]["insert_at_row"], si.OFERENTE_SECOND_BLOCK_START_ROW)
+        self.assertEqual(insertions[0]["template_start_row"], si.OFERENTE_FIRST_BLOCK_START_ROW)
+        self.assertEqual(
+            insertions[0]["template_end_row"],
+            si.OFERENTE_FIRST_BLOCK_START_ROW + si.OFERENTE_BLOCK_HEIGHT - 1,
         )
-        list_field_ids = [
-            field["id"]
-            for field in si.SECTION_2["fields"]
-            if field.get("type") == "lista"
+        self.assertEqual(insertions[0]["repeat_count"], 2)
+
+    def test_section_2_group_writes_include_titles_and_export_title(self) -> None:
+        payload = [
+            {"numero": "1", "nombre_oferente": "Oferente 1"},
+            {"numero": "2", "nombre_oferente": "Oferente 2"},
         ]
+        writes = si._build_section_2_writes(payload)
+        mapping = {item["range"]: item["value"] for item in writes}
 
-        for variant in variants:
-            with self.subTest(variant=variant):
-                for field_id in list_field_ids:
-                    expected_options = tuple(si.LIST_FIELD_OPTIONS_BY_ID.get(field_id, []))
-                    if not expected_options:
-                        continue
-                    canonical_options = self._expected_canonical_options(field_id, variant)
-                    self.assertEqual(
-                        len(canonical_options),
-                        len(expected_options),
-                        msg=f"field={field_id} variant={variant}",
-                    )
-                    for index, raw_value in enumerate(expected_options):
-                        expected_value = canonical_options[index]
-                        actual_value = si.normalize_excel_dropdown_value(
-                            field_id,
-                            raw_value,
-                            template_variant=variant,
-                        )
-                        self.assertEqual(
-                            actual_value,
-                            expected_value,
-                            msg=(
-                                f"field={field_id} variant={variant} index={index} "
-                                f"raw={raw_value!r}"
-                            ),
-                        )
-
-    def test_section_5_and_section_6_rows_shift_only_by_inserted_group_blocks(self) -> None:
         self.assertEqual(
-            si._section_row_after_section_2(77, 1, si.TEMPLATE_VARIANT_GROUP_2_PLUS),
-            77,
+            mapping[f"'{si.SHEET_NAME}'!{si.GROUP_EXPORT_TITLE_CELL}"],
+            "PROCESO DE SELECCION INCLUYENTE GRUPAL - 2 A 4 OFERENTES",
         )
         self.assertEqual(
-            si._section_row_after_section_2(77, 2, si.TEMPLATE_VARIANT_GROUP_2_PLUS),
-            138,
+            mapping[f"'{si.SHEET_NAME}'!{si.OFERENTE_TITLE_COL}{si.OFERENTE_FIRST_BLOCK_START_ROW}"],
+            "OFERENTE 1",
         )
         self.assertEqual(
-            si._section_row_after_section_2(83, 2, si.TEMPLATE_VARIANT_GROUP_2_PLUS),
-            144,
+            mapping[f"'{si.SHEET_NAME}'!{si.OFERENTE_TITLE_COL}{si.OFERENTE_SECOND_BLOCK_START_ROW}"],
+            "OFERENTE 2",
         )
         self.assertEqual(
-            si._section_row_after_section_2(77, 1, si.TEMPLATE_VARIANT_INDIVIDUAL),
-            77,
+            mapping[f"'{si.SHEET_NAME}'!C19"],
+            "Oferente 1",
+        )
+        self.assertEqual(
+            mapping[f"'{si.SHEET_NAME}'!C80"],
+            "Oferente 2",
         )
 
-    def test_normalize_excel_dropdown_value_preserves_raw_when_no_match(self) -> None:
-        value = si.normalize_excel_dropdown_value(
-            "tipo_pension",
-            "Valor imposible",
-            template_variant=si.TEMPLATE_VARIANT_GROUP_2_PLUS,
+    def test_section_6_group_overflow_shifts_with_oferentes_and_keeps_simple_row_contract(self) -> None:
+        payload = [{"nombre": f"Asistente {idx}", "cargo": "Profesional"} for idx in range(1, 7)]
+
+        insertions = si._build_section_6_row_insertions(payload, num_oferentes=4)
+        writes = si._build_section_6_writes(payload, num_oferentes=4)
+        start_row = si.SECTION_6_BASE_START_ROW + (3 * si.OFERENTE_BLOCK_HEIGHT)
+
+        self.assertEqual(len(insertions), 1)
+        self.assertEqual(insertions[0]["sheet_name"], si.SHEET_NAME)
+        self.assertEqual(insertions[0]["start_row"], start_row)
+        self.assertEqual(insertions[0]["base_rows"], si.SECTION_6["rows"])
+        self.assertEqual(insertions[0]["total_rows"], 6)
+        self.assertNotIn("template_start_row", insertions[0])
+        self.assertNotIn("repeat_count", insertions[0])
+        self.assertEqual(
+            writes[0]["range"],
+            f"'{si.SHEET_NAME}'!{si.SECTION_6_NOMBRE_COL}{start_row}",
         )
-        self.assertEqual(value, "Valor imposible")
+        self.assertEqual(
+            writes[-1]["range"],
+            f"'{si.SHEET_NAME}'!{si.SECTION_6_CARGO_COL}{start_row + 5}",
+        )
 
 
 if __name__ == "__main__":

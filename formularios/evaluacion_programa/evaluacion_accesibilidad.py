@@ -1,6 +1,5 @@
 import os
 import re
-import shutil
 import json
 import time
 
@@ -12,19 +11,11 @@ from . import seccion_5
 from . import seccion_6_7
 from . import seccion_8
 from formularios.common import (
-    _build_process_output_path,
-    _get_desktop_dir,
-    _next_available_file_path,
     _normalize_text,
-    sanitize_logo_error_cells,
-    autofit_rows,
-    clear_written_rows,
-    ws_write,
     _sanitize_filename,
     _supabase_get,
 )
 from logging_utils import log_excel_event
-from version_info import resource_path
 
 FORM_NAME = "Evaluacion de Accesibilidad"
 SHEET_NAME = "2. EVALUACIÓN DE ACCESIBILIDAD"
@@ -154,28 +145,6 @@ SECTION_1_SUPABASE_MAP = {
 
 FORM_CACHE = {}
 SECTION_1_CACHE = {}
-MODALIDAD_ALIASES = {
-    "mixta": "Mixto",
-}
-
-
-def normalize_modalidad(value):
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    direct = MODALIDAD_ALIASES.get(text.casefold())
-    if direct is not None:
-        return direct
-    options = next(
-        (
-            [str(item) for item in field.get("options", [])]
-            for field in SECTION_1.get("fields", [])
-            if field.get("id") == "modalidad"
-        ),
-        [],
-    )
-    exact = next((item for item in options if item.casefold() == text.casefold()), None)
-    return exact or text
 
 
 def _get_cache_dir():
@@ -216,13 +185,9 @@ def load_cache_from_file():
     with open(path, "r", encoding="utf-8") as handle:
         payload = json.load(handle) or {}
     data = payload.get("data") or {}
-    section_1 = dict(data.get("section_1") or {})
-    if "modalidad" in section_1:
-        section_1["modalidad"] = normalize_modalidad(section_1.get("modalidad"))
-        data = dict(data)
-        data["section_1"] = section_1
     FORM_CACHE.clear()
     FORM_CACHE.update(data)
+    section_1 = data.get("section_1") or {}
     SECTION_1_CACHE.clear()
     SECTION_1_CACHE.update(section_1)
     return True
@@ -239,21 +204,6 @@ def clear_form_cache():
     SECTION_1_CACHE.clear()
 
 
-def _find_template_path():
-    templates_dir = resource_path("templates")
-    if not templates_dir.is_dir():
-        raise FileNotFoundError("No existe la carpeta templates.")
-    for name in os.listdir(templates_dir):
-        normalized = _normalize_text(name).replace("_", "")
-        if (
-            "evaluacion" in normalized
-            and "accesibilidad" in normalized
-            and normalized.endswith(".xlsx")
-        ):
-            return os.fspath(templates_dir / name)
-    raise FileNotFoundError("No se encontró el template de evaluacion.")
-
-
 def _get_safe_company_name(cache=None):
     cache_data = dict(cache or FORM_CACHE)
     section_1 = cache_data.get("section_1", {})
@@ -266,27 +216,6 @@ def build_output_base_name(cache=None):
     safe_company = _get_safe_company_name(cache)
     process_name = "Evaluacion de Accesibilidad"
     return f"{process_name} - {safe_company}"
-
-
-def _ensure_output_path():
-    output_path = FORM_CACHE.get("_output_path")
-    if output_path and os.path.exists(output_path):
-        return output_path
-    template_path = _find_template_path()
-    output_base_name = build_output_base_name()
-    empresa_nombre = (FORM_CACHE.get("section_1") or {}).get("nombre_empresa") or "Empresa"
-    output_path = _build_process_output_path(empresa_nombre, output_base_name)
-    if not os.path.exists(output_path):
-        shutil.copy2(template_path, output_path)
-    FORM_CACHE["_output_path"] = output_path
-    return output_path
-
-
-def get_output_path():
-    output_path = FORM_CACHE.get("_output_path")
-    if output_path and os.path.exists(output_path):
-        return output_path
-    return None
 
 
 def _get_log_dir():
@@ -436,20 +365,20 @@ def build_google_sheet_input_ranges(*, sheet_name=SHEET_NAME, section8_max_rows=
 def build_google_sheet_export_payload(cache=None):
     cache_data = dict(cache or FORM_CACHE)
     writes = []
-    max_items = int(SECTION_8.get("max_items") or 0)
     for section_id in EXCEL_MAPPING.keys():
         payload = cache_data.get(section_id, {})
         writes.extend(
             _build_section_writes(
                 section_id,
                 payload,
-                section8_max_rows=max_items,
+                section8_max_rows=int(SECTION_8.get("max_items") or 0),
                 include_section8_labels=False,
             )
         )
 
     section_8_cfg = EXCEL_MAPPING.get("section_8", {})
     start_row = int(section_8_cfg.get("start_row") or 0)
+    max_items = int(SECTION_8.get("max_items") or 0)
     clear_ranges = []
     if start_row and max_items:
         end_row = start_row + max_items - 1
@@ -457,6 +386,19 @@ def build_google_sheet_export_payload(cache=None):
             f"'{SHEET_NAME}'!{section_8_cfg['name_col']}{start_row}:{section_8_cfg['name_col']}{end_row}",
             f"'{SHEET_NAME}'!{section_8_cfg['cargo_col']}{start_row}:{section_8_cfg['cargo_col']}{end_row}",
         ]
+
+    asistentes = list(cache_data.get("section_8") or [])
+    base_rows = int(section_8_cfg.get("base_rows", 4) or 4)
+    row_insertions = []
+    if start_row and len(asistentes) > base_rows:
+        row_insertions.append(
+            {
+                "sheet_name": SHEET_NAME,
+                "start_row": start_row,
+                "base_rows": base_rows,
+                "total_rows": len(asistentes),
+            }
+        )
 
     return {
         "sheet_name": SHEET_NAME,
@@ -466,83 +408,45 @@ def build_google_sheet_export_payload(cache=None):
             sheet_name=SHEET_NAME,
             section8_max_rows=max_items,
         ),
+        "row_insertions": row_insertions,
     }
 
 
-def _write_section_with_ws(ws, section_id, payload):
-    mapping = EXCEL_MAPPING.get(section_id)
-    if not mapping:
-        return
-    if section_id == "section_8":
-        start_row = mapping["start_row"]
-        base_rows = mapping.get("base_rows", 4)
-        asistentes = payload or []
-        total = len(asistentes)
-        template_row = start_row + base_rows - 1
-        if total > base_rows:
-            insert_at = start_row + base_rows
-            extra_rows = total - base_rows
-            for _ in range(extra_rows):
-                ws.Rows(insert_at).Insert()
-                ws.Rows(template_row).Copy()
-                ws.Rows(insert_at).PasteSpecial(-4122)
-                insert_at += 1
-        for write in _build_section_writes(
-            section_id,
-            payload,
-            section8_max_rows=max(base_rows, total),
-            include_section8_labels=True,
-        ):
-            _log_excel(
-                f"WRITE section={section_id} cell={write['cell']} key={write['key']} value={write['value']!r}"
-            )
-            ws_write(ws, write["cell"], write["value"])
-    else:
-        for write in _build_section_writes(section_id, payload):
-            _log_excel(
-                f"WRITE section={section_id} cell={write['cell']} key={write['key']} value={write['value']!r}"
-            )
-            ws_write(ws, write["cell"], write["value"])
-
-
-
-
 def export_to_excel(progress_callback=None):
-    clear_written_rows()
-    output_path = _ensure_output_path()
-    _log_excel(f"START export_all output={output_path}")
-    try:
-        import win32com.client as win32
-    except ImportError as exc:
-        _log_excel("ERROR export_all error=pywin32_not_installed")
-        raise RuntimeError("pywin32 no esta instalado. Instala con pip install pywin32.") from exc
-    excel = win32.DispatchEx("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
-    wb = None
-    try:
-        wb = excel.Workbooks.Open(output_path)
-        ws = wb.Worksheets(SHEET_NAME)
-        for section_id in EXCEL_MAPPING.keys():
-            payload = FORM_CACHE.get(section_id, {})
-            _log_excel(f"SECTION export_all section={section_id}")
-            if progress_callback:
-                progress_callback(section_id)
-            _write_section_with_ws(ws, section_id, payload)
-        sanitize_logo_error_cells(wb)
-        autofit_rows(ws, log_fn=_log_excel)
-        wb.Save()
-        _log_excel("SUCCESS export_all")
-    except Exception as exc:
-        _log_excel(f"ERROR export_all error={exc!r}")
-        raise
-    finally:
-        if wb is not None:
-            wb.Close(SaveChanges=True)
-        excel.Quit()
+    from google_sheets_client import get_master_template_id
+    from drive_upload import publish_evaluacion_accesibilidad_sheet
+
+    _log_excel("START export_to_sheets")
+
+    export_payload = build_google_sheet_export_payload()
+    writes = export_payload.get("writes", [])
+    clear_ranges = export_payload.get("clear_ranges", [])
+    format_ranges = export_payload.get("format_ranges", [])
+    row_insertions = export_payload.get("row_insertions", [])
+
+    empresa_nombre = (FORM_CACHE.get("section_1") or {}).get("nombre_empresa") or "Empresa"
+    base_name = _sanitize_filename(empresa_nombre)
+
+    result = publish_evaluacion_accesibilidad_sheet(
+        template_id=get_master_template_id(),
+        sheet_writes=writes,
+        base_name=base_name,
+        folder_name=_sanitize_filename(empresa_nombre),
+        clear_ranges=clear_ranges,
+        format_ranges=format_ranges,
+        row_insertions=row_insertions or None,
+        extra_visible_sheets=["2.1 EVALUACION FOTOS"],
+    )
+
+    _log_excel(f"SUCCESS export_to_sheets link={result.get('webViewLink', '')}")
     clear_cache_file()
     clear_form_cache()
-    return output_path
+
+    return {
+        "output_path": result.get("webViewLink", ""),
+        "drive_file_id": result.get("file_id", ""),
+        "already_in_drive": True,
+    }
 
 EXCEL_MAPPING = {
     "section_1": {
@@ -852,10 +756,10 @@ EXCEL_MAPPING = {
         "observaciones_generales": "A205",
     },
     "section_7": {
-        "cargos_compatibles": "A208",
+        "cargos_compatibles": "A207",
     },
     "section_8": {
-        "start_row": 212,
+        "start_row": 211,
         "name_col": "C",
         "cargo_col": "O",
         "label_name_col": "A",
@@ -1716,10 +1620,7 @@ def confirm_section_1(company_data, user_inputs):
     for field in SECTION_1["fields"]:
         field_id = field["id"]
         if field["source"] == "input":
-            value = user_inputs.get(field_id)
-            if field_id == "modalidad":
-                value = normalize_modalidad(value)
-            payload[field_id] = value
+            payload[field_id] = user_inputs.get(field_id)
         else:
             payload[field_id] = company_data.get(field_id)
     SECTION_1_CACHE.update(payload)

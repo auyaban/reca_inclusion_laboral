@@ -147,10 +147,30 @@ def _get_supabase_session():
         return dict(_SUPABASE_SESSION)
 
 
+def _close_http_error(exc):
+    if not isinstance(exc, urllib.error.HTTPError):
+        return
+    try:
+        exc.close()
+    except Exception:
+        pass
+
+
+def _read_http_error_body(exc):
+    if not isinstance(exc, urllib.error.HTTPError):
+        return ""
+    try:
+        return exc.read().decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+    finally:
+        _close_http_error(exc)
+
+
 def _extract_error_message(exc):
     if isinstance(exc, urllib.error.HTTPError):
         try:
-            body = exc.read().decode("utf-8", errors="replace")
+            body = _read_http_error_body(exc)
             payload = json.loads(body) if body else {}
             if isinstance(payload, dict):
                 for key in ("msg", "message", "error_description", "error"):
@@ -395,8 +415,10 @@ def _supabase_get(table, params, env_path=".env"):
                 and not attempted_refresh
                 and _supabase_refresh_session(env_path=env_path)
             ):
+                _close_http_error(exc)
                 attempted_refresh = True
                 continue
+            _close_http_error(exc)
         except Exception as exc:
             last_error = exc
     try:
@@ -447,10 +469,7 @@ def _supabase_get_paged(table, params=None, env_path=".env", page_size=1000, max
 def _format_supabase_error(prefix, exc):
     detail = ""
     if isinstance(exc, urllib.error.HTTPError):
-        try:
-            body = exc.read().decode("utf-8", errors="replace")
-        except Exception:
-            body = ""
+        body = _read_http_error_body(exc)
         detail = body.strip()
         code = getattr(exc, "code", None)
         if code:
@@ -947,6 +966,8 @@ def probe_supabase_service(env_path=".env", timeout=4, log_enabled=False):
     started_at = time.perf_counter()
 
     def _result(ok, status_text, error_code="", detail=""):
+        if isinstance(detail, urllib.error.HTTPError):
+            detail = _extract_error_message(detail)
         payload = {
             "ok": bool(ok),
             "status_text": str(status_text or "").strip(),
@@ -1187,14 +1208,17 @@ def _normalize_decimal_value(value, decimal_separator=None, allow_trailing_separ
     return normalized
 
 
-def _coerce_excel_decimal_value(value):
+def _coerce_excel_decimal_value(value, number_format=None):
     normalized = _normalize_decimal_value(value, decimal_separator=".")
     if not normalized:
         return ""
     try:
-        return float(normalized)
+        numeric_value = float(normalized)
     except (TypeError, ValueError):
         return normalized
+    if "%" in str(number_format or ""):
+        return numeric_value / 100.0
+    return numeric_value
 
 
 def _parse_date_value(value):

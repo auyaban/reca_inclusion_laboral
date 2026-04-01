@@ -10,6 +10,7 @@ from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 
 from formularios.common import (
     _get_desktop_dir,
+    _load_env_file,
     _normalize_cedula,
     sanitize_logo_error_cells,
     _sanitize_filename,
@@ -17,18 +18,19 @@ from formularios.common import (
 )
 from google_sheets_client import (
     batch_write_sheet_updates,
+    clear_protected_ranges,
     extract_spreadsheet_id,
     get_google_sheets_service,
     get_spreadsheet,
     read_sheet_values,
-    )
+)
 import drive_upload
 from version_info import resource_path
 
 
 FORM_ID = "seguimientos"
 FORM_NAME = "Seguimientos"
-SHARED_ROOT = r"G:\Unidades compartidas\RECA BDs\SEGUIMIENTOS"
+DEFAULT_SHARED_ROOT = r"G:\Unidades compartidas\RECA BDs\SEGUIMIENTOS"
 SEGUIMIENTOS_FOLDER_NAME = "SEGUIMIENTOS"
 DEFAULT_SEGUIMIENTOS_TEMPLATE_ID = "1y1yM87QRzzSqPYA-Iuv700qt_DRNmwiEDxwU9wX3fi8"
 GOOGLE_SHEETS_MIME = "application/vnd.google-apps.spreadsheet"
@@ -39,6 +41,35 @@ LEGACY_SHEET_BASE = "9.  SEGUIMIENTO AL PROCESO DE I"
 SHEET_PREFIX = "SEGUIMIENTO PROCESO IL "
 SHEET_FINAL = "PONDERADO FINAL"
 SHEET_META = "_META_IL"
+
+
+def _load_runtime_env():
+    try:
+        return _load_env_file(".env") or {}
+    except Exception:
+        return {}
+
+
+def _get_shared_root():
+    runtime_env = _load_runtime_env()
+    raw = str(
+        os.getenv("SEGUIMIENTOS_SHARED_ROOT")
+        or runtime_env.get("SEGUIMIENTOS_SHARED_ROOT")
+        or drive_upload._load_config().get("seguimientos_shared_root")
+        or DEFAULT_SHARED_ROOT
+    ).strip()
+    return raw or DEFAULT_SHARED_ROOT
+
+
+def _load_workbook_safe(path, *, data_only=False):
+    try:
+        return load_workbook(path, data_only=data_only)
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"No existe el archivo de seguimientos: {path}") from exc
+    except Exception as exc:
+        raise RuntimeError(
+            f"No se pudo abrir el archivo de seguimientos. Puede estar corrupto o bloqueado por Excel: {path}"
+        ) from exc
 
 MODALIDAD_OPTIONS = ["Presencial", "Virtual", "Mixta", "No aplica"]
 SI_NO_NA_OPTIONS = ["Si", "No", "No aplica"]
@@ -195,7 +226,7 @@ def _column_batch_values(values_map, range_name, expected_count):
 
 
 def get_base_sheet_name(workbook_path):
-    wb = load_workbook(workbook_path, data_only=False)
+    wb = _load_workbook_safe(workbook_path, data_only=False)
     return _get_base_sheet_name_from_workbook(wb)
 
 
@@ -288,8 +319,10 @@ def _pick_case_file(files):
 
 
 def get_seguimientos_template_id():
+    runtime_env = _load_runtime_env()
     raw = str(
         os.getenv("GOOGLE_SHEETS_SEGUIMIENTOS_TEMPLATE_ID")
+        or runtime_env.get("GOOGLE_SHEETS_SEGUIMIENTOS_TEMPLATE_ID")
         or drive_upload._load_config().get("google_sheets_seguimientos_template_id")
         or DEFAULT_SEGUIMIENTOS_TEMPLATE_ID
     ).strip()
@@ -348,7 +381,7 @@ def _get_local_root():
 
 def _get_roots():
     local_root = _get_local_root()
-    shared_root = SHARED_ROOT
+    shared_root = _get_shared_root()
     try:
         _ensure_dir(shared_root)
         shared_ok = True
@@ -747,7 +780,7 @@ def ensure_case_workbook(cedula, user_row, is_compensar):
 
     existing = find_case_workbook(normalized, user_row.get("nombre_usuario"))
     if existing:
-        wb = load_workbook(existing)
+        wb = _load_workbook_safe(existing)
         meta = _read_meta(wb)
         if meta:
             max_seguimientos = int(meta.get("max_seguimientos") or (6 if is_compensar else 3))
@@ -782,7 +815,7 @@ def ensure_case_workbook(cedula, user_row, is_compensar):
     shutil.copy2(template_path, output_path)
 
     max_seguimientos = 6 if bool(is_compensar) else 3
-    wb = load_workbook(output_path)
+    wb = _load_workbook_safe(output_path)
     _fill_sheet_base(wb, user_row)
     _sync_ponderado_from_payload(wb, _build_base_payload_from_user_row(user_row), overwrite=False)
     _ensure_meta_sheet(
@@ -884,6 +917,7 @@ def _create_native_case_record(service, folder_id, folder_name, cedula, user_row
     base_payload = _build_base_payload_from_user_row(user_row)
     if seed_path:
         base_payload = _merge_fill_empty(get_base_payload(seed_path), base_payload)
+    clear_protected_ranges(record["file_id"])
     updates = _build_base_sheet_updates(base_payload, base_sheet_name=SHEET_BASE)
     if seed_path:
         for idx in range(1, max_seguimientos + 1):
@@ -907,8 +941,8 @@ def ensure_case_record(cedula, user_row, is_compensar):
                 )
             except Exception:
                 existing["max_seguimientos"] = 6 if bool(is_compensar) else 3
-        elif existing.get("local_path"):
-            wb = load_workbook(existing["local_path"])
+        elif existing.get("local_path") and existing.get("source") != "legacy_local":
+            wb = _load_workbook_safe(existing["local_path"])
             _fill_sheet_base(wb, user_row)
             _sync_ponderado_from_payload(wb, _build_base_payload_from_user_row(user_row), overwrite=False)
             sanitize_logo_error_cells(wb)
@@ -1366,7 +1400,7 @@ def get_case_meta(case_ref):
             "max_seguimientos": max_seg,
             "base_sheet_name": _get_base_sheet_name_from_spreadsheet(spreadsheet),
         }
-    wb = load_workbook(case_ref, data_only=False)
+    wb = _load_workbook_safe(case_ref, data_only=False)
     meta = _read_meta(wb)
     try:
         max_seg = int(meta.get("max_seguimientos") or _infer_max_seguimientos_from_workbook(wb))
@@ -1460,7 +1494,7 @@ def get_base_payload(case_ref):
             "seguimiento_fechas_4_6": _column_batch_values(values, f"'{base_sheet_name}'!P29:P31", 3),
         }
         return _normalize_base_payload(payload)
-    wb = load_workbook(case_ref, data_only=False)
+    wb = _load_workbook_safe(case_ref, data_only=False)
     ws = _ensure_sheet_exists(wb, _get_base_sheet_name_from_workbook(wb))
     ponderado_ws = wb[SHEET_FINAL] if SHEET_FINAL in wb.sheetnames else None
     payload = {
@@ -1524,7 +1558,7 @@ def save_base_payload(case_ref, payload, overwrite=True):
         updates = _build_base_sheet_updates(payload, base_sheet_name=base_sheet_name)
         batch_write_sheet_updates(spreadsheet_id, updates)
         return
-    wb = load_workbook(case_ref, data_only=False)
+    wb = _load_workbook_safe(case_ref, data_only=False)
     ws = _ensure_sheet_exists(wb, _get_base_sheet_name_from_workbook(wb))
     mapping = {
         "fecha_visita": "D8",
@@ -1625,7 +1659,7 @@ def get_followup_payload(case_ref, index):
             ],
         }
         return _normalize_empty_followup_payload(payload, index, base_payload=base_payload)
-    wb = load_workbook(case_ref, data_only=False)
+    wb = _load_workbook_safe(case_ref, data_only=False)
     ws = _ensure_sheet_exists(wb, _get_followup_sheet_name(index))
     base_payload = get_base_payload(case_ref)
     item_labels = [_cell_value(ws, f"A{r}") for r in range(12, 31)]
@@ -1656,7 +1690,7 @@ def save_followup_payload(case_ref, index, payload):
         updates = _build_followup_sheet_updates(index, payload)
         batch_write_sheet_updates(_get_spreadsheet_id_from_case_ref(case_ref), updates)
         return
-    wb = load_workbook(case_ref, data_only=False)
+    wb = _load_workbook_safe(case_ref, data_only=False)
     ws = _ensure_sheet_exists(wb, _get_followup_sheet_name(index))
     ws["E8"].value = payload.get("modalidad", "")
     ws["P8"].value = payload.get("seguimiento_numero", index)

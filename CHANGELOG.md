@@ -1,5 +1,43 @@
 # Changelog
 
+## 1.2.7 - 2026-03-30
+
+Esta version endurece el flujo de `Seguimientos` frente a fallas temporales de red y deja mas seguro el proceso de actualizacion.
+
+### Cambios principales
+
+- Se corrigio el manejo de errores transitorios al leer el estado de casos de `Seguimientos`, evitando popups crudos por fallas como `WinError 10053`.
+- La apertura del editor de `Seguimientos` ahora precarga la estructura del caso en segundo plano y muestra errores amigables si Drive o Google Sheets fallan temporalmente.
+- Se redujo la agresividad del probe periodico de Drive para evitar ruido innecesario de conectividad en segundo plano.
+- Se elimino codigo duplicado en `drive_upload.py` y se fortalecio la clasificacion entre errores transitorios y errores permanentes.
+- Se agregaron pruebas de resiliencia para carga de casos, apertura del editor y manejo de errores de transporte.
+
+### Como afecta a los usuarios
+
+- Buscar una cedula y abrir un caso en `Seguimientos` ahora es mas estable cuando la red esta intermitente.
+- Las fallas temporales de Drive dejan de verse como errores tecnicos de Windows y pasan a mostrarse como mensajes operativos.
+- La app solo ofrecera la actualizacion cuando exista una version realmente superior, evitando instalaciones ambiguas sobre el mismo tag.
+
+## 1.2.5 - 2026-03-27
+
+Esta version corrige un riesgo serio de perdida de datos en formularios de induccion y agrega una forma segura de reabrir formularios ya terminados.
+
+### Cambios principales
+
+- Se corrigio el autoguardado de `Induccion Organizacional` y `Induccion Operativa` para que no vacie `section_3` al navegar entre secciones.
+- El autoguardado ahora protege datos ya guardados frente a payloads vacios o sospechosos y mantiene historial local por seccion para recuperacion.
+- La finalizacion y el cierre ahora se bloquean si una seccion obligatoria queda vacia despues de haber tenido datos, evitando exportes incompletos.
+- Se agrego un indicador visible de `Ultimo guardado` dentro del flujo de formularios.
+- El boton `Labs` del hub fue reemplazado por `Terminados`.
+- `Terminados` permite reabrir en el flujo normal los formularios finalizados de los ultimos 30 dias con los datos precargados.
+- Se agrego `tzdata` a dependencias para empaquetar correctamente la zona horaria en la app instalada.
+
+### Como afecta a los usuarios
+
+- Se reduce de forma importante el riesgo de perder informacion diligenciada al cambiar de seccion o finalizar un formulario.
+- Si un formulario ya finalizado debe reabrirse, el usuario puede hacerlo desde `Terminados` sin volver a digitar la informacion.
+- La app instalada mantiene mejor consistencia de fechas y horas entre entornos Windows.
+
 ## 1.2.2 - 2026-03-25
 
 Esta version corrige errores de cierre y acceso que estaban afectando a usuarios en la app instalada.

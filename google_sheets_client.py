@@ -4,6 +4,9 @@ import re
 import sys
 from functools import lru_cache
 from pathlib import Path
+from openpyxl.utils.cell import range_boundaries
+
+from formularios.common import _load_env_file
 
 
 DEFAULT_CONFIG_PATH = "config.json"
@@ -31,10 +34,20 @@ def _load_config():
     return {}
 
 
+def _load_runtime_env():
+    try:
+        return _load_env_file(".env") or {}
+    except Exception:
+        return {}
+
+
 def _get_credentials_path():
+    runtime_env = _load_runtime_env()
     env_path = str(
         os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
         or os.getenv("GOOGLE_SHEETS_SA_JSON")
+        or runtime_env.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+        or runtime_env.get("GOOGLE_SHEETS_SA_JSON")
         or ""
     ).strip()
     if env_path:
@@ -71,7 +84,12 @@ def extract_spreadsheet_id(value):
 
 
 def get_default_spreadsheet_id():
-    env_value = str(os.getenv("GOOGLE_SHEETS_DEFAULT_SPREADSHEET_ID") or "").strip()
+    runtime_env = _load_runtime_env()
+    env_value = str(
+        os.getenv("GOOGLE_SHEETS_DEFAULT_SPREADSHEET_ID")
+        or runtime_env.get("GOOGLE_SHEETS_DEFAULT_SPREADSHEET_ID")
+        or ""
+    ).strip()
     if env_value:
         return extract_spreadsheet_id(env_value)
 
@@ -100,7 +118,8 @@ def get_template_id(config_key, env_key=None):
     if env_key is None:
         env_key = config_key.upper()
 
-    env_value = str(os.getenv(env_key) or "").strip()
+    runtime_env = _load_runtime_env()
+    env_value = str(os.getenv(env_key) or runtime_env.get(env_key) or "").strip()
     if env_value:
         return extract_spreadsheet_id(env_value)
 
@@ -278,6 +297,62 @@ def unmerge_cells_in_area(spreadsheet_id_or_url, sheet_name, start_row, end_row,
         ).execute()
 
 
+def list_protected_ranges(spreadsheet_id_or_url):
+    spreadsheet_id = extract_spreadsheet_id(spreadsheet_id_or_url)
+    spreadsheet = get_spreadsheet(spreadsheet_id, include_grid_data=False)
+    rows = []
+    for sheet in spreadsheet.get("sheets", []):
+        props = sheet.get("properties", {}) or {}
+        sheet_id = props.get("sheetId")
+        sheet_title = str(props.get("title") or "")
+        for protected_range in sheet.get("protectedRanges", []) or []:
+            if not isinstance(protected_range, dict):
+                continue
+            protected_range_id = protected_range.get("protectedRangeId")
+            if protected_range_id is None:
+                continue
+            rows.append(
+                {
+                    "protectedRangeId": int(protected_range_id),
+                    "sheetId": sheet_id,
+                    "sheetTitle": sheet_title,
+                    "warningOnly": bool(protected_range.get("warningOnly")),
+                    "description": str(protected_range.get("description") or ""),
+                }
+            )
+    return rows
+
+
+def clear_protected_ranges(spreadsheet_id_or_url, protected_range_ids=None):
+    spreadsheet_id = extract_spreadsheet_id(spreadsheet_id_or_url)
+    if protected_range_ids is None:
+        target_ids = [item["protectedRangeId"] for item in list_protected_ranges(spreadsheet_id)]
+    else:
+        target_ids = []
+        for protected_range_id in protected_range_ids or []:
+            if protected_range_id is None:
+                continue
+            target_ids.append(int(protected_range_id))
+    if not target_ids:
+        return {"deletedProtectedRangeIds": [], "deletedProtectedRangeCount": 0}
+
+    unique_target_ids = list(dict.fromkeys(target_ids))
+    service = get_google_sheets_service()
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={
+            "requests": [
+                {"deleteProtectedRange": {"protectedRangeId": protected_range_id}}
+                for protected_range_id in unique_target_ids
+            ]
+        },
+    ).execute()
+    return {
+        "deletedProtectedRangeIds": unique_target_ids,
+        "deletedProtectedRangeCount": len(unique_target_ids),
+    }
+
+
 def remove_sheet_protection(spreadsheet_id_or_url):
     """Remove all protectedRanges from every sheet in the spreadsheet.
 
@@ -287,25 +362,7 @@ def remove_sheet_protection(spreadsheet_id_or_url):
     editable.  Calling this right after the copy is created strips all
     protected ranges so the copy is fully editable.
     """
-    spreadsheet_id = extract_spreadsheet_id(spreadsheet_id_or_url)
-    service = get_google_sheets_service()
-    meta = service.spreadsheets().get(
-        spreadsheetId=spreadsheet_id,
-        fields="sheets(protectedRanges(protectedRangeId))",
-    ).execute()
-
-    requests = []
-    for sheet in meta.get("sheets", []):
-        for pr in sheet.get("protectedRanges", []):
-            pr_id = pr.get("protectedRangeId")
-            if pr_id is not None:
-                requests.append({"deleteProtectedRange": {"protectedRangeId": pr_id}})
-
-    if requests:
-        service.spreadsheets().batchUpdate(
-            spreadsheetId=spreadsheet_id,
-            body={"requests": requests},
-        ).execute()
+    return clear_protected_ranges(spreadsheet_id_or_url)
 
 
 def copy_sheet_to_spreadsheet(
@@ -620,6 +677,22 @@ def _parse_a1_cell(a1_range):
     return sheet_name, row_idx, col_idx
 
 
+def _parse_a1_rect(a1_range):
+    match = re.match(r"^'([^']+)'!([A-Z]+\d+(?::[A-Z]+\d+)?)$", str(a1_range or "").strip())
+    if not match:
+        raise ValueError(f"Cannot parse A1 range: {a1_range}")
+    sheet_name = match.group(1)
+    cell_range = match.group(2)
+    min_col, min_row, max_col, max_row = range_boundaries(cell_range)
+    return {
+        "sheet_name": sheet_name,
+        "start_row_index": max(0, min_row - 1),
+        "end_row_index": max_row,
+        "start_col_index": max(0, min_col - 1),
+        "end_col_index": max_col,
+    }
+
+
 def set_native_checkboxes(spreadsheet_id_or_url, checkbox_cells):
     """Set native Google Sheets checkboxes on the given cells.
 
@@ -675,6 +748,56 @@ def set_native_checkboxes(spreadsheet_id_or_url, checkbox_cells):
             spreadsheetId=spreadsheet_id,
             body={"requests": requests},
         ).execute()
+
+
+def set_sheet_ranges_bold(spreadsheet_id_or_url, ranges, *, bold):
+    spreadsheet_id = extract_spreadsheet_id(spreadsheet_id_or_url)
+    cleaned_ranges = [str(item or "").strip() for item in (ranges or []) if str(item or "").strip()]
+    if not cleaned_ranges:
+        return {"updatedRanges": []}
+
+    spreadsheet = get_spreadsheet(spreadsheet_id, include_grid_data=False)
+    name_to_id = {}
+    for sheet in spreadsheet.get("sheets", []):
+        props = sheet.get("properties", {}) or {}
+        name_to_id[str(props.get("title") or "")] = props.get("sheetId")
+
+    requests = []
+    updated_ranges = []
+    for range_name in cleaned_ranges:
+        rect = _parse_a1_rect(range_name)
+        sheet_id = name_to_id.get(rect["sheet_name"])
+        if sheet_id is None:
+            continue
+        updated_ranges.append(range_name)
+        requests.append(
+            {
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": rect["start_row_index"],
+                        "endRowIndex": rect["end_row_index"],
+                        "startColumnIndex": rect["start_col_index"],
+                        "endColumnIndex": rect["end_col_index"],
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "textFormat": {
+                                "bold": bool(bold),
+                            }
+                        }
+                    },
+                    "fields": "userEnteredFormat.textFormat.bold",
+                }
+            }
+        )
+    if requests:
+        service = get_google_sheets_service()
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": requests},
+        ).execute()
+    return {"updatedRanges": updated_ranges}
 
 
 def batch_write_sheet_updates(

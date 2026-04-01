@@ -2,7 +2,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Version,
     [string]$Notes = "",
-    [switch]$AutoConfirm
+    [switch]$AutoConfirm,
+    [switch]$CleanBuild,
+    [switch]$ForceDependencyInstall
 )
 
 $ErrorActionPreference = "Stop"
@@ -42,4 +44,15 @@ git add -A
 git commit -m "Release $ver"
 git push
 
-powershell -ExecutionPolicy Bypass -File release.ps1 "v$ver"
+$releaseArgs = @(
+    "-ExecutionPolicy", "Bypass",
+    "-File", "release.ps1",
+    "v$ver"
+)
+if ($CleanBuild) {
+    $releaseArgs += "-CleanBuild"
+}
+if ($ForceDependencyInstall) {
+    $releaseArgs += "-ForceDependencyInstall"
+}
+powershell @releaseArgs

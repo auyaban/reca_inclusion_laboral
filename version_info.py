@@ -12,7 +12,7 @@ def resource_path(relative: str) -> Path:
 def get_version() -> str:
     try:
         path = resource_path("VERSION")
-        return path.read_text(encoding="utf-8").strip() or "0.0.0"
+        return path.read_text(encoding="utf-8-sig").strip() or "0.0.0"
     except Exception:
         return "0.0.0"
 

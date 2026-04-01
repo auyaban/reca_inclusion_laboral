@@ -11,7 +11,12 @@ Preparar `.env`
   - `SUPABASE_KEY=...`
   - `GITHUB_REPO_OWNER=...`
   - `GITHUB_REPO_NAME=...`
+  - `GOOGLE_SERVICE_ACCOUNT_FILE=...`
   - `INSTALLER_ASSET_NAME=RECA_INCLUSION_LABORAL_Setup.exe` (opcional)
+
+Notas
+- `GOOGLE_SERVICE_ACCOUNT_FILE` puede ser ruta absoluta o relativa al proyecto.
+- El instalador escribe `.env` en `%APPDATA%\RECA Inclusion Laboral\.env`; la app ya lo resuelve desde ahÃ­ al ejecutarse.
 
 Build local
 1) `powershell -ExecutionPolicy Bypass -File build.ps1`

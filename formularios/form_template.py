@@ -3,7 +3,6 @@ import os
 import shutil
 import time
 
-from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
     _get_desktop_dir,
     _next_available_file_path,
@@ -114,7 +113,20 @@ SECTION_1 = {
     ],
 }
 
-SECTION_1_SUPABASE_MAP = evaluacion_accesibilidad.SECTION_1_SUPABASE_MAP.copy()
+SECTION_1_SUPABASE_MAP = {
+    "nombre_empresa": "nombre_empresa",
+    "ciudad_empresa": "ciudad_empresa",
+    "direccion_empresa": "direccion_empresa",
+    "nit_empresa": "nit_empresa",
+    "correo_1": "correo_1",
+    "telefono_empresa": "telefono_empresa",
+    "contacto_empresa": "contacto_empresa",
+    "cargo": "cargo",
+    "caja_compensacion": "caja_compensacion",
+    "sede_empresa": "zona_empresa",
+    "asesor": "asesor",
+    "profesional_asignado": "profesional_asignado",
+}
 
 
 # Define your sections and mappings.

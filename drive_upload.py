@@ -12,6 +12,7 @@ except ImportError:  # pragma: no cover
     ZoneInfo = None
 
 from logging_utils import log_drive_event
+from formularios.common import _load_env_file, _sanitize_filename as _shared_sanitize_filename
 
 
 SCOPE = "https://www.googleapis.com/auth/drive"
@@ -31,9 +32,14 @@ def _get_bundle_dir():
 
 
 def _sanitize_filename(value):
-    safe = re.sub(r"[\\/:*?\"<>|]+", " ", str(value or ""))
-    safe = re.sub(r"\s+", " ", safe).strip()
-    return safe or "archivo"
+    return _shared_sanitize_filename(value, default="archivo", max_length=200)
+
+
+def _load_runtime_env():
+    try:
+        return _load_env_file(".env") or {}
+    except Exception:
+        return {}
 
 
 def _split_filename(filename):
@@ -45,13 +51,23 @@ def _split_filename(filename):
 
 
 def _get_credentials_path():
-    path = os.getenv("GOOGLE_DRIVE_SA_JSON")
+    runtime_env = _load_runtime_env()
+    path = (
+        os.getenv("GOOGLE_DRIVE_SA_JSON")
+        or os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
+        or runtime_env.get("GOOGLE_DRIVE_SA_JSON")
+        or runtime_env.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+    )
     if not path:
         config = _load_config()
-        path = config.get("google_drive_sa_json")
+        path = (
+            config.get("google_drive_sa_json")
+            or config.get("google_service_account_file")
+            or config.get("google_sheets_sa_json")
+        )
     if not path:
         raise RuntimeError(
-            "Falta GOOGLE_DRIVE_SA_JSON o config.json con google_drive_sa_json."
+            "Falta GOOGLE_DRIVE_SA_JSON/GOOGLE_SERVICE_ACCOUNT_FILE o config.json con google_drive_sa_json."
         )
     # Resolve relative paths against the bundle / script directory so the app
     # works correctly whether running from source or as a PyInstaller bundle.
@@ -195,12 +211,15 @@ def _find_existing_spreadsheet(service, parent_folder_id, filename):
         f"and name='{safe_query_name}' "
         f"and '{parent_folder_id}' in parents and trashed=false"
     )
-    result = _list_drive_items(
-        service,
-        parent_id=parent_folder_id,
-        query=query,
-        fields="files(id,name)",
-    )
+    try:
+        result = _list_drive_items(
+            service,
+            parent_id=parent_folder_id,
+            query=query,
+            fields="files(id,name)",
+        )
+    except AttributeError:
+        return None
     files = result.get("files", [])
     if files:
         return files[0]["id"]
@@ -455,7 +474,7 @@ def _log_drive(message, base_path=None):
         return
 
 
-def probe_drive_service(timeout=6, log_enabled=False):
+def probe_drive_service(timeout=6, log_enabled=False, require_write=True):
     started_at = time.perf_counter()
 
     def _result(ok, status_text, error_code="", detail=""):
@@ -498,16 +517,12 @@ def probe_drive_service(timeout=6, log_enabled=False):
         service = build("drive", "v3", credentials=credentials, cache_discovery=False)
         target_id = _resolve_target_root_id(service, configured_root_folder_id)
         read_meta = _probe_parent_read_access(service, target_id)
-        write_meta = _probe_parent_write_access(service, target_id)
-        return _result(
-            True,
-            "Configurado y con escritura",
-            "",
-            (
-                f"target_id={target_id} sample_id={read_meta.get('sample_id')} "
-                f"probe_id={write_meta.get('probe_id')}"
-            ),
-        )
+        detail = f"target_id={target_id} sample_id={read_meta.get('sample_id')}"
+        if require_write:
+            write_meta = _probe_parent_write_access(service, target_id)
+            detail = f"{detail} probe_id={write_meta.get('probe_id')}"
+            return _result(True, "Configurado y con escritura", "", detail)
+        return _result(True, "Configurado y autenticado", "", detail)
     except Exception as exc:
         status = int(getattr(getattr(exc, "resp", None), "status", 0) or 0)
         if status in {401, 403}:
@@ -659,6 +674,7 @@ def publish_sheet_from_template(
         from google_sheets_client import (
             batch_read_sheet_values,
             batch_write_sheet_updates,
+            clear_protected_ranges,
             clear_sheet_ranges,
             copy_sheet_to_spreadsheet,
             extract_spreadsheet_id,
@@ -666,7 +682,6 @@ def publish_sheet_from_template(
             hide_sheets,
             insert_template_block_rows,
             insert_template_rows,
-            remove_sheet_protection,
             set_native_checkboxes,
             unmerge_cells_in_area,
         )
@@ -820,7 +835,7 @@ def publish_sheet_from_template(
                 )
 
         try:
-            remove_sheet_protection(spreadsheet_id)
+            clear_protected_ranges(spreadsheet_id)
         except Exception as rp_exc:
             _log_drive(f"WARN remove_protection_failed id={spreadsheet_id} error={rp_exc}")
 
@@ -922,10 +937,6 @@ def publish_sheet_from_template(
                 _log_drive(
                     f"WARN hide_sheets_failed id={spreadsheet_id} error={hide_exc}"
                 )
-        try:
-            remove_sheet_protection(spreadsheet_id)
-        except Exception as rp_exc:
-            _log_drive(f"WARN remove_protection_final_failed id={spreadsheet_id} error={rp_exc}")
         # ------------------------------------------------------------------
 
     except Exception as exc:
@@ -966,10 +977,16 @@ def publish_evaluacion_accesibilidad_sheet(
     folder_name=None,
     professional_name=None,
     clear_ranges=None,
+    format_ranges=None,
+    row_insertions=None,
+    extra_visible_sheets=None,
     template_id=None,
 ):
     """Legacy wrapper – delegates to :func:`publish_sheet_from_template`."""
-    from google_sheets_client import get_evaluacion_accesibilidad_template_id
+    from google_sheets_client import (
+        get_evaluacion_accesibilidad_template_id,
+        set_sheet_ranges_bold,
+    )
 
     resolved_template_id = str(template_id or "").strip()
     if not resolved_template_id:
@@ -977,10 +994,16 @@ def publish_evaluacion_accesibilidad_sheet(
 
     resolved_folder_name = folder_name if folder_name is not None else professional_name
 
-    return publish_sheet_from_template(
+    result = publish_sheet_from_template(
         template_id=resolved_template_id,
         sheet_writes=sheet_writes,
         base_name=base_name or "Evaluacion de Accesibilidad",
         folder_name=resolved_folder_name,
         clear_ranges=clear_ranges,
+        row_insertions=row_insertions,
+        extra_visible_sheets=extra_visible_sheets,
     )
+    spreadsheet_id = str(result.get("file_id") or "").strip()
+    if spreadsheet_id and format_ranges:
+        set_sheet_ranges_bold(spreadsheet_id, format_ranges, bold=False)
+    return result

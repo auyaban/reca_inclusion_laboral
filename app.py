@@ -1,4 +1,5 @@
 import threading
+import errno
 import re
 import os
 import time
@@ -33,13 +34,6 @@ from formularios.condiciones_vacante.voice_section2 import (
     summarize_candidate_updates as summarize_vacancy_section2_updates,
 )
 from formularios.seleccion_incluyente import seleccion_incluyente
-from formularios.seleccion_incluyente_labs import seleccion_incluyente as seleccion_incluyente_labs
-from formularios.seleccion_incluyente_labs.voice_section2 import (
-    VOICE_FUNCTION_NAME as SELECTION_SECTION2_VOICE_FUNCTION,
-    get_subsection_spec as get_selection_labs_subsection_spec,
-    postprocess_extraction_payload as postprocess_selection_labs_extraction,
-    summarize_candidate_updates as summarize_selection_labs_updates,
-)
 from formularios.contratacion_incluyente import contratacion_incluyente
 from formularios.induccion_organizacional import induccion_organizacional
 from formularios.induccion_operativa import induccion_operativa
@@ -86,6 +80,27 @@ from updater import (
     run_installer,
 )
 from logging_utils import get_log_file_path, get_logs_root, log_app_event, log_labs_event
+
+try:
+    from formularios.seleccion_incluyente_labs import seleccion_incluyente as seleccion_incluyente_labs
+    from formularios.seleccion_incluyente_labs.voice_section2 import (
+        VOICE_FUNCTION_NAME as SELECTION_SECTION2_VOICE_FUNCTION,
+        get_subsection_spec as get_selection_labs_subsection_spec,
+        postprocess_extraction_payload as postprocess_selection_labs_extraction,
+        summarize_candidate_updates as summarize_selection_labs_updates,
+    )
+except Exception:
+    seleccion_incluyente_labs = None
+    SELECTION_SECTION2_VOICE_FUNCTION = ""
+
+    def get_selection_labs_subsection_spec(*_args, **_kwargs):
+        raise RuntimeError("Labs deshabilitado.")
+
+    def postprocess_selection_labs_extraction(*_args, **_kwargs):
+        raise RuntimeError("Labs deshabilitado.")
+
+    def summarize_selection_labs_updates(*_args, **_kwargs):
+        raise RuntimeError("Labs deshabilitado.")
 
 
 APP_NAME = "RECA Inclusion Laboral"
@@ -163,7 +178,7 @@ FORM_MODULE_MAP = {
     "condiciones_vacante": condiciones_vacante,
     "condiciones_vacante_labs": condiciones_vacante,
     "seleccion_incluyente": seleccion_incluyente,
-    "seleccion_incluyente_labs": seleccion_incluyente_labs,
+    "seleccion_incluyente_labs": seleccion_incluyente,
     "contratacion_incluyente": contratacion_incluyente,
     "induccion_organizacional": induccion_organizacional,
     "induccion_operativa": induccion_operativa,
@@ -1042,60 +1057,134 @@ def _update_form_completion_upload_status(
         return False
 
 
+def _iter_exception_chain(exc):
+    pending = [exc]
+    visited = set()
+    while pending:
+        current = pending.pop(0)
+        if current is None:
+            continue
+        marker = id(current)
+        if marker in visited:
+            continue
+        visited.add(marker)
+        yield current
+        for attr in ("__cause__", "__context__"):
+            value = getattr(current, attr, None)
+            if isinstance(value, BaseException):
+                pending.append(value)
+
+
+def _is_transient_os_error(exc):
+    if not isinstance(exc, OSError):
+        return False
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+    transient_errnos = {
+        getattr(errno, "ECONNABORTED", None),
+        getattr(errno, "ECONNREFUSED", None),
+        getattr(errno, "ECONNRESET", None),
+        getattr(errno, "EHOSTUNREACH", None),
+        getattr(errno, "ENETDOWN", None),
+        getattr(errno, "ENETRESET", None),
+        getattr(errno, "ENETUNREACH", None),
+        getattr(errno, "ETIMEDOUT", None),
+    }
+    transient_winerrors = {
+        64,
+        10051,
+        10052,
+        10053,
+        10054,
+        10060,
+        10061,
+    }
+    err_no = getattr(exc, "errno", None)
+    if isinstance(err_no, int) and err_no in transient_errnos:
+        return True
+    winerror = getattr(exc, "winerror", None)
+    if isinstance(winerror, int) and winerror in transient_winerrors:
+        return True
+    return False
+
+
 def _is_transient_drive_exception(exc):
     if exc is None:
         return False
-    root = exc
-    if isinstance(root, RuntimeError) and getattr(root, "__cause__", None) is not None:
-        root = root.__cause__
+    for root in _iter_exception_chain(exc):
+        if isinstance(root, urllib.error.HTTPError):
+            code = int(getattr(root, "code", 0) or 0)
+            if code >= 500 or code == 429:
+                return True
+            if code in {400, 401, 403, 404}:
+                return False
+        if isinstance(root, urllib.error.URLError):
+            return True
+        if isinstance(root, TimeoutError):
+            return True
+        if _is_transient_os_error(root):
+            return True
 
-    if isinstance(root, urllib.error.HTTPError):
-        code = int(getattr(root, "code", 0) or 0)
-        return code >= 500 or code == 429
-    if isinstance(root, urllib.error.URLError):
-        return True
-    if isinstance(root, TimeoutError):
-        return True
-    if isinstance(root, OSError):
-        return True
+        resp = getattr(root, "resp", None)
+        status = int(getattr(resp, "status", 0) or getattr(root, "status_code", 0) or 0)
+        if status >= 500 or status == 429:
+            return True
+        if status in {400, 401, 403, 404}:
+            return False
 
-    resp = getattr(root, "resp", None)
-    status = int(getattr(resp, "status", 0) or getattr(root, "status_code", 0) or 0)
-    if status >= 500 or status == 429:
-        return True
-    if status in {400, 401, 403, 404}:
-        return False
-
-    text = str(root).lower()
-    transient_markers = (
-        "timeout",
-        "timed out",
-        "temporarily unavailable",
-        "temporary failure",
-        "connection aborted",
-        "connection reset",
-        "network is unreachable",
-        "name resolution",
-        "failed to establish a new connection",
-        "connection refused",
-        "remote end closed connection",
-        "ssl",
-    )
-    if any(marker in text for marker in transient_markers):
-        return True
-    permanent_markers = (
-        "permission",
-        "forbidden",
-        "insufficient permissions",
-        "no existe el json",
-        "falta google_drive",
-        "invalid",
-        "not found",
-        "no existe el archivo",
-    )
-    if any(marker in text for marker in permanent_markers):
-        return False
+        text = str(root).lower()
+        transient_markers = (
+            "timeout",
+            "timed out",
+            "temporarily unavailable",
+            "temporary failure",
+            "connection aborted",
+            "connection reset",
+            "network is unreachable",
+            "name resolution",
+            "failed to establish a new connection",
+            "connection refused",
+            "remote end closed connection",
+            "se ha anulado una conexion",
+            "se ha anulado una conexión",
+            "software en su equipo host",
+            "ssl",
+        )
+        if any(marker in text for marker in transient_markers):
+            return True
+        permanent_markers = (
+            "permission",
+            "forbidden",
+            "insufficient permissions",
+            "no existe el json",
+            "falta google_drive",
+            "invalid",
+            "not found",
+            "no existe el archivo",
+        )
+        if any(marker in text for marker in permanent_markers):
+            return False
     return False
+
+
+def _build_drive_upload_result_from_exception(job, exc, *, attempted_at=None):
+    attempted_at = str(attempted_at or _get_colombia_now().isoformat()).strip()
+    error = str(exc).strip() or repr(exc)
+    status = "pending" if _is_transient_drive_exception(exc) else "failed"
+    _update_form_completion_upload_status(
+        (job or {}).get("registro_id"),
+        upload_status=status,
+        upload_error=error,
+        upload_attempted_at=attempted_at,
+    )
+    return {
+        "status": status,
+        "error": error,
+        "attempted_at": attempted_at,
+        "output_path": str((job or {}).get("local_excel_path") or "").strip(),
+        "remote_url": "",
+        "drive_file_id": "",
+    }
 
 
 def _drive_upload_operation_label(job):
@@ -1121,6 +1210,7 @@ def _perform_drive_upload_attempt(job):
             upload_result = drive_upload.publish_evaluacion_accesibilidad_sheet(
                 sheet_writes=sheet_export.get("writes") or [],
                 clear_ranges=sheet_export.get("clear_ranges") or [],
+                format_ranges=sheet_export.get("format_ranges") or [],
                 base_name=remote_file_name,
                 folder_name=company_name,
             )
@@ -1131,22 +1221,7 @@ def _perform_drive_upload_attempt(job):
                 folder_name=company_name,
             )
     except Exception as exc:
-        error = str(exc).strip() or repr(exc)
-        status = "pending" if _is_transient_drive_exception(exc) else "failed"
-        _update_form_completion_upload_status(
-            job.get("registro_id"),
-            upload_status=status,
-            upload_error=error,
-            upload_attempted_at=attempted_at,
-        )
-        return {
-            "status": status,
-            "error": error,
-            "attempted_at": attempted_at,
-            "output_path": excel_path,
-            "remote_url": "",
-            "drive_file_id": "",
-        }
+        return _build_drive_upload_result_from_exception(job, exc, attempted_at=attempted_at)
 
     remote_url = str(upload_result.get("webViewLink") or "").strip()
     drive_file_id = str(upload_result.get("file_id") or "").strip()
@@ -1593,7 +1668,29 @@ def _set_widget_value_from_snapshot(widget, value):
             widget.insert("1.0", str(value or ""))
             return True
         if isinstance(widget, ttk.Combobox):
-            widget.set(str(value or ""))
+            resolved = str(value or "")
+            alias_map = getattr(widget, "_snapshot_value_aliases", None)
+            if isinstance(alias_map, dict):
+                direct = alias_map.get(resolved)
+                if direct is None:
+                    direct = next(
+                        (
+                            alias_value
+                            for alias_key, alias_value in alias_map.items()
+                            if str(alias_key).casefold() == resolved.casefold()
+                        ),
+                        None,
+                    )
+                if direct is not None:
+                    resolved = str(direct or "")
+            values = [str(item) for item in (widget.cget("values") or []) if str(item).strip()]
+            if values:
+                exact = next((item for item in values if item == resolved), None)
+                if exact is None:
+                    exact = next((item for item in values if item.casefold() == resolved.casefold()), None)
+                if exact is not None:
+                    resolved = exact
+            widget.set(resolved)
             return True
         if isinstance(widget, (tk.Entry, DateEntry)):
             state = str(widget.cget("state") or "")
@@ -1896,6 +1993,112 @@ def _refresh_form_save_status(window):
         section_id=cache_snapshot.get("_last_saved_section"),
         source=cache_snapshot.get("_last_saved_source"),
     )
+
+
+def _dropdown_prefix_key(value):
+    normalized = _normalize_ascii_text(value).lower()
+    if not normalized:
+        return None
+    if "no aplica" in normalized:
+        return "no aplica"
+    for prefix in ("0.", "1.", "2.", "3."):
+        if normalized.startswith(prefix) or normalized == prefix[:1]:
+            return prefix
+    return None
+
+
+def _resolve_prefixed_dropdown_value(source_value, target_values):
+    prefix_key = _dropdown_prefix_key(source_value)
+    if not prefix_key:
+        return ""
+    values = tuple(target_values or ())
+    if prefix_key == "no aplica":
+        for option in values:
+            if "no aplica" in _normalize_ascii_text(option).lower():
+                return option
+        for option in values:
+            if _normalize_ascii_text(option).lower().startswith("0."):
+                return option
+        return ""
+    for option in values:
+        if _normalize_ascii_text(option).lower().startswith(prefix_key):
+            return option
+    if prefix_key == "0.":
+        for option in values:
+            if "no aplica" in _normalize_ascii_text(option).lower():
+                return option
+    return ""
+
+
+def _is_prefixed_dropdown_widget(widget):
+    if widget is None:
+        return False
+    try:
+        values = tuple(widget.cget("values"))
+    except Exception:
+        return False
+    if not values:
+        return False
+    normalized_values = [_normalize_ascii_text(value).lower() for value in values]
+    return any(
+        value.startswith(("0.", "1.", "2.", "3.")) or "no aplica" in value
+        for value in normalized_values
+    )
+
+
+def _bind_prefixed_dropdown_fields(fields_map, preferred_suffixes=("_nivel_apoyo", "_nivel_apoyo_requerido")):
+    dropdown_entries = [
+        (field_id, widget)
+        for field_id, widget in (fields_map or {}).items()
+        if _is_prefixed_dropdown_widget(widget)
+    ]
+    if len(dropdown_entries) < 2:
+        return
+
+    widgets = [widget for _, widget in dropdown_entries]
+    preferred_widget = None
+    for suffix in preferred_suffixes:
+        preferred_widget = next(
+            (widget for field_id, widget in dropdown_entries if field_id.endswith(suffix)),
+            None,
+        )
+        if preferred_widget is not None:
+            break
+    if preferred_widget is None:
+        preferred_widget = widgets[0]
+
+    sync_state = {"active": False}
+
+    def _sync_from(source_widget):
+        if sync_state["active"]:
+            return
+        try:
+            source_value = source_widget.get().strip()
+        except Exception:
+            return
+        if not source_value:
+            return
+        sync_state["active"] = True
+        try:
+            for target_widget in widgets:
+                if target_widget is source_widget:
+                    continue
+                resolved = _resolve_prefixed_dropdown_value(
+                    source_value,
+                    tuple(target_widget.cget("values")),
+                )
+                if resolved:
+                    target_widget.set(resolved)
+        finally:
+            sync_state["active"] = False
+
+    for widget in widgets:
+        widget._nivel_apoyo_observacion_sync = lambda _event=None, w=preferred_widget: _sync_from(w)
+        widget._prefixed_dropdown_sync = lambda _event=None, w=widget: _sync_from(w)
+        widget.bind("<<ComboboxSelected>>", lambda _event, w=widget: _sync_from(w), add="+")
+        widget.bind("<FocusOut>", lambda _event, w=widget: _sync_from(w), add="+")
+
+    _sync_from(preferred_widget)
 
 
 def _section_history_has_meaningful_payload(cache_snapshot, section_id):
@@ -2464,7 +2667,7 @@ def _result_with_dependency_down(status_text):
     }
 
 
-def probe_startup_services(log_enabled=False):
+def probe_startup_services(log_enabled=False, require_drive_write=True):
     internet = check_internet(log_enabled=log_enabled)
     if not internet.get("ok"):
         return {
@@ -2475,7 +2678,10 @@ def probe_startup_services(log_enabled=False):
     return {
         "internet": internet,
         "supabase": probe_supabase_service(log_enabled=log_enabled),
-        "drive": drive_upload.probe_drive_service(log_enabled=log_enabled),
+        "drive": drive_upload.probe_drive_service(
+            log_enabled=log_enabled,
+            require_write=require_drive_write,
+        ),
     }
 
 
@@ -3207,7 +3413,7 @@ def _section1_build_search(self, parent, include_tipo_visita=False):
     self.status_label.grid(row=current_row + 1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
 
-def _section1_build_groups(self, parent, groups, labels, modalidad_options=None):
+def _section1_build_groups(self, parent, groups, labels, modalidad_options=None, modalidad_aliases=None):
     readonly_w = ENTRY_W_XL
     try:
         sw = int(self.winfo_screenwidth() or 0)
@@ -3251,6 +3457,8 @@ def _section1_build_groups(self, parent, groups, labels, modalidad_options=None)
         width=ENTRY_W_MED,
     )
     self.fields["modalidad"].grid(row=0, column=3, sticky="w")
+    if isinstance(modalidad_aliases, dict) and modalidad_aliases:
+        self.fields["modalidad"]._snapshot_value_aliases = dict(modalidad_aliases)
 
     for title, color, field_ids in groups:
         group_label = tk.Label(
@@ -4317,6 +4525,66 @@ def _raise_finalize_stage(stage, func):
         raise FinalizeProcessError(stage, exc) from exc
 
 
+def _read_followup_case_state(case_target):
+    try:
+        suggestion = seguimientos.suggest_next_step(case_target)
+        summary = seguimientos.describe_case(case_target)
+        return {"suggestion": suggestion, "summary": summary, "error": None}
+    except Exception as exc:
+        _log_capture(f"followup_case_state_read_failed target={case_target!r} err={exc}")
+        return {"suggestion": None, "summary": None, "error": exc}
+
+
+def _format_followup_case_state_error(exc):
+    if exc is None:
+        return ""
+    detail = str(exc).strip() or repr(exc)
+    detail_lower = detail.lower()
+    if _is_transient_drive_exception(exc) or "supabase no esta disponible" in detail_lower:
+        return (
+            "Archivo encontrado, pero no se pudo leer el estado actual del caso "
+            "por una falla temporal de conexión."
+        )
+    return f"Archivo encontrado, pero falló lectura de estado: {detail}"
+
+
+def _build_followup_suggestion_from_workflow(workflow):
+    workflow = workflow or {}
+    try:
+        max_seguimientos = int(workflow.get("max_seguimientos") or 3)
+    except Exception:
+        max_seguimientos = 3
+    return {
+        "sheet": workflow.get("suggested_sheet") or workflow.get("base_sheet_name") or seguimientos.SHEET_BASE,
+        "message": str(workflow.get("message") or "").strip(),
+        "max_seguimientos": max_seguimientos,
+    }
+
+
+def _format_followup_editor_open_error(exc):
+    if exc is None:
+        return ""
+    detail = str(exc).strip() or repr(exc)
+    detail_lower = detail.lower()
+    if _is_transient_drive_exception(exc) or "supabase no esta disponible" in detail_lower:
+        return "No se pudo abrir el editor del caso por una falla temporal de conexion."
+    return f"No se pudo abrir el editor del caso: {detail}"
+
+
+def _load_followup_editor_bootstrap(case_target):
+    try:
+        meta = seguimientos.get_case_meta(case_target)
+        workflow = seguimientos.get_workflow_state(case_target)
+    except Exception as exc:
+        _log_capture(f"followup_editor_bootstrap_failed target={case_target!r} err={exc}")
+        raise RuntimeError(_format_followup_editor_open_error(exc)) from exc
+    return {
+        "meta": dict(meta or {}),
+        "workflow": dict(workflow or {}),
+        "suggestion": _build_followup_suggestion_from_workflow(workflow),
+    }
+
+
 def _clear_form_cache_safe(module):
     if hasattr(module, "clear_cache_file"):
         module.clear_cache_file()
@@ -4596,7 +4864,6 @@ def get_forms():
         condiciones_vacante.register_form(),
         {"id": "condiciones_vacante_labs", "name": "Condiciones de Vacante Labs", "hidden": True},
         seleccion_incluyente.register_form(),
-        seleccion_incluyente_labs.register_form(),
         contratacion_incluyente.register_form(),
         induccion_organizacional.register_form(),
         induccion_operativa.register_form(),
@@ -6321,7 +6588,14 @@ class HubWindow(tk.Tk):
                 "drive_file_id": drive_file_id,
             }
         else:
-            result = _perform_drive_upload_attempt(job)
+            try:
+                result = _perform_drive_upload_attempt(job)
+            except Exception as exc:
+                _log_capture(
+                    f"finalize_form_delivery unexpected_drive_exception "
+                    f"registro_id={job.get('registro_id')} err={exc}"
+                )
+                result = _build_drive_upload_result_from_exception(job, exc)
         result["output_path"] = output_path
         result["registro_id"] = str(job.get("registro_id") or "").strip()
         if not result["registro_id"]:
@@ -8542,8 +8816,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=2, column=0, sticky="w", padx=8, pady=4)
-                obs = tk.Entry(row, width=80)
-                obs.grid(row=2, column=1, columnspan=3, sticky="w", padx=4, pady=4)
+                obs = tk.Text(row, width=80, height=2, wrap="word")
+                obs.grid(row=2, column=1, columnspan=3, sticky="we", padx=4, pady=4)
+                _attach_autoexpand(obs, 2, 6)
                 self.section2_1_fields[field_id]["observaciones"] = obs
 
             elif question["type"] == "texto":
@@ -8652,8 +8927,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                obs = tk.Entry(row, width=80)
-                obs.grid(row=current_row, column=1, columnspan=3, sticky="w", padx=4, pady=4)
+                obs = tk.Text(row, width=80, height=2, wrap="word")
+                obs.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
+                _attach_autoexpand(obs, 2, 6)
                 self.section2_2_fields[field_id]["observaciones"] = obs
 
             elif question["type"] == "texto":
@@ -8691,8 +8967,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                         font=("Arial", 9, "bold"),
                         bg="white",
                     ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                    obs = tk.Entry(row, width=80)
-                    obs.grid(row=current_row, column=1, columnspan=3, sticky="w", padx=4, pady=4)
+                    obs = tk.Text(row, width=80, height=2, wrap="word")
+                    obs.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
+                    _attach_autoexpand(obs, 2, 6)
                     self.section2_2_fields[field_id]["observaciones"] = obs
 
             elif question["type"] == "lista_doble":
@@ -8851,8 +9128,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                obs = tk.Entry(row, width=80)
-                obs.grid(row=current_row, column=1, columnspan=3, sticky="w", padx=4, pady=4)
+                obs = tk.Text(row, width=80, height=2, wrap="word")
+                obs.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
+                _attach_autoexpand(obs, 2, 6)
                 self.section2_3_fields[field_id]["observaciones"] = obs
 
             elif question["type"] == "texto":
@@ -9066,8 +9344,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                obs = tk.Entry(row, width=80)
-                obs.grid(row=current_row, column=1, columnspan=3, sticky="w", padx=4, pady=4)
+                obs = tk.Text(row, width=80, height=2, wrap="word")
+                obs.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
+                _attach_autoexpand(obs, 2, 6)
                 self.section2_4_fields[field_id]["observaciones"] = obs
 
             elif question["type"] == "lista":
@@ -9123,8 +9402,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                detail = tk.Entry(row, width=80)
-                detail.grid(row=current_row, column=1, columnspan=3, sticky="w", padx=4, pady=4)
+                detail = tk.Text(row, width=80, height=2, wrap="word")
+                detail.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
+                _attach_autoexpand(detail, 2, 6)
                 self.section2_4_fields[field_id]["detalle"] = detail
 
         self._prefill_section_fields("section_2_4", self.section2_4_fields)
@@ -9198,8 +9478,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                obs = tk.Entry(row, width=80)
-                obs.grid(row=current_row, column=1, columnspan=3, sticky="w", padx=4, pady=4)
+                obs = tk.Text(row, width=80, height=2, wrap="word")
+                obs.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
+                _attach_autoexpand(obs, 2, 6)
                 self.section2_5_fields[field_id]["observaciones"] = obs
 
             elif question["type"] == "lista":
@@ -9255,8 +9536,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                detail = tk.Entry(row, width=80)
-                detail.grid(row=current_row, column=1, columnspan=3, sticky="w", padx=4, pady=4)
+                detail = tk.Text(row, width=80, height=2, wrap="word")
+                detail.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
+                _attach_autoexpand(detail, 2, 6)
                 self.section2_5_fields[field_id]["detalle"] = detail
 
         self._prefill_section_fields("section_2_5", self.section2_5_fields)
@@ -9345,8 +9627,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                detail = tk.Entry(row, width=80)
-                detail.grid(row=current_row, column=1, columnspan=3, sticky="w", padx=4, pady=4)
+                detail = tk.Text(row, width=80, height=2, wrap="word")
+                detail.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
+                _attach_autoexpand(detail, 2, 6)
                 self.section2_6_fields[field_id]["detalle"] = detail
 
         self._prefill_section_fields("section_2_6", self.section2_6_fields)
@@ -9422,8 +9705,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                obs = tk.Entry(row, width=80)
-                obs.grid(row=current_row, column=1, columnspan=3, sticky="w", padx=4, pady=4)
+                obs = tk.Text(row, width=80, height=2, wrap="word")
+                obs.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
+                _attach_autoexpand(obs, 2, 6)
                 self.section3_fields[field_id]["observaciones"] = obs
 
             elif question["type"] == "lista":
@@ -9479,8 +9763,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                detail = tk.Entry(row, width=80)
-                detail.grid(row=current_row, column=1, columnspan=3, sticky="w", padx=4, pady=4)
+                detail = tk.Text(row, width=80, height=2, wrap="word")
+                detail.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
+                _attach_autoexpand(detail, 2, 6)
                 self.section3_fields[field_id]["detalle"] = detail
 
         self._prefill_section_fields("section_3", self.section3_fields)
@@ -9679,13 +9964,17 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         self.section4_desc.configure(state="disabled")
 
 
-    def _confirm_section_4(self):
+    def _collect_section4_payload(self):
         nivel = self.section4_level_var.get().strip()
         descripcion = evaluacion_accesibilidad.SECTION_4["descriptions"].get(nivel, "")
-        payload = {
+        return {
             "nivel_accesibilidad": nivel,
             "descripcion": descripcion,
         }
+
+
+    def _confirm_section_4(self):
+        payload = self._collect_section4_payload()
         try:
             evaluacion_accesibilidad.confirm_section_4(payload)
         except Exception as exc:
@@ -10207,6 +10496,14 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         _section1_build_search(self, parent)
 
     def _build_groups(self, parent):
+        modalidad_options = next(
+            (
+                list(field.get("options") or [])
+                for field in evaluacion_accesibilidad.SECTION_1.get("fields", [])
+                if field.get("id") == "modalidad"
+            ),
+            ["Virtual", "Presencial", "Mixto", "No aplica"],
+        )
         groups = [
             ('Información de Empresa', COLOR_GROUP_EMPRESA, ['nombre_empresa', 'direccion_empresa', 'correo_1', 'contacto_empresa', 'telefono_empresa', 'cargo', 'ciudad_empresa', 'sede_empresa', 'caja_compensacion']),
             ('Información de Compensar', COLOR_GROUP_COMPENSAR, ['asesor']),
@@ -10230,7 +10527,8 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
             parent,
             groups,
             labels,
-            modalidad_options=["Presencial", "Virtual", "Mixta", "No aplica"],
+            modalidad_options=modalidad_options,
+            modalidad_aliases={"Mixta": "Mixto"},
         )
 
     def _build_actions(self, parent):
@@ -12322,6 +12620,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                     if field_id in {"nombre_oferente", "nombre_contacto_emergencia"}:
                         self._apply_name_entry(widget)
                 fields[field_id] = widget
+            _bind_prefixed_dropdown_fields(fields)
             return fields
 
         def _add_question_block(parent, title, field_ids, subitems=None):
@@ -12379,6 +12678,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                             fields[req_id].grid(row=row_idx, column=1, sticky="w", padx=4)
                         fields[cuenta_id] = _create_widget(sub_frame, cuenta_id, width=10)
                         fields[cuenta_id].grid(row=row_idx, column=2, sticky="w", padx=4)
+            _bind_prefixed_dropdown_fields(fields)
             return fields
 
         def _add_activity_block(parent, title, nivel_id, observacion_id, nota_id, subitems):
@@ -12425,6 +12725,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             )
             fields[nota_id] = tk.Entry(sub_frame, width=30)
             fields[nota_id].grid(row=len(subitems), column=1, columnspan=3, sticky="w", pady=(4, 0))
+            _bind_prefixed_dropdown_fields(fields)
             return fields
 
         remove_btn = None
@@ -13148,7 +13449,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
 class SeleccionIncluyenteLabsWindow(SeleccionIncluyenteWindow):
     FORM_META_ID = "seleccion_incluyente_labs"
-    FORM_MODULE = seleccion_incluyente_labs
+    FORM_MODULE = seleccion_incluyente
     WINDOW_TITLE = "Seleccion Incluyente Labs - Seccion 1"
 
     def __init__(self, parent):
@@ -13428,7 +13729,9 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             ).pack(anchor="w", padx=6, pady=(6, 4))
             inner = tk.Frame(frame, bg="white")
             inner.pack(fill="x", padx=6, pady=(0, 6))
-            return _add_fields_grid(inner, fields_def, columns=2)
+            fields = _add_fields_grid(inner, fields_def, columns=2)
+            _bind_prefixed_dropdown_fields(fields)
+            return fields
 
         def _is_group_variant_ui():
             # Unified template always uses group layout
@@ -15761,6 +16064,10 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
                     "nivel_apoyo": nivel,
                     "observaciones": observaciones,
                 }
+                _bind_prefixed_dropdown_fields(self.section4_item_widgets[item["id"]])
+                sync_fn = getattr(nivel, "_nivel_apoyo_observacion_sync", None)
+                if callable(sync_fn):
+                    sync_fn()
 
             note_row = len(block["items"]) + 1
             tk.Label(card, text="Nota", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
@@ -17081,10 +17388,13 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             )
             suggestion = None
             summary = None
+            state_error = None
             if case_target:
                 progress("Leyendo el estado actual del caso...", 82)
-                suggestion = seguimientos.suggest_next_step(case_target)
-                summary = seguimientos.describe_case(case_target)
+                state_snapshot = _read_followup_case_state(case_target)
+                suggestion = state_snapshot.get("suggestion")
+                summary = state_snapshot.get("summary")
+                state_error = state_snapshot.get("error")
             progress("Organizando la información del caso...", 100)
             return {
                 "row": row,
@@ -17093,6 +17403,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
                 "case_path": case_path,
                 "suggestion": suggestion,
                 "summary": summary,
+                "state_error": state_error,
             }
 
         def _on_success(data):
@@ -17132,6 +17443,14 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
                     missing_case_status=status_text,
                 )
                 return
+            state_error = data.get("state_error")
+            if state_error is not None:
+                self._case_suggestion_cache = None
+                self._case_summary_cache = None
+                self.suggestion_var.set("No fue posible leer sugerencia.")
+                self.followups_var.set("")
+                self.status_var.set(_format_followup_case_state_error(state_error))
+                return
             self._apply_summary_result(
                 suggestion=data.get("suggestion"),
                 summary=data.get("summary"),
@@ -17157,14 +17476,15 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             else:
                 self.status_var.set("No existe archivo para este vinculado. Busca la empresa por NIT o nombre para confirmar si es Compensar.")
             return
-        try:
-            suggestion = seguimientos.suggest_next_step(case_target)
-            summary = seguimientos.describe_case(case_target)
-        except Exception as exc:
+        state_snapshot = _read_followup_case_state(case_target)
+        suggestion = state_snapshot.get("suggestion")
+        summary = state_snapshot.get("summary")
+        state_error = state_snapshot.get("error")
+        if state_error is not None:
             self.suggestion_var.set("No fue posible leer sugerencia.")
-            self.company_var.set("")
+            self._apply_linked_company_to_ui()
             self.followups_var.set("")
-            self.status_var.set(f"Archivo encontrado, pero falló lectura de estado: {exc}")
+            self.status_var.set(_format_followup_case_state_error(state_error))
             return
         sheet = suggestion.get("sheet") or ""
         msg = suggestion.get("message") or ""
@@ -17248,16 +17568,20 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
                 progress("Usando el estado del caso ya leído...", 75)
                 suggestion = self._case_suggestion_cache
                 summary = self._case_summary_cache
+                state_error = None
             else:
                 progress("Leyendo la hoja sugerida para continuar...", 75)
-                suggestion = seguimientos.suggest_next_step(case_target)
-                summary = seguimientos.describe_case(case_target)
+                state_snapshot = _read_followup_case_state(case_target)
+                suggestion = state_snapshot.get("suggestion")
+                summary = state_snapshot.get("summary")
+                state_error = state_snapshot.get("error")
             progress("Abriendo el editor del caso...", 100)
             return {
                 "result": result,
                 "suggestion": suggestion,
                 "summary": summary,
                 "cache_key": cache_key,
+                "state_error": state_error,
             }
 
         def _on_success(data):
@@ -17272,6 +17596,16 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             created = bool(result.get("created"))
             max_seg = result.get("max_seguimientos")
             action = "creado" if created else "actualizado"
+            state_error = data.get("state_error")
+            if state_error is not None:
+                self._case_suggestion_cache = None
+                self._case_summary_cache = None
+                self.suggestion_var.set("No fue posible leer sugerencia.")
+                self.followups_var.set("")
+                self.status_var.set(_format_followup_case_state_error(state_error))
+                if self._get_case_target():
+                    self._open_editor()
+                return
             self._apply_summary_result(
                 suggestion=data.get("suggestion"),
                 summary=data.get("summary"),
@@ -17308,34 +17642,84 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         if not case_target:
             messagebox.showerror("Error", "No hay archivo de seguimiento para diligenciar.")
             return
-        if self.case_record and (
-            str((self.case_record or {}).get("source") or "").strip() != "drive"
-            or str((self.case_record or {}).get("mime_type") or "").strip()
-            != seguimientos.GOOGLE_SHEETS_MIME
-        ):
+        case_record_snapshot = dict(self.case_record or {})
+        case_path_snapshot = self.case_path
+        raw_cedula = self.cedula_combo.get().strip()
+        is_compensar = self.compensar_var.get().startswith("Si")
+        user_row_snapshot = dict(self.user_row or {})
+        linked_company_snapshot = dict(self.linked_company or {})
+
+        def _worker(progress):
+            case_record = dict(case_record_snapshot or {})
+            case_path = case_path_snapshot
+            progress("Preparando el editor del caso...", 18)
+            if case_record and (
+                str((case_record or {}).get("source") or "").strip() != "drive"
+                or str((case_record or {}).get("mime_type") or "").strip()
+                != seguimientos.GOOGLE_SHEETS_MIME
+            ):
+                progress("Migrando el caso a Google Sheets...", 52)
+                cedula = re.sub(r"\D+", "", raw_cedula)
+                user_row = dict(user_row_snapshot or {})
+                if linked_company_snapshot.get("nit_empresa"):
+                    user_row["empresa_nit"] = str(linked_company_snapshot.get("nit_empresa") or "").strip()
+                if linked_company_snapshot.get("nombre_empresa"):
+                    user_row["empresa_nombre"] = str(linked_company_snapshot.get("nombre_empresa") or "").strip()
+                try:
+                    result = seguimientos.ensure_case_record(
+                        cedula,
+                        user_row,
+                        is_compensar=is_compensar,
+                    )
+                except Exception as exc:
+                    raise RuntimeError(f"No se pudo migrar el caso a Google Sheets.\n{exc}") from exc
+                case_record = result.get("record") or case_record
+                case_path = (case_record or {}).get("local_path")
+            case_target = (
+                case_record
+                if (
+                    case_record
+                    and str((case_record or {}).get("source") or "").strip() == "drive"
+                    and str((case_record or {}).get("mime_type") or "").strip()
+                    == seguimientos.GOOGLE_SHEETS_MIME
+                )
+                else case_path
+            )
+            if not case_target:
+                raise RuntimeError("No hay archivo de seguimiento para diligenciar.")
+            progress("Leyendo la estructura del caso...", 82)
+            bootstrap = _load_followup_editor_bootstrap(case_target)
+            progress("Abriendo el editor...", 100)
+            return {
+                "case_record": case_record,
+                "case_path": case_path,
+                "bootstrap": bootstrap,
+            }
+
+        def _on_success(data):
+            self.case_record = data.get("case_record") or {}
+            self.case_path = data.get("case_path")
+            self.path_var.set((self.case_record or {}).get("webViewLink") or self.case_path or "")
+            self.open_btn.config(state="normal" if self.case_record else "disabled")
             try:
-                raw = self.cedula_combo.get().strip()
-                cedula = re.sub(r"\D+", "", raw)
-                user_row = dict(self.user_row or {})
-                if self.linked_company:
-                    if self.linked_company.get("nit_empresa"):
-                        user_row["empresa_nit"] = str(self.linked_company.get("nit_empresa") or "").strip()
-                    if self.linked_company.get("nombre_empresa"):
-                        user_row["empresa_nombre"] = str(self.linked_company.get("nombre_empresa") or "").strip()
-                result = seguimientos.ensure_case_record(
-                    cedula,
-                    user_row,
-                    is_compensar=self.compensar_var.get().startswith("Si"),
+                editor = SeguimientoEditorWindow(
+                    self,
+                    self.case_path,
+                    case_record=self.case_record,
+                    bootstrap=data.get("bootstrap"),
                 )
             except Exception as exc:
-                messagebox.showerror("Error", f"No se pudo migrar el caso a Google Sheets.\n{exc}")
+                messagebox.showerror("Error", str(exc))
                 return
-            self.case_record = result.get("record") or self.case_record
-            self.case_path = self.case_record.get("local_path")
-            self.path_var.set(self.case_record.get("webViewLink") or self.case_path or "")
-            self.open_btn.config(state="normal" if self.case_record else "disabled")
-        editor = SeguimientoEditorWindow(self, self.case_path, case_record=self.case_record)
-        _focus_window(editor)
+            _focus_window(editor)
+
+        self._run_loading_job(
+            title="Abriendo seguimiento",
+            initial_status="Preparando el editor del caso...",
+            worker=_worker,
+            on_success=_on_success,
+            on_error_title="Seguimientos",
+        )
 
     def _close_to_hub(self):
         _return_to_hub(self)
@@ -17343,7 +17727,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
 
 
 class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
-    def __init__(self, parent, case_path, case_record=None):
+    def __init__(self, parent, case_path, case_record=None, bootstrap=None):
         super().__init__(parent)
         self.owner = parent
         self.case_path = case_path
@@ -17362,8 +17746,13 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         self.geometry("1200x820")
         _maximize_window(self)
 
-        self.meta = seguimientos.get_case_meta(self.case_target)
-        self.workflow = seguimientos.get_workflow_state(self.case_target)
+        bootstrap = bootstrap or _load_followup_editor_bootstrap(self.case_target)
+        self.meta = dict((bootstrap or {}).get("meta") or {})
+        self.workflow = dict((bootstrap or {}).get("workflow") or {})
+        suggestion = dict(
+            (bootstrap or {}).get("suggestion")
+            or _build_followup_suggestion_from_workflow(self.workflow)
+        )
         self.max_seg = int(
             self.workflow.get("max_seguimientos") or self.meta.get("max_seguimientos") or 3
         )
@@ -17373,7 +17762,6 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             or seguimientos.SHEET_BASE
         )
         self.sheet_options = list(self.workflow.get("visible_sheets") or [self.base_sheet_name])
-        suggestion = seguimientos.suggest_next_step(self.case_target)
         self.sheet_var = tk.StringVar(value=suggestion.get("sheet") or self.sheet_options[0])
         if self.sheet_var.get() not in self.sheet_options:
             self.sheet_var.set(self.sheet_options[0])
@@ -17633,8 +18021,17 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         self.canvas.yview_moveto(0)
 
     def _refresh_workflow_state(self, preferred_sheet=None):
-        self.meta = seguimientos.get_case_meta(self.case_target)
-        self.workflow = seguimientos.get_workflow_state(self.case_target)
+        try:
+            bootstrap = _load_followup_editor_bootstrap(self.case_target)
+        except RuntimeError as exc:
+            self.status_var.set(str(exc))
+            return
+        self.meta = dict((bootstrap or {}).get("meta") or {})
+        self.workflow = dict((bootstrap or {}).get("workflow") or {})
+        suggestion = dict(
+            (bootstrap or {}).get("suggestion")
+            or _build_followup_suggestion_from_workflow(self.workflow)
+        )
         self.max_seg = int(
             self.workflow.get("max_seguimientos") or self.meta.get("max_seguimientos") or 3
         )
@@ -17649,7 +18046,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         target_sheet = preferred_sheet or self.sheet_var.get().strip()
         if target_sheet not in self.sheet_options:
             target_sheet = (
-                self.workflow.get("suggested_sheet")
+                suggestion.get("sheet")
                 or (self.sheet_options[0] if self.sheet_options else self.base_sheet_name)
             )
         self.sheet_var.set(target_sheet)

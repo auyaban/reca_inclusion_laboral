@@ -1,12 +1,29 @@
+param(
+    [Parameter(Position = 0)]
+    [string]$Version = "",
+    [switch]$CleanBuild,
+    [switch]$ForceDependencyInstall
+)
+
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $root
 
+function Write-Utf8NoBomFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Value
+    )
+
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Value, $encoding)
+}
+
 $versionPath = Join-Path $root "VERSION"
-if ($args[0]) {
-    $version = $args[0].TrimStart("v")
-    Set-Content -Path $versionPath -Value $version -Encoding UTF8
+if ($Version) {
+    $version = $Version.TrimStart("v")
+    Write-Utf8NoBomFile -Path $versionPath -Value "$version`n"
 } else {
     if (!(Test-Path $versionPath)) {
         Write-Host "VERSION no encontrado. Usa: .\release.ps1 vX.Y.Z"
@@ -32,13 +49,25 @@ if (-not (Get-Command $gh -ErrorAction SilentlyContinue)) {
 
 & $gh auth status -h github.com | Out-Null
 
-powershell -ExecutionPolicy Bypass -File build.ps1
+$buildArgs = @(
+    "-ExecutionPolicy", "Bypass",
+    "-File", "build.ps1"
+)
+if ($CleanBuild) {
+    $buildArgs += "-Clean"
+}
+if ($ForceDependencyInstall) {
+    $buildArgs += "-ForceDependencyInstall"
+}
+powershell @buildArgs
 
 & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=$version installer.iss
 
 $installerPath = Join-Path $root "installer\RECA_INCLUSION_LABORAL_Setup.exe"
 $hash = (Get-FileHash -Algorithm SHA256 $installerPath).Hash.ToLower()
-"$hash  RECA_INCLUSION_LABORAL_Setup.exe" | Set-Content (Join-Path $root "installer\RECA_INCLUSION_LABORAL_Setup.exe.sha256")
+Write-Utf8NoBomFile `
+  -Path (Join-Path $root "installer\RECA_INCLUSION_LABORAL_Setup.exe.sha256") `
+  -Value "$hash  RECA_INCLUSION_LABORAL_Setup.exe`n"
 
 $releaseTag = "v$version"
 $exists = $true

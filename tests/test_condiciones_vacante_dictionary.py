@@ -71,6 +71,20 @@ TEA / AUTISMO
         self.assertIn(cv.normalize_disability_key("TEA / AUTISMO"), entries)
         self.assertIn("Anticipar tareas", entries[cv.normalize_disability_key("TEA / AUTISMO")])
 
+    def test_text_dictionary_loader_closes_text_file_handle(self) -> None:
+        sample = """
+TEA / AUTISMO
+"1. Anticipar tareas
+2. Anticipar cambios"
+""".strip()
+        mocked_open = mock_open(read_data=sample)
+
+        with patch("formularios.condiciones_vacante.condiciones_vacante.os.path.exists", return_value=True):
+            with patch("builtins.open", mocked_open):
+                cv._load_disability_descriptions_from_text()
+
+        mocked_open.return_value.close.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

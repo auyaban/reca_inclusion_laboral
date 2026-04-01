@@ -22,6 +22,9 @@ FORM_ID = "contratacion_incluyente"
 FORM_NAME = "Contratacion Incluyente"
 SHEET_NAME = "5. CONTRATACIÓN INCLUYENTE"
 
+TEMPLATE_VARIANT_INDIVIDUAL = "individual"
+TEMPLATE_VARIANT_GROUP_2_PLUS = "group_2_plus"
+
 # Vinculado block geometry (unified format — one sheet for individual & group)
 VINCULADO_BLOCK_HEIGHT = 52            # rows per vinculado block (rows 19-70 for first)
 VINCULADO_FIRST_BLOCK_START_ROW = 19
@@ -35,6 +38,21 @@ SECTION_6_BASE_AJUSTES_ROW = 73        # ajustes text row
 SECTION_7_BASE_START_ROW = 79          # first asistente data row
 SECTION_7_NOMBRE_COL = "C"
 SECTION_7_CARGO_COL = "K"
+SECTION_6_TITLE_ROW_BY_TEMPLATE = {
+    TEMPLATE_VARIANT_INDIVIDUAL: 72,
+    TEMPLATE_VARIANT_GROUP_2_PLUS: 72,
+}
+SECTION_7_TITLE_ROW_BY_TEMPLATE = {
+    TEMPLATE_VARIANT_INDIVIDUAL: 78,
+    TEMPLATE_VARIANT_GROUP_2_PLUS: 78,
+}
+
+
+def ws_write(ws, cell, value):
+    try:
+        ws[cell] = value
+    except Exception:
+        return
 
 FORM_CACHE = {}
 SECTION_1_CACHE = {}
@@ -1030,6 +1048,18 @@ def _build_section_7_writes(payload, num_vinculados=1):
         if cargo:
             writes.append({"range": f"'{SHEET_NAME}'!{SECTION_7_CARGO_COL}{row}", "value": cargo})
     return writes
+
+
+def _write_section_6(ws, payload, template_variant=TEMPLATE_VARIANT_INDIVIDUAL, total_vinculados=0):
+    for write in _build_section_6_writes(payload, num_vinculados=max(1, int(total_vinculados or 1))):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
+
+
+def _write_section_7(ws, payload, template_variant=TEMPLATE_VARIANT_INDIVIDUAL, total_vinculados=0):
+    for write in _build_section_7_writes(payload, num_vinculados=max(1, int(total_vinculados or 1))):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
 
 
 def _build_section_7_row_insertions(payload, num_vinculados=1):

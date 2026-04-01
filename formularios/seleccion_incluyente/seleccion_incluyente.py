@@ -122,6 +122,9 @@ SECTION_1_CACHE = {}
 
 SHEET_NAME = "4. SELECCIÓN INCLUYENTE"
 
+TEMPLATE_VARIANT_INDIVIDUAL = "individual"
+TEMPLATE_VARIANT_GROUP_2_PLUS = "group_2_plus"
+
 # Oferente block geometry (unified format — one sheet for individual & group)
 OFERENTE_BLOCK_HEIGHT = 61          # rows per oferente block (rows 16-76 for first)
 OFERENTE_FIRST_BLOCK_START_ROW = 16
@@ -135,6 +138,21 @@ SECTION_2_LAST_COLUMN = "U"
 SECTION_5_BASE_AJUSTES_ROW = 78     # ajustes text row
 SECTION_5_BASE_NOTA_ROW = 79        # nota row
 SECTION_6_BASE_START_ROW = 84       # first asistente data row
+SECTION_5_TITLE_ROW_BY_TEMPLATE = {
+    TEMPLATE_VARIANT_INDIVIDUAL: 77,
+    TEMPLATE_VARIANT_GROUP_2_PLUS: 77,
+}
+SECTION_6_TITLE_ROW_BY_TEMPLATE = {
+    TEMPLATE_VARIANT_INDIVIDUAL: 83,
+    TEMPLATE_VARIANT_GROUP_2_PLUS: 83,
+}
+
+
+def ws_write(ws, cell, value):
+    try:
+        ws[cell] = value
+    except Exception:
+        return
 
 AJUSTES_ENTREVISTA_TEMPLATES = {
     "preparacion_proceso": """
@@ -1558,6 +1576,18 @@ def _build_section_6_writes(payload, num_oferentes=1):
         if cargo:
             writes.append({"range": f"'{SHEET_NAME}'!{SECTION_6_CARGO_COL}{row}", "value": cargo})
     return writes
+
+
+def _write_section_5(ws, payload, template_variant=TEMPLATE_VARIANT_INDIVIDUAL, total_oferentes=0):
+    for write in _build_section_5_writes(payload, num_oferentes=max(1, int(total_oferentes or 1))):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
+
+
+def _write_section_6(ws, payload, template_variant=TEMPLATE_VARIANT_INDIVIDUAL, total_oferentes=0):
+    for write in _build_section_6_writes(payload, num_oferentes=max(1, int(total_oferentes or 1))):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
 
 
 def _build_section_6_row_insertions(payload, num_oferentes=1):

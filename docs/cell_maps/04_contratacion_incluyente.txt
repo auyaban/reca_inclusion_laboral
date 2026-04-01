@@ -1,0 +1,208 @@
+================================================================================
+TEMPLATE: contratacion_incluyente.xlsx
+FORMULARIO: Contratacion Incluyente
+HOJA REAL: 5. PROCESO CONTRATACION INCLUYE
+================================================================================
+
+NOTAS GENERALES:
+- Fuente de verdad: runtime actual en
+  formularios/contratacion_incluyente/contratacion_incluyente.py,
+  template real contratacion_incluyente.xlsx y pruebas de contrato.
+- El export actual resuelve TEMPLATE_VARIANT_GROUP_2_PLUS para cualquier
+  section_2 no vacia. En la practica, 1 o mas vinculados usan layout grupal.
+- El detalle "desarrollo_actividad" existe como variante individual en A15,
+  pero el flujo efectivo con datos exporta usando layout grupal.
+- El bloque repetible de section_2 usa estas filas base:
+  - bloque 1: fila 19
+  - bloque 2: fila 71
+  - bloque 3: fila 123
+- section_6 se ubica en la fila 72 y section_7 en la fila 78.
+- La normalizacion de dropdowns ya no lee validaciones del XLSX en runtime.
+
+--------------------------------------------------------------------------------
+SECCION 1 - DATOS DE LA EMPRESA (Filas 7-13)
+--------------------------------------------------------------------------------
+
+PREGUNTA / CAMPO                        CELDA   TIPO
+--------------------------------------  ------  --------------------------------
+Fecha de la visita                      D7      Texto (fecha)
+Modalidad                               L7      Dropdown: Presencial | Virtual |
+                                                  Mixta | No aplica
+Nombre de la empresa                    D8      Texto (auto desde BD)
+Ciudad / Municipio                      L8      Texto (auto desde BD)
+Direccion de la empresa                 D9      Texto (auto desde BD)
+Numero de NIT                           L9      Texto (input manual)
+Correo electronico                      D10     Texto (auto desde BD)
+Telefonos                               L10     Texto (auto desde BD)
+Persona que atiende la visita           D11     Texto (auto desde BD)
+Cargo                                   L11     Texto (auto desde BD)
+Empresa afiliada a Caja de Comp.        D12     Texto (auto desde BD)
+Sede Compensar                          L12     Texto (auto desde BD)
+Asesor                                  D13     Texto (auto desde BD)
+Profesional asignado RECA               L13     Texto (auto desde BD)
+
+--------------------------------------------------------------------------------
+SECCION 2 - BLOQUE DEL VINCULADO
+--------------------------------------------------------------------------------
+
+Filas de referencia del template real:
+- A14 = 2. DESARROLLO DE LA ACTIVIDAD
+- A19 = 3. DATOS DEL VINCULADO
+- primer dato escribible del bloque = fila 23
+
+Detalle exclusivo de variante individual:
+- desarrollo_actividad = A15
+
+PREGUNTA / CAMPO                        CELDA   TIPO
+--------------------------------------  ------  --------------------------------
+No. (numero)                            A23     Texto
+Nombre del vinculado                    C23     Texto
+Cedula                                  H23     Texto
+Certificado %                           K23     Texto
+Discapacidad                            L23     Dropdown canonico del formulario
+Telefono del vinculado                  O23     Texto
+
+Genero                                  C24     Dropdown
+Correo del vinculado                    G24     Texto
+Fecha de nacimiento                     M24     Texto (fecha)
+Edad                                    Q24     Texto
+
+Pertenece a comunidad LGTBIQ+           E25     Dropdown
+Grupo etnico                            L25     Dropdown
+Grupo etnico - cual                     O25     Dropdown canonico del formulario
+
+Cargo del vinculado                     C26     Texto
+Contacto de emergencia                  I26     Texto
+Parentesco                              M26     Texto
+Telefono emergencia                     Q26     Texto
+
+Cuenta con certificado de discapacidad  F27     Dropdown
+Lugar firma de contrato                 L27     Texto
+Fecha firma de contrato                 Q27     Texto (fecha)
+
+Tipo de contrato firmado                G29     Dropdown canonico del formulario
+Fecha fin contrato                      N29     Texto (fecha)
+
+--------------------------------------------------------------------------------
+SECCION 2 - ACOMPAÑAMIENTO AL PROCESO
+--------------------------------------------------------------------------------
+
+Condiciones de la vacante:
+- lectura del contrato: filas 33-34
+- comprension del contrato: filas 35-36
+- claridad del tipo de contrato: filas 37-41
+- condiciones salariales: filas 42-45
+
+Prestaciones de ley:
+- cesantias: filas 48-49
+- auxilio de transporte: filas 50-51
+- prima: filas 52-53
+- seguridad social: filas 54-55
+- vacaciones: filas 56-57
+- otros beneficios: filas 58-59
+
+Deberes y derechos:
+- conducto regular: filas 62-66
+- causales de fin de contrato: filas 67-68
+- rutas de atencion: filas 69-70
+
+Campos criticos auditados:
+
+PREGUNTA / CAMPO                        CELDA   TIPO
+--------------------------------------  ------  --------------------------------
+Contrato lee - nivel apoyo             G33     Dropdown
+Contrato lee - observacion             L33     Dropdown
+Contrato lee - nota                    M34     Texto
+
+Contrato comprendido - nivel apoyo     G35     Dropdown
+Contrato comprendido - observacion     L35     Dropdown
+Contrato comprendido - nota            M36     Texto
+
+Tipo de contrato - nivel apoyo         G37     Dropdown
+Tipo de contrato - observacion         L37     Dropdown
+Tipo de contrato - valor               L38     Dropdown
+Jornada laboral                        L39     Dropdown
+Clausulas del contrato                 L40     Dropdown
+Tipo de contrato - nota                M41     Texto
+
+Condiciones salariales - nivel apoyo   G42     Dropdown
+Condiciones salariales - observacion   L42     Dropdown
+Frecuencia de pago                     L43     Dropdown
+Forma de pago                          L44     Dropdown
+Condiciones salariales - nota          M45     Texto
+
+Cesantias - nivel apoyo                G48     Dropdown
+Cesantias - observacion                L48     Dropdown
+Cesantias - nota                       M49     Texto
+
+Auxilio transporte - nivel apoyo       G50     Dropdown
+Auxilio transporte - observacion       L50     Dropdown
+Auxilio transporte - nota              M51     Texto
+
+Prima - nivel apoyo                    G52     Dropdown
+Prima - observacion                    L52     Dropdown
+Prima - nota                           M53     Texto
+
+Seguridad social - nivel apoyo         G54     Dropdown
+Seguridad social - observacion         L54     Dropdown
+Seguridad social - nota                M55     Texto
+
+Vacaciones - nivel apoyo               G56     Dropdown
+Vacaciones - observacion               L56     Dropdown
+Vacaciones - nota                      M57     Texto
+
+Beneficios - nivel apoyo               G58     Dropdown
+Beneficios - observacion               L58     Dropdown
+Beneficios - nota                      M59     Texto
+
+Conducto regular - nivel apoyo         G62     Dropdown
+Conducto regular - observacion         L62     Dropdown
+Diligencia de descargos                L63     Dropdown
+Tramites administrativos               L64     Dropdown
+Solicitud de permisos                  L65     Dropdown
+Conducto regular - nota                M66     Texto
+
+Causales fin contrato - nivel apoyo    G67     Dropdown
+Causales fin contrato - observacion    L67     Dropdown
+Causales fin contrato - nota           M68     Texto
+
+Rutas atencion - nivel apoyo           G69     Dropdown
+Rutas atencion - observacion           L69     Dropdown
+Rutas atencion - nota                  M70     Texto
+
+--------------------------------------------------------------------------------
+SECCION 6 - AJUSTES RAZONABLES Y RECOMENDACIONES
+--------------------------------------------------------------------------------
+
+Fila titulo real: 72
+
+PREGUNTA / CAMPO                        CELDA
+--------------------------------------  ------
+Ajustes y recomendaciones               A73
+
+En modo grupal, estas filas se corren por bloques completos:
+- 1 vinculado: section_6 en 72
+- 2 vinculados: section_6 en 124
+- 3 vinculados: section_6 en 176
+
+--------------------------------------------------------------------------------
+SECCION 7 - ASISTENTES
+--------------------------------------------------------------------------------
+
+Fila titulo real: 78
+Filas base:
+- individual teorico: 3
+- layout grupal efectivo: 4
+
+PREGUNTA / CAMPO                        COLUMNA TIPO
+--------------------------------------  ------  --------------------------------
+Nombre del asistente                    C       Texto
+Cargo del asistente                     K       Texto
+
+Filas iniciales efectivas:
+- 1 vinculado: 79 a 82
+- 2 vinculados: 131 a 134
+
+================================================================================
+FIN DEL ARCHIVO
+================================================================================

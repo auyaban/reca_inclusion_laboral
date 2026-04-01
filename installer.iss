@@ -5,7 +5,10 @@
 #define MyAppPublisher "RECA"
 #define MyAppExeName "RECA_INCLUSION_LABORAL.exe"
 
-#include "installer_config.iss"
+#ifnexist "installer_config.local.iss"
+  #error "installer_config.local.iss no encontrado. Ejecuta build.ps1 antes de compilar el instalador."
+#endif
+#include "installer_config.local.iss"
 
 [Setup]
 AppId={{8D9DB4D8-98CA-41E5-BC6A-B8F5167CFCA2}
@@ -19,7 +22,8 @@ OutputBaseFilename=RECA_INCLUSION_LABORAL_Setup
 Compression=lzma
 SolidCompression=yes
 PrivilegesRequired=lowest
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
 
 [Files]
@@ -38,7 +42,6 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Abrir {#MyAppName}"; Flags: now
 [Code]
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  EnvPath: string;
   RoamingPath: string;
   EnvContent: string;
 begin
@@ -48,10 +51,8 @@ begin
                   'SUPABASE_KEY={#SupabaseKey}' + #13#10 +
                   'GITHUB_REPO_OWNER={#GithubRepoOwner}' + #13#10 +
                   'GITHUB_REPO_NAME={#GithubRepoName}' + #13#10 +
-                  'INSTALLER_ASSET_NAME={#InstallerAssetName}' + #13#10;
-
-    EnvPath := ExpandConstant('{app}\.env');
-    SaveStringToFile(EnvPath, EnvContent, False);
+                  'INSTALLER_ASSET_NAME={#InstallerAssetName}' + #13#10 +
+                  'GOOGLE_SERVICE_ACCOUNT_FILE={#GoogleServiceAccountFileName}' + #13#10;
 
     RoamingPath := ExpandConstant('{userappdata}\RECA Inclusion Laboral\.env');
     ForceDirectories(ExtractFileDir(RoamingPath));

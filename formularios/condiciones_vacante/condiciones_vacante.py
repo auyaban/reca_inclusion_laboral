@@ -283,6 +283,16 @@ EXCEL_MAPPING = {
     },
 }
 
+SECTION_7_TITLE_ROW = 158
+SECTION_8_TITLE_ROW = 160
+
+
+def ws_write(ws, cell, value):
+    try:
+        ws[cell] = value
+    except Exception:
+        return
+
 
 def _get_cache_dir():
     base = os.getenv("LOCALAPPDATA")
@@ -991,9 +1001,11 @@ def _load_disability_descriptions_from_text():
     if not os.path.exists(path):
         return {}
     try:
-        raw = open(path, "r", encoding="utf-8").read()
+        with open(path, "r", encoding="utf-8") as handle:
+            raw = handle.read()
     except UnicodeDecodeError:
-        raw = open(path, "r", encoding="latin-1").read()
+        with open(path, "r", encoding="latin-1") as handle:
+            raw = handle.read()
     raw = raw.replace("\r\n", "\n")
     entries = {}
     current_key = None
@@ -1057,6 +1069,21 @@ def _get_section_6_extra_rows(cache_data=None):
     section_6_rows = list(cache.get("section_6") or [])
     base_rows = int(EXCEL_MAPPING.get("section_6", {}).get("base_rows", 4) or 4)
     return max(0, len(section_6_rows) - base_rows)
+
+
+def _section_6_extra_rows(section_6_payload=None):
+    if section_6_payload is None:
+        return _get_section_6_extra_rows()
+    cache_snapshot = {"section_6": list(section_6_payload or [])}
+    return _get_section_6_extra_rows(cache_snapshot)
+
+
+def _section_7_content_row_for_payload(section_6_payload=None):
+    return SECTION_7_TITLE_ROW + 1 + _section_6_extra_rows(section_6_payload)
+
+
+def _section_8_start_row_for_payload(section_6_payload=None):
+    return SECTION_8_TITLE_ROW + 1 + _section_6_extra_rows(section_6_payload)
 
 
 def _shift_cell_reference(cell_ref, row_delta):
@@ -1166,6 +1193,65 @@ def _build_row_insertions(cache):
         )
 
     return row_insertions
+
+
+def _write_section_with_ws(ws, section_id, payload):
+    if section_id == "section_6":
+        mapping = EXCEL_MAPPING["section_6"]
+        start_row = int(mapping["start_row"])
+        base_rows = int(mapping.get("base_rows", 4) or 4)
+        rows = list(payload or [])
+        extra_rows = max(0, len(rows) - base_rows)
+        insert_row = start_row + base_rows
+        for _ in range(extra_rows):
+            ws.Rows(insert_row).Insert()
+            ws.Rows(insert_row - 1).Copy(ws.Rows(insert_row))
+        for idx, entry in enumerate(rows):
+            discapacidad = str((entry or {}).get("discapacidad") or "").strip()
+            if not discapacidad:
+                continue
+            row = start_row + idx
+            _log_excel(f"WRITE section=section_6 cell=A{row} key=discapacidad")
+            ws_write(ws, f"A{row}", discapacidad)
+        return
+
+    if section_id == "section_7":
+        value = str((payload or {}).get("observaciones_recomendaciones") or "").strip()
+        if not value:
+            return
+        write_row = _section_7_content_row_for_payload(FORM_CACHE.get("section_6") or [])
+        _log_excel(f"WRITE section=section_7 cell=A{write_row} key=observaciones_recomendaciones")
+        ws_write(ws, f"A{write_row}", value)
+        return
+
+    if section_id == "section_8":
+        if isinstance(payload, dict):
+            rows = list(payload.get("asistentes") or [])
+        else:
+            rows = list(payload or [])
+        start_row = _section_8_start_row_for_payload(FORM_CACHE.get("section_6") or [])
+        base_rows = int(EXCEL_MAPPING.get("section_8", {}).get("rows", 3) or 3)
+        extra_rows = max(0, len(rows) - base_rows)
+        insert_row = start_row + base_rows
+        for _ in range(extra_rows):
+            ws.Rows(insert_row).Insert()
+            ws.Rows(insert_row - 1).Copy(ws.Rows(insert_row))
+        for idx, entry in enumerate(rows):
+            row = start_row + idx
+            nombre = str((entry or {}).get("nombre") or "").strip()
+            cargo = str((entry or {}).get("cargo") or "").strip()
+            if nombre:
+                _log_excel(f"WRITE section=section_8 cell=E{row} key=nombre")
+                ws_write(ws, f"E{row}", nombre)
+            if cargo:
+                _log_excel(f"WRITE section=section_8 cell=L{row} key=cargo")
+                ws_write(ws, f"L{row}", cargo)
+        return
+
+    for write in _build_section_writes(section_id, payload):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        _log_excel(f"WRITE section={section_id} cell={cell}")
+        ws_write(ws, cell, write.get("value", ""))
 
 
 def export_to_excel(progress_callback=None):

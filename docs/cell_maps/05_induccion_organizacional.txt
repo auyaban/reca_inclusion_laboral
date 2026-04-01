@@ -1,0 +1,103 @@
+================================================================================
+TEMPLATE: induccion_organizacional.xlsx
+FORMULARIO: Induccion Organizacional
+HOJA REAL: 6. INDUCCION ORGANIZACIONAL
+================================================================================
+
+NOTAS GENERALES:
+- Fuente de verdad: runtime actual en
+  formularios/induccion_organizacional/induccion_organizacional.py,
+  template real y pruebas de contrato.
+- section_2 inserta filas desde la fila 17. Cada vinculado adicional corre en
+  +1 todas las secciones siguientes.
+- Filas titulo fijas del template base:
+  - section_3: 17
+  - section_4: 63
+  - section_5: 67
+  - section_6: 70
+
+--------------------------------------------------------------------------------
+SECCION 1 - DATOS GENERALES (Filas 7-13)
+--------------------------------------------------------------------------------
+
+PREGUNTA / CAMPO                        CELDA
+--------------------------------------  ------
+Fecha de la visita                      D7
+Modalidad                               N7
+Nombre de la empresa                    D8
+Ciudad / Municipio                      N8
+Direccion de la empresa                 D9
+Numero de NIT                           N9
+Correo electronico                      D10
+Telefonos                               N10
+Persona que atiende la visita           D11
+Cargo                                   N11
+Empresa afiliada a Caja de Comp.        D12
+Sede Compensar                          N12
+Asesor                                  D13
+Profesional asignado RECA               N13
+
+--------------------------------------------------------------------------------
+SECCION 2 - DATOS DEL VINCULADO
+--------------------------------------------------------------------------------
+
+Fila inicial de escritura: 16
+Columnas efectivas:
+- numero: A
+- nombre_oferente: B
+- cedula: H
+- telefono_oferente: M
+- cargo_oferente: P
+
+--------------------------------------------------------------------------------
+SECCION 3 - DESARROLLO DEL PROCESO
+--------------------------------------------------------------------------------
+
+Cada item usa estas columnas:
+- visto: H
+- responsable: K
+- medio_socializacion: M
+- descripcion: P
+
+Las filas base de los items vienen de SECTION_3 y se corren por cada fila
+insertada en section_2.
+
+--------------------------------------------------------------------------------
+SECCION 4 - AJUSTES RAZONABLES AL PROCESO DE INDUCCION
+--------------------------------------------------------------------------------
+
+El runtime escribe tres entradas inmediatamente antes del titulo de section_5.
+
+Para el caso base (1 vinculado):
+- fila 64: A = medio, G = recomendacion
+- fila 65: A = medio, G = recomendacion
+- fila 66: A = medio, G = recomendacion
+
+--------------------------------------------------------------------------------
+SECCION 5 - OBSERVACIONES
+--------------------------------------------------------------------------------
+
+Fila titulo base: 67
+Celda efectiva de texto:
+- A68
+
+Con 2 vinculados:
+- titulo en 68
+- texto en A69
+
+--------------------------------------------------------------------------------
+SECCION 6 - ASISTENTES
+--------------------------------------------------------------------------------
+
+Fila titulo base: 70
+Fila inicial de asistentes: 71
+Filas base: 4
+
+PREGUNTA / CAMPO                        COLUMNA
+--------------------------------------  -------
+Nombre del asistente                    C
+Cargo del asistente                     L
+
+================================================================================
+FIN DEL ARCHIVO
+================================================================================

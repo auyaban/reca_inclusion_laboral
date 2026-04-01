@@ -273,10 +273,19 @@ def _log_excel(message):
         return
 
 
+SECTION_3_TITLE_ROW = 25
 SECTION_3_OBSERVACIONES_ROW = 26
+SECTION_5_TITLE_ROW = 31
 SECTION_5_START_ROW = 32
 SECTION_5_NOMBRE_COL = "C"
 SECTION_5_CARGO_COL = "K"
+
+
+def ws_write(ws, cell, value):
+    try:
+        ws[cell] = value
+    except Exception:
+        return
 
 
 def _build_section_1_writes(payload):
@@ -324,6 +333,18 @@ def _build_section_5_row_insertions(payload):
             "total_rows": total_rows,
         }
     ]
+
+
+def _write_section_3(ws, payload):
+    for write in _build_section_3_writes(payload):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
+
+
+def _write_section_5(ws, payload):
+    for write in _build_section_5_writes(payload):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
 
 
 def export_to_excel(clear_cache=True):

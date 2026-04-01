@@ -1,3 +1,10 @@
+"""
+Backfill one-shot para reconstruir el mapeo historico de empresa/NIT por cÃ©dula
+en contrataciÃ³n incluyente.
+
+Se conserva por trazabilidad operativa; no forma parte del runtime de la app.
+"""
+
 import json
 import re
 import sys

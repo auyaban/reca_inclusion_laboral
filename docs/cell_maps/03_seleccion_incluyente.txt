@@ -1,0 +1,198 @@
+================================================================================
+TEMPLATE: seleccion_incluyente.xlsx
+FORMULARIO: Proceso de Seleccion Incluyente
+HOJA REAL: 4. PROCESO DE SELECCION INCLUYE
+================================================================================
+
+NOTAS GENERALES:
+- Fuente de verdad: runtime actual en
+  formularios/seleccion_incluyente/seleccion_incluyente.py,
+  template real seleccion_incluyente.xlsx y pruebas de contrato.
+- El export actual resuelve TEMPLATE_VARIANT_GROUP_2_PLUS para cualquier
+  section_2 no vacia. En la practica, 1 o mas oferentes usan layout grupal.
+- SECTION_2_INDIVIDUAL_CELL_MAP y SECTION_2_GROUP_FIRST_BLOCK_CELL_MAP hoy
+  coinciden en coordenadas utiles para escritura.
+- El bloque repetible de section_2 usa estas filas base:
+  - bloque 1: fila 16
+  - bloque 2: fila 77
+  - bloque 3: fila 138
+- section_5 se ubica en la fila 77 y section_6 en la fila 83.
+- El template trae celdas precargadas en A19 y G22. El runtime las sobreescribe.
+- La normalizacion de dropdowns ya no lee validaciones del XLSX en runtime.
+
+--------------------------------------------------------------------------------
+SECCION 1 - DATOS DE LA EMPRESA (Filas 7-13)
+--------------------------------------------------------------------------------
+
+PREGUNTA / CAMPO                        CELDA   TIPO
+--------------------------------------  ------  --------------------------------
+Fecha de la visita                      F7      Texto (fecha)
+Modalidad                               N7      Dropdown: Presencial | Virtual |
+                                                  Mixta | No aplica
+Nombre de la empresa                    F8      Texto (auto desde BD)
+Ciudad / Municipio                      N8      Texto (auto desde BD)
+Direccion de la empresa                 F9      Texto (auto desde BD)
+Numero de NIT                           N9      Texto (input manual)
+Correo electronico                      F10     Texto (auto desde BD)
+Telefonos                               N10     Texto (auto desde BD)
+Persona que atiende la visita           F11     Texto (auto desde BD)
+Cargo                                   N11     Texto (auto desde BD)
+Empresa afiliada a Caja de Comp.        F12     Texto (auto desde BD)
+Sede Compensar                          N12     Texto (auto desde BD)
+Asesor                                  F13     Texto (auto desde BD)
+Profesional asignado RECA               N13     Texto (auto desde BD)
+
+--------------------------------------------------------------------------------
+SECCION 2 - BLOQUE DEL OFERENTE
+--------------------------------------------------------------------------------
+
+Filas de referencia del template real:
+- A13 = 2. DESARROLLO DE LA ACTIVIDAD
+- A15 = 3. DATOS DEL OFERENTE
+- A16 = OFERENTE 1
+- primer dato escribible del bloque = fila 19
+
+Fila base efectiva del primer bloque:
+- numero / identificacion: fila 19
+- datos complementarios: filas 20-23
+- caracterizacion del oferente: desde fila 25
+
+PREGUNTA / CAMPO                        CELDA   TIPO
+--------------------------------------  ------  --------------------------------
+No. (numero)                            A19     Texto
+Nombre oferente                         C19     Texto
+Cedula                                  H19     Texto
+Certificado %                           K19     Texto / porcentaje segun formato
+Discapacidad                            L19     Dropdown canonico del formulario
+Telefono oferente                       O19     Texto
+Resultado certificado                   R19     Dropdown: Aprobado | No aprobado |
+                                                  Pendiente
+
+Cargo oferente                          A21     Texto
+Nombre contacto emergencia              F21     Texto
+Parentesco                              I21     Texto
+Telefono emergencia                     K21     Texto
+Fecha de nacimiento                     N21     Texto (fecha)
+Edad                                    S21     Texto
+
+Pendiente otros oferentes               G22     Dropdown: Si | No | Por Confirmar
+Lugar firma de contrato                 L22     Texto
+Fecha firma de contrato                 R22     Texto (fecha)
+
+Cuenta con pension                      I23     Dropdown: Si | No | Por Confirmar
+Tipo de pension                         Q23     Dropdown canonico del formulario
+
+Desarrollo de la actividad              A14     Texto largo compartido
+
+--------------------------------------------------------------------------------
+SECCION 2 - CARACTERIZACION DEL OFERENTE
+--------------------------------------------------------------------------------
+
+Condiciones medicas y de salud:
+- medicamentos: filas 28-30
+- alergias: filas 31-32
+- restriccion medica: filas 33-34
+- controles medicos: filas 35-37
+
+Habilidades basicas de la vida diaria:
+- desplazamiento: filas 39-41
+- ubicacion en la ciudad: filas 42-44
+- dinero: filas 45-48
+- presentacion personal: filas 49-50
+- comunicacion escrita: filas 51-52
+- comunicacion verbal: filas 53-54
+- toma de decisiones: filas 55-56
+- cuidado personal: filas 57-61
+- actividades instrumentales: filas 62-67
+- actividades avanzadas: filas 68-72
+- discriminacion y derechos: filas 73-76
+
+Campos criticos auditados:
+
+PREGUNTA / CAMPO                        CELDA   TIPO
+--------------------------------------  ------  --------------------------------
+Desplazamiento - nivel de apoyo         I39     Dropdown
+Desplazamiento - modo                   N39     Dropdown
+Desplazamiento - transporte             N40     Dropdown
+Desplazamiento - nota                   O41     Texto
+
+Ubicacion - nivel de apoyo              I42     Dropdown
+Ubicacion en la ciudad                  N42     Dropdown
+Manejo de aplicaciones                  N43     Dropdown
+Ubicacion - nota                        O44     Texto
+
+Dinero - nivel de apoyo                 I45     Dropdown
+Reconocimiento del dinero               N45     Dropdown
+Manejo del dinero                       N46     Dropdown
+Uso de medios electronicos              N47     Dropdown
+Dinero - nota                           O48     Texto
+
+Presentacion personal - nivel apoyo     I49     Dropdown
+Presentacion personal                   N49     Dropdown
+Presentacion personal - nota            O50     Texto
+
+Comunicacion escrita - nivel apoyo      I51     Dropdown
+Comunicacion escrita - apoyo            N51     Dropdown
+Comunicacion escrita - nota             O52     Texto
+
+Comunicacion verbal - nivel apoyo       I53     Dropdown
+Comunicacion verbal - apoyo             N53     Dropdown
+Comunicacion verbal - nota              O54     Texto
+
+Toma de decisiones - nivel apoyo        I55     Dropdown
+Toma de decisiones                      N55     Dropdown
+Toma de decisiones - nota               O56     Texto
+
+Aseo / alimentacion - nivel apoyo       I57     Dropdown
+Aseo / alimentacion                     N57     Dropdown
+Nota aseo                               O61     Texto
+
+Instrumentales - nivel apoyo            I62     Dropdown
+Instrumentales - actividad              N62     Dropdown
+Nota instrumentales                     O67     Texto
+
+Actividades avanzadas - nivel apoyo     I68     Dropdown
+Actividades avanzadas - apoyo           N68     Dropdown
+Nota actividades                        O72     Texto
+
+Discriminacion - nivel apoyo            I73     Dropdown
+Discriminacion                          N73     Dropdown
+Nota discriminacion                     O76     Texto
+
+--------------------------------------------------------------------------------
+SECCION 5 - AJUSTES RAZONABLES Y RECOMENDACIONES
+--------------------------------------------------------------------------------
+
+Fila titulo real: 77
+Nota del template:
+- A79 = NOTA:
+
+PREGUNTA / CAMPO                        CELDA
+--------------------------------------  ------
+Ajustes y recomendaciones               A78
+Nota                                    A79
+
+En modo grupal, estas filas se corren por bloques completos:
+- 1 oferente: section_5 en 77
+- 2 oferentes: section_5 en 138
+- 3 oferentes: section_5 en 199
+
+--------------------------------------------------------------------------------
+SECCION 6 - ASISTENTES
+--------------------------------------------------------------------------------
+
+Fila titulo real: 83
+Filas base del bloque: 2 en layout grupal efectivo.
+
+PREGUNTA / CAMPO                        COLUMNA TIPO
+--------------------------------------  ------  --------------------------------
+Nombre del asistente                    E       Texto
+Cargo del asistente                     M       Texto
+
+Filas iniciales efectivas:
+- 1 oferente: 84 y 85
+- 2 oferentes: 145 y 146
+
+================================================================================
+FIN DEL ARCHIVO
+================================================================================

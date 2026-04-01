@@ -507,13 +507,34 @@ SECTION_2_COL_MAP = {
 }
 
 # Fixed row positions from master Google Sheet (no dynamic search needed)
+SECTION_3_TITLE_ROW = 17
+SECTION_4_TITLE_ROW = 30
+SECTION_5_TITLE_ROW = 57
 SECTION_6_ANCHOR_ROW = 62
 SECTION_7_ANCHOR_ROW = 64
 SECTION_8_ANCHOR_ROW = 66
+SECTION_6_TITLE_ROW = 62
+SECTION_7_TITLE_ROW = 64
+SECTION_8_TITLE_ROW = 66
 SECTION_9_TITLE_ROW = 70
 SECTION_9_START_ROW = 71
 SECTION_9_NOMBRE_COL = "C"
 SECTION_9_CARGO_COL = "L"
+
+
+def ws_write(ws, cell, value):
+    try:
+        ws[cell] = value
+    except Exception:
+        return
+
+
+def _section_2_inserted_row_count(total_vinculados):
+    return max(0, int(total_vinculados or 0) - 1)
+
+
+def _row_after_section_2(base_row, total_vinculados):
+    return base_row + _section_2_inserted_row_count(total_vinculados)
 
 
 def register_form():
@@ -797,14 +818,15 @@ def _build_section_2_writes(payload):
     return writes
 
 
-def _build_section_3_writes(payload):
+def _build_section_3_writes(payload, total_vinculados=0):
     if not payload:
         return []
+    base_offset = _section_2_inserted_row_count(total_vinculados)
     writes = []
     for item in SECTION_3["items"]:
         item_id = item["id"]
         row_payload = payload.get(item_id, {}) if isinstance(payload, dict) else {}
-        target_row = item["row"]
+        target_row = item["row"] + base_offset
         ejecucion = (row_payload.get("ejecucion") or "").strip()
         observaciones = (row_payload.get("observaciones") or "").strip()
         if ejecucion:
@@ -814,17 +836,18 @@ def _build_section_3_writes(payload):
     return writes
 
 
-def _build_section_4_writes(payload):
+def _build_section_4_writes(payload, total_vinculados=0):
     if not payload:
         return []
     if not isinstance(payload, dict):
         return []
+    base_offset = _section_2_inserted_row_count(total_vinculados)
     writes = []
     item_payload = payload.get("items", {})
     note_payload = payload.get("notes", {})
     for block in SECTION_4["blocks"]:
         for item in block["items"]:
-            row = item["row"]
+            row = item["row"] + base_offset
             values = item_payload.get(item["id"], {})
             nivel = (values.get("nivel_apoyo") or "").strip()
             observaciones = (values.get("observaciones") or "").strip()
@@ -832,19 +855,20 @@ def _build_section_4_writes(payload):
                 writes.append({"range": f"'{SHEET_NAME}'!J{row}", "value": nivel})
             if observaciones:
                 writes.append({"range": f"'{SHEET_NAME}'!N{row}", "value": observaciones})
-        note_row = block["note_row"]
+        note_row = block["note_row"] + base_offset
         note_value = (note_payload.get(block["id"]) or "").strip()
         if note_value:
             writes.append({"range": f"'{SHEET_NAME}'!B{note_row}", "value": note_value})
     return writes
 
 
-def _build_section_5_writes(payload):
+def _build_section_5_writes(payload, total_vinculados=0):
     if not payload:
         return []
+    base_offset = _section_2_inserted_row_count(total_vinculados)
     writes = []
     for row_cfg in SECTION_5["rows"]:
-        row = row_cfg["row"]
+        row = row_cfg["row"] + base_offset
         values = payload.get(row_cfg["id"], {}) if isinstance(payload, dict) else {}
         nivel = (values.get("nivel_apoyo_requerido") or "").strip()
         observaciones = (values.get("observaciones") or "").strip()
@@ -855,39 +879,40 @@ def _build_section_5_writes(payload):
     return writes
 
 
-def _build_section_6_writes(payload):
+def _build_section_6_writes(payload, total_vinculados=0):
     if not payload:
         return []
     value = (payload.get("ajustes_requeridos") or "").strip()
     if not value:
         return []
-    return [{"range": f"'{SHEET_NAME}'!A{SECTION_6_ANCHOR_ROW + 1}", "value": value}]
+    return [{"range": f"'{SHEET_NAME}'!A{_row_after_section_2(SECTION_6_ANCHOR_ROW + 1, total_vinculados)}", "value": value}]
 
 
-def _build_section_7_writes(payload):
+def _build_section_7_writes(payload, total_vinculados=0):
     if not payload:
         return []
     fecha = (payload.get("fecha_primer_seguimiento") or "").strip()
     if not fecha:
         return []
-    return [{"range": f"'{SHEET_NAME}'!G{SECTION_7_ANCHOR_ROW + 1}", "value": fecha}]
+    return [{"range": f"'{SHEET_NAME}'!G{_row_after_section_2(SECTION_7_ANCHOR_ROW + 1, total_vinculados)}", "value": fecha}]
 
 
-def _build_section_8_writes(payload):
+def _build_section_8_writes(payload, total_vinculados=0):
     if not payload:
         return []
     texto = (payload.get("observaciones_recomendaciones") or "").strip()
     if not texto:
         return []
-    return [{"range": f"'{SHEET_NAME}'!A{SECTION_8_ANCHOR_ROW + 1}", "value": texto}]
+    return [{"range": f"'{SHEET_NAME}'!A{_row_after_section_2(SECTION_8_ANCHOR_ROW + 1, total_vinculados)}", "value": texto}]
 
 
-def _build_section_9_writes(payload):
+def _build_section_9_writes(payload, total_vinculados=0):
     if not payload:
         return []
+    start_row = _row_after_section_2(SECTION_9_START_ROW, total_vinculados)
     writes = []
     for idx, entry in enumerate(payload):
-        row = SECTION_9_START_ROW + idx
+        row = start_row + idx
         nombre = (entry.get("nombre") or "").strip()
         cargo = (entry.get("cargo") or "").strip()
         if nombre:
@@ -897,7 +922,69 @@ def _build_section_9_writes(payload):
     return writes
 
 
-def _build_section_9_row_insertions(payload):
+def _write_section_2(ws, payload):
+    for write in _build_section_2_writes(payload):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
+
+
+def _write_section_3(ws, payload, total_vinculados=0):
+    for write in _build_section_3_writes(payload, total_vinculados=total_vinculados):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
+
+
+def _write_section_4(ws, payload, total_vinculados=0):
+    for write in _build_section_4_writes(payload, total_vinculados=total_vinculados):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
+
+
+def _write_section_5(ws, payload, total_vinculados=0):
+    for write in _build_section_5_writes(payload, total_vinculados=total_vinculados):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
+
+
+def _write_section_6(ws, payload, total_vinculados=0):
+    for write in _build_section_6_writes(payload, total_vinculados=total_vinculados):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
+
+
+def _write_section_7(ws, payload, total_vinculados=0):
+    for write in _build_section_7_writes(payload, total_vinculados=total_vinculados):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
+
+
+def _write_section_8(ws, payload, total_vinculados=0):
+    for write in _build_section_8_writes(payload, total_vinculados=total_vinculados):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
+
+
+def _write_section_9(ws, payload, total_vinculados=0):
+    for write in _build_section_9_writes(payload, total_vinculados=total_vinculados):
+        cell = str(write.get("range") or "").rsplit("!", 1)[-1].replace("'", "")
+        ws_write(ws, cell, write.get("value", ""))
+
+
+def _build_section_2_row_insertions(payload):
+    total_rows = len(payload or [])
+    if total_rows <= 1:
+        return []
+    return [
+        {
+            "sheet_name": SHEET_NAME,
+            "start_row": SECTION_2_TEMPLATE_ROW,
+            "base_rows": 1,
+            "total_rows": total_rows,
+        }
+    ]
+
+
+def _build_section_9_row_insertions(payload, total_vinculados=0):
     if not payload:
         return []
     base_rows = int(SECTION_9.get("rows", 4) or 4)
@@ -907,7 +994,7 @@ def _build_section_9_row_insertions(payload):
     return [
         {
             "sheet_name": SHEET_NAME,
-            "start_row": SECTION_9_START_ROW,
+            "start_row": _row_after_section_2(SECTION_9_START_ROW, total_vinculados),
             "base_rows": base_rows,
             "total_rows": total_rows,
         }
@@ -953,18 +1040,21 @@ def export_to_excel(clear_cache=True):
 
     empresa_nombre = SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
     base_name = _sanitize_filename(empresa_nombre)
+    total_vinculados = len(FORM_CACHE.get("section_2", []) or [])
 
     writes = []
     writes.extend(_build_section_1_writes(FORM_CACHE.get("section_1", {})))
     writes.extend(_build_section_2_writes(FORM_CACHE.get("section_2", [])))
-    writes.extend(_build_section_3_writes(FORM_CACHE.get("section_3", {})))
-    writes.extend(_build_section_4_writes(FORM_CACHE.get("section_4", {})))
-    writes.extend(_build_section_5_writes(FORM_CACHE.get("section_5", {})))
-    writes.extend(_build_section_6_writes(FORM_CACHE.get("section_6", {})))
-    writes.extend(_build_section_7_writes(FORM_CACHE.get("section_7", {})))
-    writes.extend(_build_section_8_writes(FORM_CACHE.get("section_8", {})))
-    writes.extend(_build_section_9_writes(FORM_CACHE.get("section_9", [])))
-    row_insertions = _build_section_9_row_insertions(FORM_CACHE.get("section_9", []))
+    writes.extend(_build_section_3_writes(FORM_CACHE.get("section_3", {}), total_vinculados=total_vinculados))
+    writes.extend(_build_section_4_writes(FORM_CACHE.get("section_4", {}), total_vinculados=total_vinculados))
+    writes.extend(_build_section_5_writes(FORM_CACHE.get("section_5", {}), total_vinculados=total_vinculados))
+    writes.extend(_build_section_6_writes(FORM_CACHE.get("section_6", {}), total_vinculados=total_vinculados))
+    writes.extend(_build_section_7_writes(FORM_CACHE.get("section_7", {}), total_vinculados=total_vinculados))
+    writes.extend(_build_section_8_writes(FORM_CACHE.get("section_8", {}), total_vinculados=total_vinculados))
+    writes.extend(_build_section_9_writes(FORM_CACHE.get("section_9", []), total_vinculados=total_vinculados))
+    row_insertions = []
+    row_insertions.extend(_build_section_2_row_insertions(FORM_CACHE.get("section_2", [])))
+    row_insertions.extend(_build_section_9_row_insertions(FORM_CACHE.get("section_9", []), total_vinculados=total_vinculados))
 
     result = publish_sheet_from_template(
         template_id=get_master_template_id(),

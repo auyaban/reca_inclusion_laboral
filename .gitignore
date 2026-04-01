@@ -28,6 +28,14 @@ installer/*.7z
 # Local/runtime
 logs/
 *.log
+.cache/
+Inclusion laboral logs/
+
+# Test/dev local artifacts
+.pytest_cache/
+tmp_*/
+smoke_test_*.py
+templates/~$*.xlsx
 
 # OS/IDE
 .vscode/
@@ -38,3 +46,8 @@ Thumbs.db
 # Supabase local temp
 supabase/.temp/
 scripts/smoke_condiciones_vacante.py
+
+# Legacy experimental Labs flows (kept only as local legacy assets if needed)
+formularios/seleccion_incluyente_labs/
+docs/labs_selection_section2/
+supabase/functions/selection-section2-extract/

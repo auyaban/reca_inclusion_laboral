@@ -1,0 +1,138 @@
+================================================================================
+TEMPLATE: evaluacion_accesibilidad.xlsx
+FORMULARIO: Evaluacion de Accesibilidad
+HOJA REAL: 2. EVALUACION DE ACCESIBILIDAD
+================================================================================
+
+NOTAS GENERALES:
+- Fuente de verdad: EXCEL_MAPPING en
+  formularios/evaluacion_programa/evaluacion_accesibilidad.py,
+  template real y pruebas de contrato.
+- El formulario tiene export local a XLSX y payload estructurado para Google
+  Sheets; esta documentacion describe el layout real del template .xlsx.
+- section_8 usa start_row=212, name_col=C, cargo_col=O y base_rows=4.
+- La hoja 2.1 EVALUACION FOTOS existe en el workbook, pero no forma parte del
+  mapping principal de respuestas.
+
+--------------------------------------------------------------------------------
+SECCION 1 - DATOS GENERALES (Filas 7-13)
+--------------------------------------------------------------------------------
+
+PREGUNTA / CAMPO                        CELDA
+--------------------------------------  ------
+Fecha de la visita                      D7
+Modalidad                               P7
+Nombre de la empresa                    D8
+Ciudad / Municipio                      P8
+Direccion de la empresa                 D9
+Numero de NIT                           P9
+Correo electronico                      D10
+Telefonos                               P10
+Persona que atiende la visita           D11
+Cargo                                   P11
+Empresa afiliada a Caja de Comp.        D12
+Sede Compensar                          P12
+Asesor                                  D13
+Profesional asignado RECA               P13
+
+--------------------------------------------------------------------------------
+SECCION 2 - ACCESIBILIDAD FISICA
+--------------------------------------------------------------------------------
+
+Patron general:
+- columna M = respuesta principal
+- columnas P / Q = detalle, observacion o segunda seleccion
+
+Subsecciones y rangos efectivos:
+- 2.1 movilidad y urbanisticas: filas 17-26
+- 2.2 accesibilidad general: filas 28-69
+- 2.3 discapacidad fisica: filas 71-103
+- 2.4 sensorial visual/auditiva: filas 105-141
+- 2.5 intelectual / TEA: filas 143-152
+- 2.6 psicosocial: filas 154-155
+
+Ejemplos de celdas auditadas:
+- transporte_publico_accesible: M17
+- transporte_publico_observaciones: Q17
+- areas_administrativa_operativa_accesible: M28
+- evaluacion_ergonomica_puestos: P38
+- ajustes_razonables_individualizados: P102 / Q103
+- ajustes_psicosocial: P154 / Q155
+
+--------------------------------------------------------------------------------
+SECCION 3 - CONDICIONES ORGANIZACIONALES
+--------------------------------------------------------------------------------
+
+Rango efectivo: filas 157-177
+Patron:
+- columna M = respuesta principal
+- columnas P / Q = detalle u observacion
+
+Ejemplos:
+- experiencia en vinculacion PcD: M157 / Q157
+- politica de diversidad e inclusion: M162 / P162
+- ajustes razonables empresa: M167 / P167:P170
+- protocolo emergencias PcD: M171 / P171:P173
+
+--------------------------------------------------------------------------------
+SECCION 4 - CONCEPTO DE LA EVALUACION
+--------------------------------------------------------------------------------
+
+PREGUNTA / CAMPO                        CELDA
+--------------------------------------  ------
+Nivel de accesibilidad                  M180
+
+--------------------------------------------------------------------------------
+SECCION 5 - AJUSTES RAZONABLES
+--------------------------------------------------------------------------------
+
+Patron por tipo de discapacidad:
+- aplica: G{fila}
+- ajuste: K{fila}
+- nota: A{fila_nota}
+
+Filas efectivas:
+- fisica: G186 / K186 / A187
+- fisica USR: G188 / K188 / A189
+- auditiva: G190 / K190 / A191
+- visual: G192 / K192 / A193
+- intelectual: G194 / K194 / A195
+- TEA: G196 / K196 / A197
+- psicosocial: G198 / K198 / A199
+- visual baja vision: G200 / K200 / A201
+- auditiva hipoacusia: G202 / K202 / A203
+
+--------------------------------------------------------------------------------
+SECCION 6 - OBSERVACIONES GENERALES
+--------------------------------------------------------------------------------
+
+Fila titulo real: 204
+Celda efectiva de texto:
+- A205
+
+--------------------------------------------------------------------------------
+SECCION 7 - CARGOS COMPATIBLES
+--------------------------------------------------------------------------------
+
+Fila titulo real: 206
+Celda efectiva de texto:
+- A208
+
+--------------------------------------------------------------------------------
+SECCION 8 - ASISTENTES
+--------------------------------------------------------------------------------
+
+Fila titulo real: 211
+Fila inicial: 212
+Filas base: 4
+
+PREGUNTA / CAMPO                        COLUMNA
+--------------------------------------  -------
+Etiqueta nombre                         A
+Nombre del asistente                    C
+Etiqueta cargo                          N
+Cargo del asistente                     O
+
+================================================================================
+FIN DEL ARCHIVO
+================================================================================

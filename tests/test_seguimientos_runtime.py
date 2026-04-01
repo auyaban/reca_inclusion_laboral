@@ -6,17 +6,12 @@ from unittest.mock import ANY, Mock, patch
 
 import app
 from formularios.seguimientos import seguimientos
+from tests.tk_test_utils import TkTestCase, destroy_widget
 
 
-class _TkTestCase(unittest.TestCase):
+class _TkTestCase(TkTestCase):
     def setUp(self) -> None:
-        try:
-            self.root = tk.Tk()
-        except tk.TclError as exc:
-            self.skipTest(f"Tk no disponible: {exc}")
-        self.root.withdraw()
-        self.addCleanup(self._cleanup_root)
-
+        super().setUp()
         patchers = [
             patch.object(app, "_maximize_window", lambda _window: None),
             patch.object(app.messagebox, "showerror", return_value=None),
@@ -26,14 +21,6 @@ class _TkTestCase(unittest.TestCase):
         for patcher in patchers:
             patcher.start()
             self.addCleanup(patcher.stop)
-
-    def _cleanup_root(self) -> None:
-        try:
-            for child in self.root.winfo_children():
-                child.destroy()
-            self.root.destroy()
-        except Exception:
-            pass
 
 
 class SeguimientosRuntimeTests(_TkTestCase):
@@ -59,7 +46,7 @@ class SeguimientosRuntimeTests(_TkTestCase):
     def test_bind_form_runtime_skips_generic_autosave_for_seguimientos(self) -> None:
         with patch.object(seguimientos, "get_usuarios_reca_cedulas", return_value=[]):
             window = app.SeguimientosWindow(self.root)
-        self.addCleanup(lambda: window.winfo_exists() and window.destroy())
+        self.addCleanup(destroy_widget, window)
 
         class HubStub:
             _empresa_names_cache = []
@@ -167,7 +154,7 @@ class SeguimientosRuntimeTests(_TkTestCase):
             self.addCleanup(patcher.stop)
 
         editor = app.SeguimientoEditorWindow(self.root, case_path="", case_record=case_record)
-        self.addCleanup(lambda: editor.winfo_exists() and editor.destroy())
+        self.addCleanup(destroy_widget, editor)
 
         self.assertEqual(editor.sheet_var.get(), base_sheet)
         self.assertEqual(editor.base_vars["nombre_empresa"].get(), "Empresa Demo")

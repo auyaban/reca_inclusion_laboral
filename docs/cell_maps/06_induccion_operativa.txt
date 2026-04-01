@@ -1,0 +1,130 @@
+================================================================================
+TEMPLATE: induccion_operativa.xlsx
+FORMULARIO: Induccion Operativa
+HOJA REAL: 7. INDUCCION OPERATIVA
+================================================================================
+
+NOTAS GENERALES:
+- Fuente de verdad: runtime actual en
+  formularios/induccion_operativa/induccion_operativa.py,
+  template real y pruebas de contrato.
+- section_2 inserta filas desde la fila 17. Cada vinculado adicional corre en
+  +1 todas las secciones siguientes.
+- Filas titulo base:
+  - section_3: 17
+  - section_4: 30
+  - section_5: 57
+  - section_6: 62
+  - section_7: 64
+  - section_8: 66
+  - section_9: 70
+
+--------------------------------------------------------------------------------
+SECCION 1 - DATOS GENERALES (Filas 7-13)
+--------------------------------------------------------------------------------
+
+PREGUNTA / CAMPO                        CELDA
+--------------------------------------  ------
+Fecha de la visita                      E7
+Modalidad                               M7
+Nombre de la empresa                    E8
+Ciudad / Municipio                      M8
+Direccion de la empresa                 E9
+Numero de NIT                           M9
+Correo electronico                      E10
+Telefonos                               M10
+Persona que atiende la visita           E11
+Cargo                                   M11
+Empresa afiliada a Caja de Comp.        E12
+Sede Compensar                          M12
+Asesor                                  E13
+Profesional asignado RECA               M13
+
+--------------------------------------------------------------------------------
+SECCION 2 - DATOS DEL VINCULADO
+--------------------------------------------------------------------------------
+
+Fila inicial de escritura: 16
+Columnas efectivas:
+- numero: A
+- nombre_oferente: B
+- cedula: H
+- telefono_oferente: M
+- cargo_oferente: P
+
+--------------------------------------------------------------------------------
+SECCION 3 - DESARROLLO DEL PROCESO
+--------------------------------------------------------------------------------
+
+Rango base de items: filas 19-29
+Columnas efectivas:
+- ejecucion: H
+- observaciones: K
+
+--------------------------------------------------------------------------------
+SECCION 4 - HABILIDADES SOCIOEMOCIONALES
+--------------------------------------------------------------------------------
+
+Cada item escribe:
+- nivel_apoyo: J{fila}
+- observaciones: N{fila}
+
+Cada bloque escribe su nota en:
+- B{note_row}
+
+Las filas base vienen de SECTION_4["blocks"] y se corren por las filas extra de
+section_2.
+
+--------------------------------------------------------------------------------
+SECCION 5 - NIVEL DE APOYO REQUERIDO
+--------------------------------------------------------------------------------
+
+Filas base efectivas:
+- 59: condiciones medicas y de salud
+- 60: habilidades basicas de la vida diaria
+- 61: habilidades socioemocionales
+
+Columnas efectivas:
+- nivel_apoyo_requerido: H
+- observaciones: M
+
+--------------------------------------------------------------------------------
+SECCION 6 - AJUSTES RAZONABLES REQUERIDOS
+--------------------------------------------------------------------------------
+
+Fila titulo base: 62
+Celda efectiva:
+- A63
+
+--------------------------------------------------------------------------------
+SECCION 7 - PRIMER SEGUIMIENTO ESTABLECIDO
+--------------------------------------------------------------------------------
+
+Fila titulo base: 64
+Celda efectiva:
+- G65
+
+--------------------------------------------------------------------------------
+SECCION 8 - OBSERVACIONES / RECOMENDACIONES
+--------------------------------------------------------------------------------
+
+Fila titulo base: 66
+Celda efectiva:
+- A67
+
+--------------------------------------------------------------------------------
+SECCION 9 - ASISTENTES
+--------------------------------------------------------------------------------
+
+Fila titulo base: 70
+Fila inicial de asistentes: 71
+Filas base: 4
+
+PREGUNTA / CAMPO                        COLUMNA
+--------------------------------------  -------
+Nombre del asistente                    C
+Cargo del asistente                     L
+
+================================================================================
+FIN DEL ARCHIVO
+================================================================================

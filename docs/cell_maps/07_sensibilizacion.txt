@@ -1,0 +1,72 @@
+================================================================================
+TEMPLATE: sensibilizacion.xlsx
+FORMULARIO: Sensibilizacion
+HOJA REAL: 8. SENSIBILIZACION
+================================================================================
+
+NOTAS GENERALES:
+- Fuente de verdad: runtime actual en formularios/sensibilizacion/sensibilizacion.py
+  y template real.
+- El runtime resuelve la hoja por normalizacion, porque el workbook real tiene
+  tilde y espacio final en el nombre.
+- Filas titulo efectivas:
+  - section_3: 25
+  - section_5: 31
+
+--------------------------------------------------------------------------------
+SECCION 1 - DATOS DE LA EMPRESA (Filas 7-12)
+--------------------------------------------------------------------------------
+
+PREGUNTA / CAMPO                        CELDA
+--------------------------------------  ------
+Fecha de la visita                      D7
+Modalidad                               N7
+Nombre de la empresa                    D8
+Ciudad / Municipio                      N8
+Direccion de la empresa                 D9
+Numero de NIT                           N9
+Correo electronico                      D10
+Telefonos                               N10
+Persona que atiende la visita           D11
+Cargo                                   N11
+Asesor                                  D12
+Sede Compensar                          N12
+
+--------------------------------------------------------------------------------
+SECCION 2 - PRESENTACION DE LOS TEMAS
+--------------------------------------------------------------------------------
+
+Contenido fijo del template.
+No hay escritura de celdas por parte del runtime.
+
+--------------------------------------------------------------------------------
+SECCION 3 - OBSERVACIONES
+--------------------------------------------------------------------------------
+
+Fila titulo base: 25
+Celda efectiva:
+- A26
+
+--------------------------------------------------------------------------------
+SECCION 4 - REGISTRO FOTOGRAFICO
+--------------------------------------------------------------------------------
+
+Contenido fijo del template.
+No hay escritura de celdas por parte del runtime.
+
+--------------------------------------------------------------------------------
+SECCION 5 - ASISTENTES
+--------------------------------------------------------------------------------
+
+Fila titulo base: 31
+Fila inicial de asistentes: 32
+Filas base: 4
+
+PREGUNTA / CAMPO                        COLUMNA
+--------------------------------------  -------
+Nombre del asistente                    C
+Cargo del asistente                     K
+
+================================================================================
+FIN DEL ARCHIVO
+================================================================================

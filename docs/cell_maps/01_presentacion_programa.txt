@@ -1,0 +1,83 @@
+================================================================================
+TEMPLATES: presentación_programa.xlsx / reactivacion_programa.xlsx
+FORMULARIO: Presentacion / Reactivacion del Programa de Inclusion Laboral
+HOJA REAL: 1.PRESENTACION DEL PROGRAMA IL
+================================================================================
+
+NOTAS GENERALES:
+- Fuente de verdad: runtime actual en
+  formularios/presentacion_programa/presentacion_programa.py y templates reales.
+- Los dos templates comparten el mismo layout.
+- El tipo de visita no escribe celda; solo decide que template se copia.
+- El bloque de asistentes inicia en la fila 53 y tiene 3 filas base.
+
+--------------------------------------------------------------------------------
+SECCION 1 - DATOS GENERALES (Filas 7-14)
+--------------------------------------------------------------------------------
+
+PREGUNTA / CAMPO                        CELDA
+--------------------------------------  ------
+Fecha de la visita                      D7
+Modalidad                               Q7
+Nombre de la empresa                    D8
+Ciudad / Municipio                      Q8
+Direccion de la empresa                 D9
+Numero de NIT                           Q9
+Correo electronico                      D10
+Telefonos                               Q10
+Persona que atiende la visita           D11
+Cargo                                   Q11
+Empresa afiliada a Caja de Comp.        D12
+Sede Compensar                          Q12
+Profesional asignado RECA               D13
+Correo profesional                      Q13
+Asesor                                  D14
+Correo asesor                           Q14
+
+--------------------------------------------------------------------------------
+SECCION 2 - TEMARIO
+--------------------------------------------------------------------------------
+
+Contenido fijo del template.
+No hay escritura de celdas por parte del runtime.
+
+--------------------------------------------------------------------------------
+SECCION 3 - MOTIVACION EMPRESARIAL
+--------------------------------------------------------------------------------
+
+Subseccion editable por checkboxes:
+
+PREGUNTA / CAMPO                        CELDA
+--------------------------------------  ------
+Responsabilidad Social Empresarial      U38
+Objetivos y metas diversidad/inclusion  U39
+Avances globales en Colombia            U40
+Beneficios tributarios                  U41
+Beneficios contratacion poblacion       U42
+Ventaja en licitaciones publicas        U43
+Cumplimiento normativo                  U44
+Experiencia vinculacion PcD             U45
+
+--------------------------------------------------------------------------------
+SECCION 4 - ACUERDOS Y OBSERVACIONES
+--------------------------------------------------------------------------------
+
+PREGUNTA / CAMPO                        CELDA
+--------------------------------------  ------
+Acuerdos y observaciones                A49
+
+--------------------------------------------------------------------------------
+SECCION 5 - ASISTENTES
+--------------------------------------------------------------------------------
+
+Fila inicial de asistentes: 53
+Filas base: 3
+
+PREGUNTA / CAMPO                        COLUMNA
+--------------------------------------  -------
+Nombre del asistente                    C
+Cargo del asistente                     N
+
+================================================================================
+FIN DEL ARCHIVO
+================================================================================

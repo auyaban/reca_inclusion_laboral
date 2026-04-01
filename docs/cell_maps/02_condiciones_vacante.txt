@@ -1,0 +1,149 @@
+================================================================================
+TEMPLATE: revision_condicion.xlsx
+FORMULARIO: Condiciones de Vacante
+HOJA REAL: 3. REVISION DE LAS CONDICIONES
+================================================================================
+
+NOTAS GENERALES:
+- Fuente de verdad: runtime actual en formularios/condiciones_vacante/condiciones_vacante.py,
+  template real y pruebas del repo.
+- section_6 inicia en la fila 153 y tiene 4 filas base.
+- section_7 usa titulo fijo en fila 158 y escribe el texto en la fila siguiente.
+- section_8 usa titulo fijo en fila 160 y asistentes desde la fila 161.
+
+--------------------------------------------------------------------------------
+SECCION 1 - DATOS GENERALES (Filas 7-13)
+--------------------------------------------------------------------------------
+
+PREGUNTA / CAMPO                        CELDA
+--------------------------------------  ------
+Fecha de la visita                      F7
+Modalidad                               N7
+Nombre de la empresa                    F8
+Ciudad / Municipio                      N8
+Direccion de la empresa                 F9
+Numero de NIT                           N9
+Correo electronico                      F10
+Telefonos                               N10
+Persona que atiende la visita           F11
+Cargo                                   N11
+Empresa afiliada a Caja de Comp.        F12
+Sede Compensar                          N12
+Asesor                                  F13
+Profesional asignado RECA               N13
+
+--------------------------------------------------------------------------------
+SECCION 2 - CARACTERISTICAS DE LA VACANTE
+--------------------------------------------------------------------------------
+
+PREGUNTA / CAMPO                        CELDA
+--------------------------------------  ------
+Nombre de la vacante                    I15
+Numero de vacantes                      I16
+Nivel del cargo                         I17
+Genero                                  I18
+Edad                                    I19
+Modalidad de trabajo                    I20
+Lugar de trabajo                        I21
+Salario asignado                        I22
+Firma de contrato                       I23
+Aplicacion de pruebas                   I24
+Tipo de contrato                        I25
+Beneficios adicionales                  I26
+Cargo flexible segun genero             I27
+Beneficios para mujeres                 I28
+Requiere certificado                    I29
+Obs. certificado                        M29
+Competencia 1                           I30
+Competencia 2                           L30
+Competencia 3                           I31
+Competencia 4                           L31
+Competencia 5                           I32
+Competencia 6                           L32
+Competencia 7                           I33
+Competencia 8                           L33
+
+--------------------------------------------------------------------------------
+SECCION 2.1 - FORMACION, HORARIOS Y EXPERIENCIA
+--------------------------------------------------------------------------------
+
+CHECKBOXES de nivel academico:
+- G36, L36, R36, G37, L37, R37
+
+Campos de texto / dropdown:
+- especificaciones_formacion: I39
+- conocimientos_basicos: I40
+- horarios_asignados: I42
+- hora_ingreso: I43
+- hora_salida: I44
+- tiempo_almuerzo: I45
+- break_descanso: I46
+- dias_laborables: I47
+- dias_flexibles: I48
+- observaciones: I49
+- experiencia_meses: I50
+- funciones_tareas: A53
+- herramientas_equipos: A59
+
+--------------------------------------------------------------------------------
+SECCION 3 - HABILIDADES Y CAPACIDADES
+--------------------------------------------------------------------------------
+
+Rango efectivo:
+- habilidades cognitivas: L64-L75 y E76
+- motricidad fina: L80-L84 y E85
+- motricidad gruesa: L89-L91 y E92
+- competencias transversales: L96-L106 y E107
+
+--------------------------------------------------------------------------------
+SECCION 4 - POSTURAS Y MOVIMIENTOS
+--------------------------------------------------------------------------------
+
+Columnas efectivas:
+- tiempo: H111-H115
+- frecuencia: L111-L115
+
+--------------------------------------------------------------------------------
+SECCION 5 - PELIGROS Y RIESGOS
+--------------------------------------------------------------------------------
+
+Rango efectivo:
+- respuestas principales: M120-M149
+- observaciones: E150
+
+--------------------------------------------------------------------------------
+SECCION 6 - DISCAPACIDADES Y DESCRIPCIONES
+--------------------------------------------------------------------------------
+
+Fila inicial: 153
+Filas base: 4
+
+PREGUNTA / CAMPO                        COLUMNA
+--------------------------------------  -------
+Tipo de discapacidad                    A
+Descripcion / observacion               L
+
+--------------------------------------------------------------------------------
+SECCION 7 - OBSERVACIONES / RECOMENDACIONES
+--------------------------------------------------------------------------------
+
+Fila titulo: 158
+Celda efectiva de texto:
+- A159
+
+--------------------------------------------------------------------------------
+SECCION 8 - ASISTENTES
+--------------------------------------------------------------------------------
+
+Fila titulo: 160
+Fila inicial: 161
+Filas base: 3
+
+PREGUNTA / CAMPO                        COLUMNA
+--------------------------------------  -------
+Nombre del asistente                    E
+Cargo del asistente                     L
+
+================================================================================
+FIN DEL ARCHIVO
+================================================================================

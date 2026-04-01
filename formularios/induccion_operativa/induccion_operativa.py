@@ -507,7 +507,13 @@ EXCEL_MAPPING = {
     }
 }
 SECTION_2_TEMPLATE_ROW = 16
-SECTION_2_ANCHOR = "3. DESARROLLO DEL PROCESO DE INDUCCION OPERATIVA"
+SECTION_3_TITLE_ROW = 17
+SECTION_4_TITLE_ROW = 30
+SECTION_5_TITLE_ROW = 57
+SECTION_6_TITLE_ROW = 62
+SECTION_7_TITLE_ROW = 64
+SECTION_8_TITLE_ROW = 66
+SECTION_9_TITLE_ROW = 70
 SECTION_2_COL_MAP = {
     "numero": "A",
     "nombre_oferente": "B",
@@ -837,6 +843,14 @@ def _insert_vinculado_row(ws, insert_at):
     ws.Rows(insert_at).RowHeight = ws.Rows(SECTION_2_TEMPLATE_ROW).RowHeight
 
 
+def _section_2_inserted_row_count(total_vinculados):
+    return max(0, int(total_vinculados or 0) - 1)
+
+
+def _row_after_section_2(base_row, total_vinculados):
+    return base_row + _section_2_inserted_row_count(total_vinculados)
+
+
 def _write_section_1(ws, payload):
     if not payload:
         payload = SECTION_1_CACHE
@@ -851,11 +865,10 @@ def _write_section_1(ws, payload):
 def _write_section_2(ws, payload):
     if not payload:
         return
-    anchor_row = _find_row_by_text(ws, SECTION_2_ANCHOR)
     total = len(payload)
     if total > 1:
         for _ in range(total - 1):
-            _insert_vinculado_row(ws, anchor_row)
+            _insert_vinculado_row(ws, SECTION_3_TITLE_ROW)
     for idx, row_data in enumerate(payload):
         target_row = SECTION_2_TEMPLATE_ROW + idx
         for field_id, col in SECTION_2_COL_MAP.items():
@@ -865,11 +878,10 @@ def _write_section_2(ws, payload):
             ws_write(ws, f"{col}{target_row}", value)
 
 
-def _write_section_3(ws, payload):
+def _write_section_3(ws, payload, total_vinculados=0):
     if not payload:
         return
-    section_anchor_row = _find_row_by_text(ws, SECTION_2_ANCHOR)
-    base_offset = section_anchor_row - 17
+    base_offset = _section_2_inserted_row_count(total_vinculados)
     for item in SECTION_3["items"]:
         item_id = item["id"]
         row_payload = payload.get(item_id, {}) if isinstance(payload, dict) else {}
@@ -882,11 +894,10 @@ def _write_section_3(ws, payload):
             ws_write(ws, f"K{target_row}", observaciones)
 
 
-def _write_section_4(ws, payload):
+def _write_section_4(ws, payload, total_vinculados=0):
     if not payload:
         return
-    section_4_anchor_row = _find_row_by_text(ws, "4. HABILIDADES SOCIOEMOCIONALES")
-    base_offset = section_4_anchor_row - 30
+    base_offset = _section_2_inserted_row_count(total_vinculados)
     if not isinstance(payload, dict):
         return
     item_payload = payload.get("items", {})
@@ -907,11 +918,10 @@ def _write_section_4(ws, payload):
             ws_write(ws, f"B{note_row}", note_value)
 
 
-def _write_section_5(ws, payload):
+def _write_section_5(ws, payload, total_vinculados=0):
     if not payload:
         return
-    section_5_anchor_row = _find_row_by_text(ws, "5. NIVEL DE APOYO REQUERIDO")
-    base_offset = section_5_anchor_row - 57
+    base_offset = _section_2_inserted_row_count(total_vinculados)
     for row_cfg in SECTION_5["rows"]:
         row = row_cfg["row"] + base_offset
         values = payload.get(row_cfg["id"], {}) if isinstance(payload, dict) else {}
@@ -923,37 +933,34 @@ def _write_section_5(ws, payload):
             ws_write(ws, f"M{row}", observaciones)
 
 
-def _write_section_6(ws, payload):
+def _write_section_6(ws, payload, total_vinculados=0):
     if not payload:
         return
-    anchor = _find_row_by_text(ws, "6. AJUSTES RAZONABLES REQUERIDOS")
     value = (payload.get("ajustes_requeridos") or "").strip()
     if value:
-        ws_write(ws, f"A{anchor + 1}", value)
+        ws_write(ws, f"A{_row_after_section_2(SECTION_6_TITLE_ROW + 1, total_vinculados)}", value)
 
 
-def _write_section_7(ws, payload):
+def _write_section_7(ws, payload, total_vinculados=0):
     if not payload:
         return
-    anchor = _find_row_by_text(ws, "7. PRIMER SEGUIMIENTO ESTABLECIDO PARA EL VINCULADO")
     fecha = (payload.get("fecha_primer_seguimiento") or "").strip()
     if fecha:
-        ws_write(ws, f"G{anchor + 1}", fecha)
+        ws_write(ws, f"G{_row_after_section_2(SECTION_7_TITLE_ROW + 1, total_vinculados)}", fecha)
 
 
-def _write_section_8(ws, payload):
+def _write_section_8(ws, payload, total_vinculados=0):
     if not payload:
         return
-    anchor = _find_row_by_text(ws, "8. OBSERVACIONES /RECOMENDACIONES")
     texto = (payload.get("observaciones_recomendaciones") or "").strip()
     if texto:
-        ws_write(ws, f"A{anchor + 1}", texto)
+        ws_write(ws, f"A{_row_after_section_2(SECTION_8_TITLE_ROW + 1, total_vinculados)}", texto)
 
 
-def _write_section_9(ws, payload):
+def _write_section_9(ws, payload, total_vinculados=0):
     if not payload:
         return
-    title_row = _find_row_by_text(ws, "9.ASISTENTES")
+    title_row = _row_after_section_2(SECTION_9_TITLE_ROW, total_vinculados)
     start_row = title_row + 1
     base_rows = SECTION_9["rows"]
     total = len(payload)
@@ -1023,15 +1030,16 @@ def export_to_excel(clear_cache=True):
     try:
         wb = excel.Workbooks.Open(output_path)
         ws = _get_sheet_by_name(wb)
+        total_vinculados = len(FORM_CACHE.get("section_2", []) or [])
         _write_section_1(ws, FORM_CACHE.get("section_1", {}))
         _write_section_2(ws, FORM_CACHE.get("section_2", []))
-        _write_section_3(ws, FORM_CACHE.get("section_3", {}))
-        _write_section_4(ws, FORM_CACHE.get("section_4", {}))
-        _write_section_5(ws, FORM_CACHE.get("section_5", {}))
-        _write_section_6(ws, FORM_CACHE.get("section_6", {}))
-        _write_section_7(ws, FORM_CACHE.get("section_7", {}))
-        _write_section_8(ws, FORM_CACHE.get("section_8", {}))
-        _write_section_9(ws, FORM_CACHE.get("section_9", []))
+        _write_section_3(ws, FORM_CACHE.get("section_3", {}), total_vinculados=total_vinculados)
+        _write_section_4(ws, FORM_CACHE.get("section_4", {}), total_vinculados=total_vinculados)
+        _write_section_5(ws, FORM_CACHE.get("section_5", {}), total_vinculados=total_vinculados)
+        _write_section_6(ws, FORM_CACHE.get("section_6", {}), total_vinculados=total_vinculados)
+        _write_section_7(ws, FORM_CACHE.get("section_7", {}), total_vinculados=total_vinculados)
+        _write_section_8(ws, FORM_CACHE.get("section_8", {}), total_vinculados=total_vinculados)
+        _write_section_9(ws, FORM_CACHE.get("section_9", []), total_vinculados=total_vinculados)
         sanitize_logo_error_cells(wb)
         autofit_rows(ws, log_fn=_log_excel)
         wb.Save()

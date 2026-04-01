@@ -1,0 +1,130 @@
+================================================================================
+TEMPLATE: seguimientos.xlsx
+FORMULARIO: Seguimientos al Proceso de Inclusion Laboral
+HOJAS REALES:
+- Base legacy: 9.  SEGUIMIENTO AL PROCESO DE I
+- Base soportada por runtime: 9.  SEGUIMIENTO AL PROCESO DE INCLUSION LABORAL
+- Seguimientos: SEGUIMIENTO PROCESO IL 1..6
+- Resumen: PONDERADO FINAL
+================================================================================
+
+NOTAS GENERALES:
+- Fuente de verdad: formularios/seguimientos/seguimientos.py y workbook real.
+- El workbook actual trae como hoja base real la version legacy
+  "9.  SEGUIMIENTO AL PROCESO DE I".
+- El runtime soporta tanto la hoja base legacy como la hoja larga
+  "9.  SEGUIMIENTO AL PROCESO DE INCLUSION LABORAL".
+- El runtime actual escribe en tres destinos:
+  - hoja base
+  - hojas SEGUIMIENTO PROCESO IL X
+  - hoja PONDERADO FINAL
+- Ademas crea/usa la hoja oculta _META_IL.
+
+--------------------------------------------------------------------------------
+HOJA BASE - DATOS DE LA EMPRESA Y DEL VINCULADO
+--------------------------------------------------------------------------------
+
+Fuente: _build_base_sheet_updates(...)
+
+PREGUNTA / CAMPO                        CELDA   TIPO
+--------------------------------------  ------  --------------------------------
+Fecha de la visita                      D8      Texto (fecha)
+Modalidad                               R8      Dropdown
+Nombre de la empresa                    D9      Texto
+Ciudad / Municipio                      R9      Texto
+Direccion de la empresa                 D10     Texto
+Numero de NIT                           R10     Texto
+Correo electronico                      D11     Texto
+Telefonos                               R11     Texto
+Persona que atiende la visita           D12     Texto
+Cargo                                   R12     Texto
+Asesor                                  D13     Texto
+Sede Compensar                          R13     Texto
+
+Nombre del vinculado                    A16     Texto
+Cedula                                  E16     Texto
+Telefono vinculado                      I16     Texto
+Correo vinculado                        K16     Texto
+Contacto emergencia                     P16     Texto
+Parentesco                              S16     Texto
+Telefono emergencia                     U16     Texto
+
+Cargo vinculado                         A18     Texto
+Certificado discapacidad                E18     Dropdown: Si | No | No aplica
+Certificado porcentaje                  I18     Texto
+Discapacidad                            N18     Texto / dropdown canonico
+Tipo de contrato                        C20     Texto
+Fecha inicio contrato                   M20     Texto (fecha)
+Fecha fin contrato                      T20     Texto (fecha)
+Apoyos y ajustes                        A21     Texto largo
+
+Funciones 1-5                           B23:B27
+Funciones 6-10                          N23:N27
+Fechas seguimiento 1-3                  C29:C31
+Fechas seguimiento 4-6                  P29:P31
+
+--------------------------------------------------------------------------------
+HOJAS SEGUIMIENTO PROCESO IL X
+--------------------------------------------------------------------------------
+
+Fuente: _build_followup_sheet_updates(...)
+
+PREGUNTA / CAMPO                        RANGO / CELDA
+--------------------------------------  ----------------------------------------
+Modalidad                               E8
+Numero de seguimiento                   P8
+Observaciones por item                  G12:G30
+Autoevaluacion por item                 O12:O30
+Evaluacion empresa por item             R12:R30
+Tipo de apoyo                           J31
+Evaluacion empresa (bloque empresa)     J34:J41
+Observacion empresa                     L34:L41
+Situacion encontrada                    A43
+Estrategias y ajustes                   A45
+Asistentes - nombre                     D47:D50
+Asistentes - cargo                      N47:N50
+
+--------------------------------------------------------------------------------
+HOJA PONDERADO FINAL
+--------------------------------------------------------------------------------
+
+Fuente: PONDERADO_COMPANY_MAP y PONDERADO_USER_MAP
+
+PREGUNTA / CAMPO                        CELDA
+--------------------------------------  ------
+Fecha de la visita                      D6
+Modalidad                               Q6
+Nombre de la empresa                    D7
+Ciudad / Municipio                      Q7
+Direccion de la empresa                 D8
+Numero de NIT                           Q8
+Correo electronico                      D9
+Telefonos                               Q9
+Persona que atiende la visita           D10
+Cargo                                   Q10
+Caja de compensacion                    D11
+Sede Compensar                          Q11
+Asesor                                  D12
+Profesional asignado RECA               Q12
+
+Nombre del vinculado                    K15
+Cedula                                  Q15
+Telefono del vinculado                  S15
+Correo del vinculado                    U15
+Cargo del vinculado                     K17
+Certificado discapacidad                Q17
+Porcentaje certificado                  U17
+Fecha firma contrato                    N18
+Tipo de discapacidad                    U18
+
+--------------------------------------------------------------------------------
+COMPATIBILIDAD ACTUAL
+--------------------------------------------------------------------------------
+
+- La documentacion no asume una unica hoja base.
+- Si el archivo local trae la hoja legacy, el runtime la usa.
+- Si el caso ya fue migrado a la hoja larga, el runtime tambien la soporta.
+
+================================================================================
+FIN DEL ARCHIVO
+================================================================================

@@ -31,6 +31,15 @@ class ContratacionIncluyenteTemplateTests(unittest.TestCase):
         self.assertTrue(individual.lower().endswith("contratacion_incluyente.xlsx"))
         self.assertTrue(group.lower().endswith("contratacion_incluyente.xlsx"))
 
+    def test_certificado_porcentaje_cell_keeps_general_format_in_template(self) -> None:
+        path = contratacion._find_template_path(contratacion.TEMPLATE_VARIANT_GROUP_2_PLUS)
+        wb = load_workbook(path, read_only=True)
+        try:
+            ws = wb[contratacion.SHEET_NAME_BY_VARIANT[contratacion.TEMPLATE_VARIANT_GROUP_2_PLUS]]
+            self.assertNotIn("%", ws["K23"].number_format)
+        finally:
+            wb.close()
+
     def test_sheet_name_by_variant_matches_real_workbooks(self) -> None:
         for variant in (
             contratacion.TEMPLATE_VARIANT_INDIVIDUAL,
@@ -119,6 +128,32 @@ class ContratacionIncluyenteTemplateTests(unittest.TestCase):
         self.assertEqual(contratacion._section_2_group_block_start_row(2), 123)
         self.assertEqual(contratacion._section_2_group_insert_row(1), 71)
         self.assertEqual(contratacion._section_2_group_insert_row(2), 123)
+
+    def test_section_6_and_section_7_rows_shift_only_by_inserted_group_blocks(self) -> None:
+        self.assertEqual(
+            contratacion._section_row_after_section_2(
+                72,
+                1,
+                contratacion.TEMPLATE_VARIANT_GROUP_2_PLUS,
+            ),
+            72,
+        )
+        self.assertEqual(
+            contratacion._section_row_after_section_2(
+                72,
+                2,
+                contratacion.TEMPLATE_VARIANT_GROUP_2_PLUS,
+            ),
+            124,
+        )
+        self.assertEqual(
+            contratacion._section_row_after_section_2(
+                78,
+                2,
+                contratacion.TEMPLATE_VARIANT_GROUP_2_PLUS,
+            ),
+            130,
+        )
 
     def test_section_7_base_rows_change_by_template_variant(self) -> None:
         self.assertEqual(

@@ -108,6 +108,8 @@ SECTION_2 = {"title": "2. PRESENTACION DE LOS TEMAS DE LA SENSIBILIZACION"}
 SECTION_3 = {"title": "3. OBSERVACIONES"}
 SECTION_4 = {"title": "4. REGISTRO FOTOGRAFICO"}
 SECTION_5 = {"title": "5. ASISTENTES", "rows": 4}
+SECTION_3_TITLE_ROW = 25
+SECTION_5_TITLE_ROW = 31
 
 SECTION_1_SUPABASE_MAP = evaluacion_accesibilidad.SECTION_1_SUPABASE_MAP.copy()
 
@@ -348,17 +350,15 @@ def _write_section_1(ws, payload):
 def _write_section_3(ws, payload):
     if not payload:
         return
-    anchor = _find_row_by_text(ws, "3. OBSERVACIONES")
     texto = (payload.get("observaciones") or "").strip()
     if texto:
-        ws_write(ws, f"A{anchor + 1}", texto)
+        ws_write(ws, f"A{SECTION_3_TITLE_ROW + 1}", texto)
 
 
 def _write_section_5(ws, payload):
     if not payload:
         return
-    title_row = _find_row_by_text(ws, "5. ASISTENTES")
-    start_row = title_row + 1
+    start_row = SECTION_5_TITLE_ROW + 1
     base_rows = SECTION_5["rows"]
     total = len(payload)
 

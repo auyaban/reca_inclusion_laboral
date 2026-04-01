@@ -5,17 +5,12 @@ import unittest
 from unittest.mock import patch
 
 import app
+from tests.tk_test_utils import TkTestCase, destroy_widget
 
 
-class _TkTestCase(unittest.TestCase):
+class _TkTestCase(TkTestCase):
     def setUp(self) -> None:
-        try:
-            self.root = tk.Tk()
-        except tk.TclError as exc:
-            self.skipTest(f"Tk no disponible: {exc}")
-        self.root.withdraw()
-        self.addCleanup(self._cleanup_root)
-
+        super().setUp()
         patchers = [
             patch.object(app, "_maximize_window", lambda _window: None),
             patch.object(app.messagebox, "showerror", return_value=None),
@@ -25,14 +20,6 @@ class _TkTestCase(unittest.TestCase):
         for patcher in patchers:
             patcher.start()
             self.addCleanup(patcher.stop)
-
-    def _cleanup_root(self) -> None:
-        try:
-            for child in self.root.winfo_children():
-                child.destroy()
-            self.root.destroy()
-        except Exception:
-            pass
 
 
 class InduccionSection3AutosaveTests(_TkTestCase):
@@ -56,13 +43,13 @@ class InduccionSection3AutosaveTests(_TkTestCase):
 
     def _create_org_window(self) -> app.InduccionOrganizacionalWindow:
         window = app.InduccionOrganizacionalWindow(self.root)
-        self.addCleanup(lambda: window.winfo_exists() and window.destroy())
+        self.addCleanup(destroy_widget, window)
         window.update_idletasks()
         return window
 
     def _create_operativa_window(self) -> app.InduccionOperativaWindow:
         window = app.InduccionOperativaWindow(self.root)
-        self.addCleanup(lambda: window.winfo_exists() and window.destroy())
+        self.addCleanup(destroy_widget, window)
         window.update_idletasks()
         return window
 

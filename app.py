@@ -34,13 +34,6 @@ from formularios.condiciones_vacante.voice_section2 import (
     summarize_candidate_updates as summarize_vacancy_section2_updates,
 )
 from formularios.seleccion_incluyente import seleccion_incluyente
-from formularios.seleccion_incluyente_labs import seleccion_incluyente as seleccion_incluyente_labs
-from formularios.seleccion_incluyente_labs.voice_section2 import (
-    VOICE_FUNCTION_NAME as SELECTION_SECTION2_VOICE_FUNCTION,
-    get_subsection_spec as get_selection_labs_subsection_spec,
-    postprocess_extraction_payload as postprocess_selection_labs_extraction,
-    summarize_candidate_updates as summarize_selection_labs_updates,
-)
 from formularios.contratacion_incluyente import contratacion_incluyente
 from formularios.induccion_organizacional import induccion_organizacional
 from formularios.induccion_operativa import induccion_operativa
@@ -87,6 +80,27 @@ from updater import (
     run_installer,
 )
 from logging_utils import get_log_file_path, get_logs_root, log_app_event, log_labs_event
+
+try:
+    from formularios.seleccion_incluyente_labs import seleccion_incluyente as seleccion_incluyente_labs
+    from formularios.seleccion_incluyente_labs.voice_section2 import (
+        VOICE_FUNCTION_NAME as SELECTION_SECTION2_VOICE_FUNCTION,
+        get_subsection_spec as get_selection_labs_subsection_spec,
+        postprocess_extraction_payload as postprocess_selection_labs_extraction,
+        summarize_candidate_updates as summarize_selection_labs_updates,
+    )
+except Exception:
+    seleccion_incluyente_labs = None
+    SELECTION_SECTION2_VOICE_FUNCTION = ""
+
+    def get_selection_labs_subsection_spec(*_args, **_kwargs):
+        raise RuntimeError("Labs deshabilitado.")
+
+    def postprocess_selection_labs_extraction(*_args, **_kwargs):
+        raise RuntimeError("Labs deshabilitado.")
+
+    def summarize_selection_labs_updates(*_args, **_kwargs):
+        raise RuntimeError("Labs deshabilitado.")
 
 
 APP_NAME = "RECA Inclusion Laboral"
@@ -164,7 +178,7 @@ FORM_MODULE_MAP = {
     "condiciones_vacante": condiciones_vacante,
     "condiciones_vacante_labs": condiciones_vacante,
     "seleccion_incluyente": seleccion_incluyente,
-    "seleccion_incluyente_labs": seleccion_incluyente_labs,
+    "seleccion_incluyente_labs": seleccion_incluyente,
     "contratacion_incluyente": contratacion_incluyente,
     "induccion_organizacional": induccion_organizacional,
     "induccion_operativa": induccion_operativa,
@@ -1944,6 +1958,112 @@ def _normalize_ascii_text(value):
     return text
 
 
+def _dropdown_prefix_key(value):
+    normalized = _normalize_ascii_text(value).lower()
+    if not normalized:
+        return None
+    if "no aplica" in normalized:
+        return "no aplica"
+    for prefix in ("0.", "1.", "2.", "3."):
+        if normalized.startswith(prefix) or normalized == prefix[:1]:
+            return prefix
+    return None
+
+
+def _resolve_prefixed_dropdown_value(source_value, target_values):
+    prefix_key = _dropdown_prefix_key(source_value)
+    if not prefix_key:
+        return ""
+    values = tuple(target_values or ())
+    if prefix_key == "no aplica":
+        for option in values:
+            if "no aplica" in _normalize_ascii_text(option).lower():
+                return option
+        for option in values:
+            if _normalize_ascii_text(option).lower().startswith("0."):
+                return option
+        return ""
+    for option in values:
+        if _normalize_ascii_text(option).lower().startswith(prefix_key):
+            return option
+    if prefix_key == "0.":
+        for option in values:
+            if "no aplica" in _normalize_ascii_text(option).lower():
+                return option
+    return ""
+
+
+def _is_prefixed_dropdown_widget(widget):
+    if widget is None:
+        return False
+    try:
+        values = tuple(widget.cget("values"))
+    except Exception:
+        return False
+    if not values:
+        return False
+    normalized_values = [_normalize_ascii_text(value).lower() for value in values]
+    return any(
+        value.startswith(("0.", "1.", "2.", "3.")) or "no aplica" in value
+        for value in normalized_values
+    )
+
+
+def _bind_prefixed_dropdown_fields(fields_map, preferred_suffixes=("_nivel_apoyo", "_nivel_apoyo_requerido")):
+    dropdown_entries = [
+        (field_id, widget)
+        for field_id, widget in (fields_map or {}).items()
+        if _is_prefixed_dropdown_widget(widget)
+    ]
+    if len(dropdown_entries) < 2:
+        return
+
+    widgets = [widget for _, widget in dropdown_entries]
+    preferred_widget = None
+    for suffix in preferred_suffixes:
+        preferred_widget = next(
+            (widget for field_id, widget in dropdown_entries if field_id.endswith(suffix)),
+            None,
+        )
+        if preferred_widget is not None:
+            break
+    if preferred_widget is None:
+        preferred_widget = widgets[0]
+
+    sync_state = {"active": False}
+
+    def _sync_from(source_widget):
+        if sync_state["active"]:
+            return
+        try:
+            source_value = source_widget.get().strip()
+        except Exception:
+            return
+        if not source_value:
+            return
+        sync_state["active"] = True
+        try:
+            for target_widget in widgets:
+                if target_widget is source_widget:
+                    continue
+                resolved = _resolve_prefixed_dropdown_value(
+                    source_value,
+                    tuple(target_widget.cget("values")),
+                )
+                if resolved:
+                    target_widget.set(resolved)
+        finally:
+            sync_state["active"] = False
+
+    for widget in widgets:
+        widget._nivel_apoyo_observacion_sync = lambda _event=None, w=preferred_widget: _sync_from(w)
+        widget._prefixed_dropdown_sync = lambda _event=None, w=widget: _sync_from(w)
+        widget.bind("<<ComboboxSelected>>", lambda _event, w=widget: _sync_from(w), add="+")
+        widget.bind("<FocusOut>", lambda _event, w=widget: _sync_from(w), add="+")
+
+    _sync_from(preferred_widget)
+
+
 def _detect_mojibake_issues(project_root):
     issues = []
     include_roots = [
@@ -2308,6 +2428,17 @@ def check_internet(timeout=3, log_enabled=False):
     started_at = time.perf_counter()
 
     def _result(ok, status_text, error_code="", detail=""):
+        if isinstance(detail, urllib.error.HTTPError):
+            http_error = detail
+            try:
+                detail = http_error.read().decode("utf-8", errors="replace") or str(http_error)
+            except Exception:
+                detail = str(http_error)
+            finally:
+                try:
+                    http_error.close()
+                except Exception:
+                    pass
         payload = {
             "ok": bool(ok),
             "status_text": str(status_text or "").strip(),
@@ -4394,9 +4525,7 @@ def get_forms():
         presentacion_programa.register_form(),
         evaluacion_accesibilidad.register_form(),
         condiciones_vacante.register_form(),
-        {"id": "condiciones_vacante_labs", "name": "Condiciones de Vacante Labs", "hidden": True},
         seleccion_incluyente.register_form(),
-        seleccion_incluyente_labs.register_form(),
         contratacion_incluyente.register_form(),
         induccion_organizacional.register_form(),
         induccion_operativa.register_form(),
@@ -8104,15 +8233,11 @@ class HubWindow(tk.Tk):
         return None
 
     def _open_labs_flow(self):
-        if not _confirm_labs_experimental_warning(self):
-            _log_labs("open_labs_flow cancelled_by_warning")
-            return None
-        selected_form_id = _select_labs_flow(self)
-        if not selected_form_id:
-            _log_labs("open_labs_flow cancelled_by_selector", level="WARN")
-            return None
-        _log_labs(f"open_labs_flow accepted form_id={selected_form_id}")
-        return self._open_form(_resolve_form_meta(selected_form_id))
+        messagebox.showinfo(
+            "Labs deshabilitado",
+            "Los flujos Labs quedaron deshabilitados para este release.",
+        )
+        return None
 
     def _ensure_toast(self):
         if self._toast_label is not None:
@@ -12205,6 +12330,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                             fields[req_id].grid(row=row_idx, column=1, sticky="w", padx=4)
                         fields[cuenta_id] = _create_widget(sub_frame, cuenta_id, width=10)
                         fields[cuenta_id].grid(row=row_idx, column=2, sticky="w", padx=4)
+            _bind_prefixed_dropdown_fields(fields)
             return fields
 
         def _add_activity_block(parent, title, nivel_id, observacion_id, nota_id, subitems):
@@ -12251,6 +12377,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             )
             fields[nota_id] = tk.Entry(sub_frame, width=30)
             fields[nota_id].grid(row=len(subitems), column=1, columnspan=3, sticky="w", pady=(4, 0))
+            _bind_prefixed_dropdown_fields(fields)
             return fields
 
         remove_btn = None
@@ -12665,6 +12792,10 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                     else:
                         widget.delete(0, tk.END)
                         widget.insert(0, value)
+                for widget in fields.values():
+                    sync_fn = getattr(widget, "_nivel_apoyo_observacion_sync", None)
+                    if callable(sync_fn):
+                        sync_fn()
             _sync_desarrollo_widgets()
 
         _prefill_section_2()
@@ -13344,69 +13475,8 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                     if current and current not in values:
                         widget.set("")
 
-        def _resolve_observacion_by_nivel(nivel_value, observation_values):
-            nivel_norm = _normalize_ascii_text(nivel_value or "").lower()
-            if not nivel_norm:
-                return ""
-            if nivel_norm.startswith("0."):
-                for option in observation_values:
-                    if _normalize_ascii_text(option).lower().startswith("0."):
-                        return option
-                for option in observation_values:
-                    if "no aplica" in _normalize_ascii_text(option).lower():
-                        return option
-                return ""
-            if "no aplica" in nivel_norm:
-                for option in observation_values:
-                    if "no aplica" in _normalize_ascii_text(option).lower():
-                        return option
-                for option in observation_values:
-                    if _normalize_ascii_text(option).lower().startswith("0."):
-                        return option
-                return ""
-            for prefix in ("1.", "2.", "3."):
-                if nivel_norm.startswith(prefix) or nivel_norm == prefix[:1]:
-                    for option in observation_values:
-                        if _normalize_ascii_text(option).lower().startswith(prefix):
-                            return option
-                    return ""
-            return ""
-
         def _bind_nivel_apoyo_observaciones(fields_map):
-            nivel_widget = None
-            observation_widgets = []
-            for field_id, widget in fields_map.items():
-                if field_id.endswith("_nivel_apoyo") and isinstance(widget, ttk.Combobox):
-                    nivel_widget = widget
-                elif field_id.endswith("_observacion") and isinstance(widget, ttk.Combobox):
-                    values = tuple(widget.cget("values"))
-                    normalized_values = [_normalize_ascii_text(value).lower() for value in values]
-                    if any(value.startswith(("0.", "1.", "2.", "3.")) for value in normalized_values) or any(
-                        "no aplica" in value for value in normalized_values
-                    ):
-                        observation_widgets.append(widget)
-            if nivel_widget is None or not observation_widgets:
-                return
-
-            def _sync_from_nivel(_event=None):
-                target_value = nivel_widget.get().strip()
-                if not target_value:
-                    return
-                for observation_widget in observation_widgets:
-                    resolved = _resolve_observacion_by_nivel(
-                        target_value,
-                        tuple(observation_widget.cget("values")),
-                    )
-                    if resolved:
-                        observation_widget.set(resolved)
-
-            nivel_widget._nivel_apoyo_observacion_sync = _sync_from_nivel
-            nivel_widget.bind("<<ComboboxSelected>>", _sync_from_nivel, add="+")
-            nivel_widget.bind("<FocusOut>", _sync_from_nivel, add="+")
-            for observation_widget in observation_widgets:
-                observation_widget.bind("<<ComboboxSelected>>", _sync_from_nivel, add="+")
-                observation_widget.bind("<FocusOut>", _sync_from_nivel, add="+")
-            _sync_from_nivel()
+            _bind_prefixed_dropdown_fields(fields_map)
 
         def _add_apoyo_question_block(parent, title, fields_def):
             block_fields = _add_question_block(parent, title, fields_def)
@@ -15615,6 +15685,10 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
                     "nivel_apoyo": nivel,
                     "observaciones": observaciones,
                 }
+                _bind_prefixed_dropdown_fields(self.section4_item_widgets[item["id"]])
+                sync_fn = getattr(nivel, "_nivel_apoyo_observacion_sync", None)
+                if callable(sync_fn):
+                    sync_fn()
 
             note_row = len(block["items"]) + 1
             tk.Label(card, text="Nota", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(

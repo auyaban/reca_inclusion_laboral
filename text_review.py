@@ -109,6 +109,11 @@ def _extract_error_message(exc):
                 return body
         except Exception:
             pass
+        finally:
+            try:
+                exc.close()
+            except Exception:
+                pass
     return str(exc)
 
 

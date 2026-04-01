@@ -312,6 +312,30 @@ EXCEL_MAPPING = {
         "rows": 3,
     },
 }
+SECTION_7_TITLE_ROW = 158
+SECTION_8_TITLE_ROW = 160
+
+
+def _section_6_extra_rows(payload) -> int:
+    total = len(payload or [])
+    base_rows = EXCEL_MAPPING["section_6"]["base_rows"]
+    return max(0, total - base_rows)
+
+
+def _section_7_title_row_for_payload(section_6_payload) -> int:
+    return SECTION_7_TITLE_ROW + _section_6_extra_rows(section_6_payload)
+
+
+def _section_7_content_row_for_payload(section_6_payload) -> int:
+    return _section_7_title_row_for_payload(section_6_payload) + 1
+
+
+def _section_8_title_row_for_payload(section_6_payload) -> int:
+    return SECTION_8_TITLE_ROW + _section_6_extra_rows(section_6_payload)
+
+
+def _section_8_start_row_for_payload(section_6_payload) -> int:
+    return _section_8_title_row_for_payload(section_6_payload) + 1
 
 
 def _get_cache_dir():
@@ -1224,7 +1248,6 @@ def _write_section_with_ws(ws, section_id, payload):
             for _ in range(total - base_rows):
                 ws.Rows(insert_at).Insert()
                 ws.Rows(template_row).Copy(ws.Rows(insert_at))
-                insert_at += 1
         for idx, entry in enumerate(payload or []):
             row = start_row + idx
             discapacidad = entry.get("discapacidad", "")
@@ -1237,12 +1260,12 @@ def _write_section_with_ws(ws, section_id, payload):
     if section_id == "section_7":
         if not payload:
             return
-        row = _find_row_by_text(ws, "7. OBSERVACIONES / RECOMENDACIONES:")
         value = payload.get("observaciones_recomendaciones", "")
+        write_row = _section_7_content_row_for_payload(FORM_CACHE.get("section_6"))
         _log_excel(
-            f"WRITE section=section_7 cell=A{row + 1} key=observaciones_recomendaciones value={value!r}"
+            f"WRITE section=section_7 cell=A{write_row} key=observaciones_recomendaciones value={value!r}"
         )
-        ws_write(ws, f"A{row + 1}", value)
+        ws_write(ws, f"A{write_row}", value)
         return
 
     if section_id == "section_8":
@@ -1250,8 +1273,7 @@ def _write_section_with_ws(ws, section_id, payload):
         asistentes = section8_payload.get("asistentes") or []
         if not asistentes:
             return
-        row_title = _find_row_by_text(ws, "8.ASISTENTES")
-        start_row = row_title + 1
+        start_row = _section_8_start_row_for_payload(FORM_CACHE.get("section_6"))
         base_rows = EXCEL_MAPPING["section_8"].get("rows", 3)
         total = len(asistentes)
         if total > base_rows:
@@ -1260,7 +1282,6 @@ def _write_section_with_ws(ws, section_id, payload):
             for _ in range(total - base_rows):
                 ws.Rows(insert_at).Insert()
                 ws.Rows(template_row).Copy(ws.Rows(insert_at))
-                insert_at += 1
         for idx, entry in enumerate(asistentes):
             row = start_row + idx
             nombre = entry.get("nombre", "")

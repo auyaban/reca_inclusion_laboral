@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import socket
 import time
 import urllib.error
@@ -19,16 +20,39 @@ from logging_utils import log_app_event
 
 
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
-DEFAULT_MODEL = "gpt-4.1-mini"
+DEFAULT_MODEL = "gpt-4.1-nano"
 DEFAULT_TIMEOUT_SECONDS = 45
 TIMEOUT_RETRY_SECONDS = 75
 MAX_TEXT_CHARS = 6000
+DEFAULT_BATCH_MAX_ITEMS = 8
+DEFAULT_BATCH_MAX_CHARS = 12000
 DEFAULT_EDGE_FUNCTION_NAME = "text-review-orthography"
+LIST_FORMATTING_PROMPT_SUFFIX = (
+    "Si el texto ya representa una enumeracion evidente, por ejemplo marcadores numerados, "
+    "items en lineas separadas, una frase introductoria terminada en dos puntos seguida de varias lineas cortas, "
+    "o elementos claramente separados por punto y coma, puedes "
+    "devolverlo como lista simple en texto plano usando prefijos '- '. "
+    "Hazlo solo cuando la estructura enumerativa sea inequívoca y no haya riesgo de convertir "
+    "un parrafo normal en lista. Si no es inequívoco, conserva el formato original."
+)
 REVIEW_PROMPT = (
     "Corrige solo ortografia, tildes, signos de puntuacion y uso basico de mayusculas/minusculas. "
     "No resumas, no reformules, no cambies el tono, no inventes informacion y no alteres el sentido del texto. "
     "No cambies nombres propios, numeros, correos, URLs, siglas, articulos legales, referencias normativas, codigos, "
-    "ni el formato general de listas o parrafos. Devuelve unicamente el texto final corregido en texto plano."
+    "ni el formato general de listas o parrafos. "
+    f"{LIST_FORMATTING_PROMPT_SUFFIX} "
+    "Devuelve unicamente el texto final corregido en texto plano."
+)
+BATCH_REVIEW_PROMPT = (
+    "Corrige solo ortografia, tildes, signos de puntuacion y uso basico de mayusculas/minusculas. "
+    "Recibiras un JSON con este formato exacto: {\"items\":[{\"id\":\"...\",\"text\":\"...\"}]}. "
+    "Corrige cada campo text por separado, sin mezclar items entre si. "
+    "No resumas, no reformules, no cambies el tono, no inventes informacion y no alteres el sentido del texto. "
+    "No cambies nombres propios, numeros, correos, URLs, siglas, articulos legales, referencias normativas, codigos, "
+    "ni el formato general de listas o parrafos. "
+    f"{LIST_FORMATTING_PROMPT_SUFFIX} "
+    "Devuelve exclusivamente JSON valido con este mismo formato: {\"items\":[{\"id\":\"...\",\"text\":\"texto corregido\"}]}. "
+    "Manten exactamente los mismos ids y la misma cantidad de items. No agregues markdown ni explicaciones."
 )
 
 
@@ -74,12 +98,32 @@ def _read_settings(env_path=".env"):
         timeout = max(5, int(float(timeout_raw)))
     except Exception:
         timeout = DEFAULT_TIMEOUT_SECONDS
+    batch_max_items_raw = str(
+        os.getenv("OPENAI_TEXT_REVIEW_BATCH_MAX_ITEMS")
+        or env.get("OPENAI_TEXT_REVIEW_BATCH_MAX_ITEMS")
+        or DEFAULT_BATCH_MAX_ITEMS
+    ).strip()
+    batch_max_chars_raw = str(
+        os.getenv("OPENAI_TEXT_REVIEW_BATCH_MAX_CHARS")
+        or env.get("OPENAI_TEXT_REVIEW_BATCH_MAX_CHARS")
+        or DEFAULT_BATCH_MAX_CHARS
+    ).strip()
+    try:
+        batch_max_items = max(1, int(float(batch_max_items_raw)))
+    except Exception:
+        batch_max_items = DEFAULT_BATCH_MAX_ITEMS
+    try:
+        batch_max_chars = max(1, int(float(batch_max_chars_raw)))
+    except Exception:
+        batch_max_chars = DEFAULT_BATCH_MAX_CHARS
     return {
         "enabled": enabled,
         "api_key": api_key,
         "model": model,
         "function_name": function_name,
         "timeout": timeout,
+        "batch_max_items": batch_max_items,
+        "batch_max_chars": batch_max_chars,
     }
 
 
@@ -88,6 +132,172 @@ def _is_meaningful_text(value):
     if not text:
         return False
     return any(ch.isalpha() for ch in text)
+
+
+_LIST_LINE_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(?P<body>.+?)\s*$")
+_LIST_INLINE_NUMBER_RE = re.compile(r"(?:(?<=^)|(?<=\s))\d+[.)]\s+")
+_LIST_DEFAULT_INDENT = "  "
+_LIST_TRAILING_PUNCTUATION = (".", "!", "?", ";", ":")
+
+
+def _looks_like_list(text):
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    if len(lines) < 2:
+        return False
+    matched = sum(1 for line in lines if _LIST_LINE_RE.match(line))
+    return matched >= 2 and matched == len(lines)
+
+
+def _extract_list_items_from_lines(text):
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    if len(lines) < 2:
+        return None
+    items = []
+    for line in lines:
+        match = _LIST_LINE_RE.match(line)
+        if not match:
+            return None
+        item = str(match.group("body") or "").strip()
+        if not item:
+            return None
+        items.append(item)
+    return items if len(items) >= 2 else None
+
+
+def _extract_list_items_from_inline_numbers(text):
+    value = " ".join(str(text or "").split())
+    matches = list(_LIST_INLINE_NUMBER_RE.finditer(value))
+    if len(matches) < 2:
+        return None
+    items = []
+    for idx, match in enumerate(matches):
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(value)
+        item = value[start:end].strip(" ;")
+        if not item:
+            return None
+        items.append(item)
+    return items if len(items) >= 2 else None
+
+
+def _extract_list_items_from_semicolons(text):
+    value = " ".join(str(text or "").split())
+    if ";" not in value:
+        return None
+    parts = [part.strip(" ;") for part in value.split(";") if part.strip(" ;")]
+    if len(parts) < 2:
+        return None
+    if any(len(part.split()) > 18 for part in parts):
+        return None
+    return parts
+
+
+def _format_list_items_as_bullets(items):
+    values = [str(item or "").strip() for item in items if str(item or "").strip()]
+    if len(values) < 2:
+        return ""
+    return "\n".join(f"{_LIST_DEFAULT_INDENT}- {item}" for item in values)
+
+
+def _is_plain_list_candidate_line(line_text):
+    stripped = str(line_text or "").strip()
+    if not stripped:
+        return False
+    if _LIST_LINE_RE.match(stripped):
+        return False
+    if len(stripped) > 90:
+        return False
+    if stripped.endswith(_LIST_TRAILING_PUNCTUATION):
+        return False
+    words = stripped.split()
+    if len(words) > 12:
+        return False
+    return any(any(ch.isalpha() for ch in word) for word in words)
+
+
+def _normalize_text_list_blocks(text):
+    lines = str(text or "").splitlines()
+    if not lines:
+        return str(text or "")
+    normalized = list(lines)
+    index = 0
+    while index < len(normalized):
+        line = normalized[index]
+        match = _LIST_LINE_RE.match(line)
+        if match:
+            body = str(match.group("body") or "").strip()
+            if line.lstrip().startswith(tuple(["*", "•"])):
+                normalized[index] = f"{_LIST_DEFAULT_INDENT}- {body}"
+            elif not line.startswith((" ", "\t")):
+                marker_match = re.match(r"^\s*(?P<marker>[-*•]|\d+[.)])\s+", line)
+                marker = marker_match.group("marker") if marker_match else "-"
+                if marker in {"*", "•"}:
+                    marker = "-"
+                normalized[index] = f"{_LIST_DEFAULT_INDENT}{marker} {body}"
+            index += 1
+            continue
+
+        if not _is_plain_list_candidate_line(line):
+            index += 1
+            continue
+
+        prev_nonempty = ""
+        prev_idx = index - 1
+        while prev_idx >= 0:
+            prev_line = str(normalized[prev_idx] or "").strip()
+            if prev_line:
+                prev_nonempty = prev_line
+                break
+            prev_idx -= 1
+        if not prev_nonempty.endswith(":"):
+            index += 1
+            continue
+
+        end_index = index
+        while end_index < len(normalized) and _is_plain_list_candidate_line(normalized[end_index]):
+            end_index += 1
+        if end_index - index < 2:
+            index += 1
+            continue
+        for line_idx in range(index, end_index):
+            normalized[line_idx] = f"{_LIST_DEFAULT_INDENT}- {str(normalized[line_idx]).strip()}"
+        index = end_index
+    return "\n".join(normalized)
+
+
+def _maybe_format_reviewed_list(original_text, reviewed_text):
+    reviewed = str(reviewed_text or "").strip()
+    if not reviewed:
+        return reviewed
+    if _looks_like_list(reviewed):
+        return _normalize_text_list_blocks(reviewed)
+
+    items = (
+        _extract_list_items_from_lines(reviewed)
+        or _extract_list_items_from_inline_numbers(reviewed)
+        or _extract_list_items_from_semicolons(reviewed)
+    )
+    if items:
+        formatted = _format_list_items_as_bullets(items)
+        return formatted or reviewed
+
+    normalized_blocks = _normalize_text_list_blocks(reviewed)
+    if normalized_blocks != reviewed:
+        return normalized_blocks
+
+    if not items:
+        original = str(original_text or "").strip()
+        if _looks_like_list(original):
+            return _normalize_text_list_blocks(reviewed)
+        items = (
+            _extract_list_items_from_lines(original)
+            or _extract_list_items_from_inline_numbers(original)
+            or _extract_list_items_from_semicolons(original)
+        )
+        if not items:
+            return reviewed
+    formatted = _format_list_items_as_bullets(items)
+    return formatted or reviewed
 
 
 def _extract_error_message(exc):
@@ -151,32 +361,102 @@ def _extract_output_text(payload):
     return "\n".join(chunks).strip()
 
 
-def _review_text(text, settings):
+def _strip_code_fences(text):
+    value = str(text or "").strip()
+    if not value.startswith("```"):
+        return value
+    lines = value.splitlines()
+    if lines and lines[0].strip().startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _extract_json_candidate(text):
+    value = _strip_code_fences(text)
+    if value.startswith("{") and value.endswith("}"):
+        return value
+    start = value.find("{")
+    end = value.rfind("}")
+    if start != -1 and end > start:
+        return value[start : end + 1]
+    return value
+
+
+def _parse_batch_review_output(text, expected_ids):
+    candidate = _extract_json_candidate(text)
+    payload = json.loads(candidate)
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise RuntimeError("La respuesta por lotes no contiene items validos.")
+    expected_order = [str(item_id) for item_id in expected_ids]
+    expected_set = set(expected_order)
+    reviewed_map = {}
+    for item in items:
+        if not isinstance(item, dict):
+            raise RuntimeError("La respuesta por lotes contiene items invalidos.")
+        item_id = str(item.get("id") or "").strip()
+        if not item_id or item_id not in expected_set:
+            raise RuntimeError("La respuesta por lotes devolvio ids inesperados.")
+        if item_id in reviewed_map:
+            raise RuntimeError("La respuesta por lotes devolvio ids duplicados.")
+        reviewed_map[item_id] = str(item.get("text") or "").strip()
+    missing_ids = [item_id for item_id in expected_order if item_id not in reviewed_map]
+    if missing_ids:
+        raise RuntimeError("La respuesta por lotes no devolvio todos los items.")
+    return [reviewed_map[item_id] for item_id in expected_order]
+
+
+def _build_review_batches(texts, settings):
+    max_items = max(1, int(settings.get("batch_max_items") or DEFAULT_BATCH_MAX_ITEMS))
+    max_chars = max(1, int(settings.get("batch_max_chars") or DEFAULT_BATCH_MAX_CHARS))
+    batches = []
+    current_batch = []
+    current_chars = 0
+    for text in texts:
+        safe_text = str(text or "")
+        text_chars = len(safe_text)
+        should_flush = (
+            current_batch
+            and (
+                len(current_batch) >= max_items
+                or current_chars + text_chars > max_chars
+            )
+        )
+        if should_flush:
+            batches.append(current_batch)
+            current_batch = []
+            current_chars = 0
+        current_batch.append(safe_text)
+        current_chars += text_chars
+    if current_batch:
+        batches.append(current_batch)
+    return batches
+
+
+def _review_text_with_retry(review_fn, settings, transport_label):
     try:
-        if settings.get("api_key"):
-            return _review_text_direct(text, settings)
-        return _review_text_via_edge(text, settings)
+        return review_fn(settings)
     except Exception as exc:
         if not _is_timeout_error(exc):
             raise
         retry_settings = dict(settings)
         retry_settings["timeout"] = max(int(settings.get("timeout") or 0), TIMEOUT_RETRY_SECONDS)
         _log_review(
-            f"timeout_retry transport={'direct' if settings.get('api_key') else 'edge'} "
-            f"timeout={settings.get('timeout')} retry_timeout={retry_settings['timeout']}",
+            f"timeout_retry transport={transport_label} timeout={settings.get('timeout')} "
+            f"retry_timeout={retry_settings['timeout']}",
             level="WARN",
         )
-        if retry_settings.get("api_key"):
-            return _review_text_direct(text, retry_settings)
-        return _review_text_via_edge(text, retry_settings)
+        return review_fn(retry_settings)
 
 
-def _review_text_direct(text, settings):
+def _call_openai_responses_api(input_text, settings, *, instructions):
     body = json.dumps(
         {
             "model": settings["model"],
-            "instructions": REVIEW_PROMPT,
-            "input": str(text or ""),
+            "instructions": instructions,
+            "input": input_text,
         },
         ensure_ascii=False,
     ).encode("utf-8")
@@ -192,7 +472,51 @@ def _review_text_direct(text, settings):
     )
     with urllib.request.urlopen(request, timeout=settings["timeout"]) as response:
         raw = response.read().decode("utf-8", errors="replace")
-    payload = json.loads(raw) if raw else {}
+    return json.loads(raw) if raw else {}
+
+
+def _call_edge_review(payload, settings):
+    supabase_url, supabase_key = _load_supabase_credentials(".env")
+    jwt_token = str(_supabase_get_access_token(".env") or "").strip()
+    if not jwt_token:
+        raise RuntimeError("No hay sesiÃ³n vÃ¡lida para revisar ortografÃ­a.")
+    function_name = str(settings.get("function_name") or DEFAULT_EDGE_FUNCTION_NAME).strip() or DEFAULT_EDGE_FUNCTION_NAME
+    url = f"{supabase_url.rstrip('/')}/functions/v1/{function_name}"
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "apikey": supabase_key,
+            "Authorization": f"Bearer {jwt_token}",
+            "Content-Type": "application/json",
+            "User-Agent": "RECA-Inclusion-Laboral/1.0",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=settings["timeout"]) as response:
+        raw = response.read().decode("utf-8", errors="replace")
+    response_payload = json.loads(raw) if raw else {}
+    ok = bool(response_payload.get("ok"))
+    if not ok:
+        err = response_payload.get("error")
+        if isinstance(err, dict):
+            message = str(err.get("message") or "").strip()
+            if message:
+                raise RuntimeError(message)
+        raise RuntimeError(str(response_payload.get("message") or "La funciÃ³n de revisiÃ³n no devolviÃ³ texto."))
+    return response_payload
+
+
+def _review_text(text, settings):
+    transport = "direct" if settings.get("api_key") else "edge"
+    if settings.get("api_key"):
+        return _review_text_with_retry(lambda current: _review_text_direct(text, current), settings, transport)
+    return _review_text_with_retry(lambda current: _review_text_via_edge(text, current), settings, transport)
+
+
+def _review_text_direct(text, settings):
+    payload = _call_openai_responses_api(str(text or ""), settings, instructions=REVIEW_PROMPT)
     reviewed = _extract_output_text(payload)
     if not reviewed:
         raise RuntimeError("OpenAI no devolvio texto corregido.")
@@ -237,6 +561,56 @@ def _review_text_via_edge(text, settings):
                 raise RuntimeError(message)
         raise RuntimeError(str(payload.get("message") or "La función de revisión no devolvió texto."))
     return reviewed
+
+
+def _review_text_batch_direct(batch_items, settings):
+    input_payload = json.dumps({"items": batch_items}, ensure_ascii=False)
+    payload = _call_openai_responses_api(input_payload, settings, instructions=BATCH_REVIEW_PROMPT)
+    reviewed = _extract_output_text(payload)
+    if not reviewed:
+        raise RuntimeError("OpenAI no devolvio lote corregido.")
+    expected_ids = [item["id"] for item in batch_items]
+    return _parse_batch_review_output(reviewed, expected_ids)
+
+
+def _review_text_batch_via_edge(batch_items, settings):
+    response_payload = _call_edge_review(
+        {
+            "items": batch_items,
+            "model": settings["model"],
+        },
+        settings,
+    )
+    reviewed_items = response_payload.get("items")
+    if not isinstance(reviewed_items, list):
+        raise RuntimeError("La funcion de revision no devolvio items por lote.")
+    expected_ids = [item["id"] for item in batch_items]
+    return _parse_batch_review_output(
+        json.dumps({"items": reviewed_items}, ensure_ascii=False),
+        expected_ids,
+    )
+
+
+def _review_text_batch(batch_texts, settings):
+    batch_items = [
+        {"id": f"item_{index}", "text": str(text or "")}
+        for index, text in enumerate(batch_texts, start=1)
+    ]
+    transport = "direct" if settings.get("api_key") else "edge"
+    review_fn = _review_text_batch_direct if settings.get("api_key") else _review_text_batch_via_edge
+    try:
+        return _review_text_with_retry(
+            lambda current: review_fn(batch_items, current),
+            settings,
+            f"{transport}_batch",
+        )
+    except Exception as exc:
+        _log_review(
+            f"batch_fallback transport={transport} items={len(batch_items)} "
+            f"chars={sum(len(item['text']) for item in batch_items)} error={_extract_error_message(exc)!r}",
+            level="WARN",
+        )
+        return [_review_text(item["text"], settings) for item in batch_items]
 
 
 def _conditions_section2_1_text_paths():
@@ -477,30 +851,49 @@ def review_export_cache(form_id, cache_snapshot, env_path=".env"):
     reviewed_targets = []
     changed_count = 0
     try:
+        unique_texts = []
+        seen_texts = set()
+        for target in targets:
+            original_text = str(target.get("text") or "")
+            if original_text in seen_texts:
+                continue
+            seen_texts.add(original_text)
+            unique_texts.append(original_text)
+
+        batches = _build_review_batches(unique_texts, settings)
+        for batch_index, batch_texts in enumerate(batches, start=1):
+            if len(batch_texts) == 1:
+                original_text = batch_texts[0]
+                _log_review(
+                    f"request form={form_id} batch={batch_index}/{len(batches)} items=1 chars={len(original_text)} transport={transport}"
+                )
+                reviewed_batch = [_review_text(original_text, settings)]
+            else:
+                _log_review(
+                    f"batch_request form={form_id} batch={batch_index}/{len(batches)} "
+                    f"items={len(batch_texts)} chars={sum(len(text) for text in batch_texts)} transport={transport}"
+                )
+                reviewed_batch = _review_text_batch(batch_texts, settings)
+            for original_text, reviewed_text in zip(batch_texts, reviewed_batch):
+                normalized_review = str(reviewed_text or "").strip() or original_text
+                normalized_review = _maybe_format_reviewed_list(original_text, normalized_review)
+                reviewed_texts[original_text] = normalized_review
+
         for index, target in enumerate(targets, start=1):
             original_text = target["text"]
             path = tuple(target.get("path") or ())
-            if original_text in reviewed_texts:
-                reviewed_text = reviewed_texts[original_text]
+            reviewed_text = reviewed_texts.get(original_text, original_text)
+            if original_text in reviewed_texts and original_text != reviewed_text:
                 _log_review(
-                    f"reuse_cached_result form={form_id} index={index}/{len(targets)} path={path!r}"
+                    f"reuse_reviewed_result form={form_id} index={index}/{len(targets)} path={path!r}"
                 )
-            else:
-                _log_review(
-                    f"request form={form_id} index={index}/{len(targets)} path={path!r} chars={len(original_text)} transport={transport}"
-                )
-                reviewed_text = _review_text(original_text, settings)
-                reviewed_text = str(reviewed_text or "").strip()
-                if not reviewed_text:
-                    reviewed_text = original_text
-                reviewed_texts[original_text] = reviewed_text
             reviewed_targets.append({"path": path, "text": reviewed_text})
             if reviewed_text != original_text:
                 changed_count += 1
     except Exception as exc:
         _log_review(
             f"failed form={form_id} transport={transport} reviewed_count={changed_count} "
-            f"path={path!r} error={_extract_error_message(exc)!r}",
+            f"error={_extract_error_message(exc)!r}",
             level="ERROR",
         )
         return ReviewResult(

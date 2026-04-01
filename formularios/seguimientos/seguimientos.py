@@ -95,7 +95,12 @@ PONDERADO_USER_MAP = {
 }
 
 def register_form():
-    return {"id": FORM_ID, "name": FORM_NAME, "module": __name__}
+    return {
+        "id": FORM_ID,
+        "name": FORM_NAME,
+        "module": __name__,
+        "supports_drafts": False,
+    }
 
 
 def _map_company_row(row):

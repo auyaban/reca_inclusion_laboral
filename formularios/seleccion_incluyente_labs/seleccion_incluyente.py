@@ -1,28 +1,19 @@
 import json
 import os
-import shutil
 import time
 
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
-    _build_process_output_path,
-    _get_desktop_dir,
-    _next_available_file_path,
     _normalize_cedula,
     _normalize_decimal_value,
     _normalize_text,
     _parse_date_value,
-    _coerce_excel_decimal_value,
-    sanitize_logo_error_cells,
-    autofit_rows,
-    clear_written_rows,
-    ws_write,
     _sanitize_filename,
     _supabase_get,
     _supabase_upsert_with_queue,
+    build_sheet_updates,
 )
 from logging_utils import log_excel_event
-from version_info import resource_path
 
 FORM_ID = "seleccion_incluyente_labs"
 FORM_NAME = "Proceso de Seleccion Incluyente Labs"
@@ -127,11 +118,10 @@ SECTION_1_SUPABASE_MAP = evaluacion_accesibilidad.SECTION_1_SUPABASE_MAP.copy()
 FORM_CACHE = {}
 SECTION_1_CACHE = {}
 
-SHEET_NAME = "4. PROCESO DE SELECCION INCLUYE"
-SECTION_2_ANCHOR = "2. DATOS DEL OFERENTE"
-SECTION_5_ANCHOR = "5. AJUSTES RAZONABLES / RECOMENDACIONES AL PROCESO DE SELECCION"
-SECTION_2_TEMPLATE_ANCHOR_ROW = 14
-SECTION_2_LAST_COLUMN = "U"
+SHEET_NAME = "4. SELECCIÓN INCLUYENTE INDIVIDUAL"
+
+SECTION_5_AJUSTES_ROW = 79
+SECTION_5_NOTA_ROW = 80
 
 AJUSTES_ENTREVISTA_TEMPLATES = {
     "preparacion_proceso": """
@@ -1183,19 +1173,6 @@ def get_form_cache():
 
 
 
-def _find_template_path():
-    templates_dir = resource_path("templates")
-    if not templates_dir.is_dir():
-        raise FileNotFoundError("No existe la carpeta templates.")
-    for name in os.listdir(templates_dir):
-        if name.startswith("~$"):
-            continue
-        normalized = _normalize_text(name).replace("_", "")
-        if "seleccion" in normalized and "incluyente" in normalized and normalized.endswith(".xlsx"):
-            return os.fspath(templates_dir / name)
-    raise FileNotFoundError("No se encontró el template de seleccion incluyente.")
-
-
 def _get_log_dir():
     output_path = FORM_CACHE.get("_output_path")
     if output_path:
@@ -1214,58 +1191,6 @@ def _log_excel(message):
         return
 
 
-def _ensure_output_path():
-    template_path = _find_template_path()
-    empresa_nombre = SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
-    process_name = FORM_NAME
-    output_path = _build_process_output_path(empresa_nombre, process_name)
-    shutil.copy2(template_path, output_path)
-    FORM_CACHE["_output_path"] = output_path
-    return output_path
-
-
-def _get_sheet_by_name(workbook):
-    target = _normalize_text(SHEET_NAME).replace(" ", "")
-    for ws in workbook.Worksheets:
-        name_norm = _normalize_text(ws.Name).replace(" ", "")
-        if name_norm == target:
-            return ws
-    try:
-        return workbook.Worksheets(SHEET_NAME)
-    except Exception as exc:
-        raise KeyError(f"No existe la hoja {SHEET_NAME}.") from exc
-
-
-def _find_row_by_text(ws, text):
-    cell = ws.Columns("A").Find(What=text, LookAt=1)
-    if cell is not None:
-        return cell.Row
-    cell = ws.Columns("A").Find(What=text, LookAt=2)
-    if cell is not None:
-        return cell.Row
-    target = _normalize_text(text)
-    used = ws.UsedRange
-    start_row = used.Row
-    end_row = used.Row + used.Rows.Count - 1
-    for row in range(start_row, end_row + 1):
-        value = ws.Cells(row, 1).Value
-        if not value:
-            continue
-        value_norm = _normalize_text(str(value))
-        if value_norm == target:
-            return row
-    for row in range(start_row, end_row + 1):
-        value = ws.Cells(row, 1).Value
-        if not value:
-            continue
-        value_norm = _normalize_text(str(value))
-        if target in value_norm:
-            if target.startswith("2.") or target.startswith("5."):
-                if value_norm.startswith(target):
-                    return row
-            else:
-                return row
-    raise ValueError(f"No se encontró el texto '{text}' en la columna A.")
 
 
 def get_usuarios_reca_cedulas(env_path=".env"):
@@ -1421,159 +1346,108 @@ def sync_usuarios_reca(env_path=".env"):
     return len(rows)
 
 
-def _write_section_1(ws, payload):
+def _build_section_1_writes(payload):
     if not payload:
         payload = SECTION_1_CACHE
-    if not payload:
-        try:
-            if load_cache_from_file():
-                payload = FORM_CACHE.get("section_1", {}) or SECTION_1_CACHE
-        except Exception:
-            payload = payload or {}
-    for key, cell in EXCEL_MAPPING.get("section_1", {}).items():
-        if key in payload:
-            ws_write(ws, cell, payload.get(key))
-            _log_excel(
-                f"WRITE section=section_1 cell={cell} key={key} value={payload.get(key)!r}"
-            )
+    return build_sheet_updates(SHEET_NAME, EXCEL_MAPPING.get("section_1", {}), payload or {})
 
 
-def _insert_person_block(ws, start_row, block_height, insert_at):
-    start_end = start_row + block_height - 1
-    dest_end = insert_at + block_height - 1
-    source = ws.Range(f"A{start_row}:{SECTION_2_LAST_COLUMN}{start_end}")
-    dest = ws.Range(f"A{insert_at}:{SECTION_2_LAST_COLUMN}{dest_end}")
-    source.Copy()
-    dest.Insert(Shift=-4121)
-    for row_offset in range(block_height):
-        ws.Rows(insert_at + row_offset).RowHeight = ws.Rows(start_row + row_offset).RowHeight
-    ws.Application.CutCopyMode = False
-
-
-def _write_section_2(ws, oferentes):
+def _build_section_2_writes(oferentes):
     if not oferentes:
-        return
-    start_row = _find_row_by_text(ws, SECTION_2_ANCHOR)
-    next_row = _find_row_by_text(ws, SECTION_5_ANCHOR)
-    block_height = next_row - start_row
-    if block_height <= 0:
-        raise ValueError("Anclas de seccion 2 invalidas.")
-    _log_excel(
-        f"SECTION section=section_2 start_row={start_row} next_row={next_row} block_height={block_height} total={len(oferentes)}"
-    )
-    total_oferentes = len(oferentes)
-    if 2 <= total_oferentes <= 4:
-        ws_write(ws, "G1", "PROCESO DE SELECCION INCLUYENTE GRUPAL - 2 A 4 OFERENTES")
-    elif 5 <= total_oferentes <= 7:
-        ws_write(ws, "G1", "PROCESO DE SELECCION INCLUYENTE GRUPAL - 5 A 7 OFERENTES")
-    elif 8 <= total_oferentes <= 10:
-        ws_write(ws, "G1", "PROCESO DE SELECCION INCLUYENTE GRUPAL - 8 A 10 OFERENTES")
-    for idx in range(1, len(oferentes)):
-        insert_at = start_row + (block_height * idx)
-        _insert_person_block(ws, start_row, block_height, insert_at)
-        _log_excel(
-            f"INSERT section=section_2 rows={block_height} at={insert_at}"
-        )
-
-    for idx, entry in enumerate(oferentes):
-        base_row = start_row + (block_height * idx)
-        for field_id, (col, row) in SECTION_2_CELL_MAP.items():
-            offset = row - SECTION_2_TEMPLATE_ANCHOR_ROW
-            target_row = base_row + offset
-            value = entry.get(field_id, "")
-            if value == "":
-                continue
-            if field_id == "certificado_porcentaje":
-                value = _coerce_excel_decimal_value(value)
-            _log_excel(
-                f"WRITE section=section_2 cell={col}{target_row} key={field_id} value={value!r}"
-            )
-            ws_write(ws, f"{col}{target_row}", value)
+        return []
+    writes = []
+    # Individual variant: single oferente, fixed rows from SECTION_2_CELL_MAP
+    entry = oferentes[0] if isinstance(oferentes, list) else oferentes
+    for field_id, (col, row) in SECTION_2_CELL_MAP.items():
+        value = entry.get(field_id, "")
+        if value == "":
+            continue
+        writes.append({"range": f"'{SHEET_NAME}'!{col}{row}", "value": value})
+    return writes
 
 
-def _write_section_5(ws, payload):
+def _build_section_5_writes(payload):
     if not payload:
-        return
-    anchor_row = _find_row_by_text(ws, SECTION_5_ANCHOR)
-    ajustes_row = anchor_row + 1
-    nota_row = anchor_row + 2
+        return []
+    writes = []
     ajustes_value = payload.get("ajustes_recomendaciones", "")
     nota_value = payload.get("nota", "")
     nota_value = f"Nota: {nota_value}" if nota_value else "Nota:"
-    _log_excel(
-        f"WRITE section=section_5 cell=A{ajustes_row} key=ajustes_recomendaciones value={ajustes_value!r}"
-    )
-    _log_excel(
-        f"WRITE section=section_5 cell=A{nota_row} key=nota value={nota_value!r}"
-    )
-    ws_write(ws, f"A{ajustes_row}", ajustes_value)
-    ws_write(ws, f"A{nota_row}", nota_value)
+    if ajustes_value:
+        writes.append({"range": f"'{SHEET_NAME}'!A{SECTION_5_AJUSTES_ROW}", "value": ajustes_value})
+    writes.append({"range": f"'{SHEET_NAME}'!A{SECTION_5_NOTA_ROW}", "value": nota_value})
+    return writes
 
 
-def _write_section_6(ws, payload):
+def _build_section_6_writes(payload):
     if not payload:
-        return
+        return []
     mapping = EXCEL_MAPPING.get("section_6", {})
-    title_row = _find_row_by_text(ws, "6. ASISTENTES")
-    start_row = title_row + 1
-    base_rows = mapping.get("rows", 4)
+    start_row = mapping.get("start_row", 85)
     nombre_col = mapping.get("nombre_col", "E")
     cargo_col = mapping.get("cargo_col", "M")
-    total = len(payload)
-    if total > base_rows:
-        insert_at = start_row + base_rows
-        template_row = start_row + base_rows - 1
-        for _ in range(total - base_rows):
-            ws.Rows(insert_at).Insert()
-            ws.Rows(template_row).Copy(ws.Rows(insert_at))
-            insert_at += 1
+    writes = []
     for idx, entry in enumerate(payload):
         row = start_row + idx
-        nombre = entry.get("nombre", "")
-        cargo = entry.get("cargo", "")
-        _log_excel(
-            f"WRITE section=section_6 cell={nombre_col}{row} key=nombre value={nombre!r}"
-        )
-        _log_excel(
-            f"WRITE section=section_6 cell={cargo_col}{row} key=cargo value={cargo!r}"
-        )
-        ws_write(ws, f"{nombre_col}{row}", nombre)
-        ws_write(ws, f"{cargo_col}{row}", cargo)
+        nombre = (entry.get("nombre") or "").strip()
+        cargo = (entry.get("cargo") or "").strip()
+        if nombre:
+            writes.append({"range": f"'{SHEET_NAME}'!{nombre_col}{row}", "value": nombre})
+        if cargo:
+            writes.append({"range": f"'{SHEET_NAME}'!{cargo_col}{row}", "value": cargo})
+    return writes
+
+
+def _build_section_6_row_insertions(payload):
+    if not payload:
+        return []
+    mapping = EXCEL_MAPPING.get("section_6", {})
+    base_rows = int(mapping.get("rows", 4) or 4)
+    total_rows = len(payload)
+    if total_rows <= base_rows:
+        return []
+    return [
+        {
+            "sheet_name": SHEET_NAME,
+            "start_row": int(mapping.get("start_row", 85) or 85),
+            "base_rows": base_rows,
+            "total_rows": total_rows,
+        }
+    ]
 
 
 def export_to_excel(clear_cache=True):
-    clear_written_rows()
-    output_path = _ensure_output_path()
-    _log_excel(f"START export_all output={output_path}")
-    try:
-        import win32com.client as win32
-    except ImportError as exc:
-        _log_excel("ERROR export_all error=pywin32_not_installed")
-        raise RuntimeError("pywin32 no esta instalado. Instala con pip install pywin32.") from exc
-    excel = win32.DispatchEx("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
-    wb = None
-    try:
-        wb = excel.Workbooks.Open(output_path)
-        ws = _get_sheet_by_name(wb)
-        _write_section_1(ws, FORM_CACHE.get("section_1", {}))
-        _write_section_2(ws, FORM_CACHE.get("section_2", []))
-        _write_section_5(ws, FORM_CACHE.get("section_5", {}))
-        _write_section_6(ws, FORM_CACHE.get("section_6", []))
-        sanitize_logo_error_cells(wb)
-        autofit_rows(ws, log_fn=_log_excel)
-        wb.Save()
-        _log_excel("SUCCESS export_all")
-    except Exception as exc:
-        _log_excel(f"ERROR export_all error={exc!r}")
-        raise
-    finally:
-        if wb is not None:
-            wb.Close(SaveChanges=True)
-        excel.Quit()
+    if not FORM_CACHE.get("section_1") and cache_file_exists():
+        load_cache_from_file()
+
+    from google_sheets_client import get_master_template_id
+    from drive_upload import publish_sheet_from_template
+
+    empresa_nombre = SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
+    base_name = _sanitize_filename(empresa_nombre)
+
+    writes = []
+    writes.extend(_build_section_1_writes(FORM_CACHE.get("section_1", {})))
+    writes.extend(_build_section_2_writes(FORM_CACHE.get("section_2", [])))
+    writes.extend(_build_section_5_writes(FORM_CACHE.get("section_5", {})))
+    writes.extend(_build_section_6_writes(FORM_CACHE.get("section_6", [])))
+    row_insertions = _build_section_6_row_insertions(FORM_CACHE.get("section_6", []))
+
+    result = publish_sheet_from_template(
+        template_id=get_master_template_id(),
+        sheet_writes=writes,
+        base_name=base_name,
+        folder_name=_sanitize_filename(empresa_nombre),
+        row_insertions=row_insertions or None,
+    )
+
     if clear_cache:
         clear_cache_file()
         clear_form_cache()
-    return output_path
+
+    return {
+        "output_path": result.get("webViewLink", ""),
+        "drive_file_id": result.get("file_id", ""),
+        "already_in_drive": True,
+    }
 

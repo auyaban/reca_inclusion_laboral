@@ -1,6 +1,5 @@
 import os
 import re
-import shutil
 import json
 import time
 
@@ -12,19 +11,11 @@ from . import seccion_5
 from . import seccion_6_7
 from . import seccion_8
 from formularios.common import (
-    _build_process_output_path,
-    _get_desktop_dir,
-    _next_available_file_path,
     _normalize_text,
-    sanitize_logo_error_cells,
-    autofit_rows,
-    clear_written_rows,
-    ws_write,
     _sanitize_filename,
     _supabase_get,
 )
 from logging_utils import log_excel_event
-from version_info import resource_path
 
 FORM_NAME = "Evaluacion de Accesibilidad"
 SHEET_NAME = "2. EVALUACIÓN DE ACCESIBILIDAD"
@@ -213,21 +204,6 @@ def clear_form_cache():
     SECTION_1_CACHE.clear()
 
 
-def _find_template_path():
-    templates_dir = resource_path("templates")
-    if not templates_dir.is_dir():
-        raise FileNotFoundError("No existe la carpeta templates.")
-    for name in os.listdir(templates_dir):
-        normalized = _normalize_text(name).replace("_", "")
-        if (
-            "evaluacion" in normalized
-            and "accesibilidad" in normalized
-            and normalized.endswith(".xlsx")
-        ):
-            return os.fspath(templates_dir / name)
-    raise FileNotFoundError("No se encontró el template de evaluacion.")
-
-
 def _get_safe_company_name(cache=None):
     cache_data = dict(cache or FORM_CACHE)
     section_1 = cache_data.get("section_1", {})
@@ -240,27 +216,6 @@ def build_output_base_name(cache=None):
     safe_company = _get_safe_company_name(cache)
     process_name = "Evaluacion de Accesibilidad"
     return f"{process_name} - {safe_company}"
-
-
-def _ensure_output_path():
-    output_path = FORM_CACHE.get("_output_path")
-    if output_path and os.path.exists(output_path):
-        return output_path
-    template_path = _find_template_path()
-    output_base_name = build_output_base_name()
-    empresa_nombre = (FORM_CACHE.get("section_1") or {}).get("nombre_empresa") or "Empresa"
-    output_path = _build_process_output_path(empresa_nombre, output_base_name)
-    if not os.path.exists(output_path):
-        shutil.copy2(template_path, output_path)
-    FORM_CACHE["_output_path"] = output_path
-    return output_path
-
-
-def get_output_path():
-    output_path = FORM_CACHE.get("_output_path")
-    if output_path and os.path.exists(output_path):
-        return output_path
-    return None
 
 
 def _get_log_dir():
@@ -407,87 +362,60 @@ def build_google_sheet_export_payload(cache=None):
             f"'{SHEET_NAME}'!{section_8_cfg['cargo_col']}{start_row}:{section_8_cfg['cargo_col']}{end_row}",
         ]
 
+    asistentes = list(cache_data.get("section_8") or [])
+    base_rows = int(section_8_cfg.get("base_rows", 4) or 4)
+    row_insertions = []
+    if start_row and len(asistentes) > base_rows:
+        row_insertions.append(
+            {
+                "sheet_name": SHEET_NAME,
+                "start_row": start_row,
+                "base_rows": base_rows,
+                "total_rows": len(asistentes),
+            }
+        )
+
     return {
         "sheet_name": SHEET_NAME,
         "writes": writes,
         "clear_ranges": clear_ranges,
+        "row_insertions": row_insertions,
     }
 
 
-def _write_section_with_ws(ws, section_id, payload):
-    mapping = EXCEL_MAPPING.get(section_id)
-    if not mapping:
-        return
-    if section_id == "section_8":
-        start_row = mapping["start_row"]
-        base_rows = mapping.get("base_rows", 4)
-        asistentes = payload or []
-        total = len(asistentes)
-        template_row = start_row + base_rows - 1
-        if total > base_rows:
-            insert_at = start_row + base_rows
-            extra_rows = total - base_rows
-            for _ in range(extra_rows):
-                ws.Rows(insert_at).Insert()
-                ws.Rows(template_row).Copy()
-                ws.Rows(insert_at).PasteSpecial(-4122)
-                insert_at += 1
-        for write in _build_section_writes(
-            section_id,
-            payload,
-            section8_max_rows=max(base_rows, total),
-            include_section8_labels=True,
-        ):
-            _log_excel(
-                f"WRITE section={section_id} cell={write['cell']} key={write['key']} value={write['value']!r}"
-            )
-            ws_write(ws, write["cell"], write["value"])
-    else:
-        for write in _build_section_writes(section_id, payload):
-            _log_excel(
-                f"WRITE section={section_id} cell={write['cell']} key={write['key']} value={write['value']!r}"
-            )
-            ws_write(ws, write["cell"], write["value"])
-
-
-
-
 def export_to_excel(progress_callback=None):
-    clear_written_rows()
-    output_path = _ensure_output_path()
-    _log_excel(f"START export_all output={output_path}")
-    try:
-        import win32com.client as win32
-    except ImportError as exc:
-        _log_excel("ERROR export_all error=pywin32_not_installed")
-        raise RuntimeError("pywin32 no esta instalado. Instala con pip install pywin32.") from exc
-    excel = win32.DispatchEx("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
-    wb = None
-    try:
-        wb = excel.Workbooks.Open(output_path)
-        ws = wb.Worksheets(SHEET_NAME)
-        for section_id in EXCEL_MAPPING.keys():
-            payload = FORM_CACHE.get(section_id, {})
-            _log_excel(f"SECTION export_all section={section_id}")
-            if progress_callback:
-                progress_callback(section_id)
-            _write_section_with_ws(ws, section_id, payload)
-        sanitize_logo_error_cells(wb)
-        autofit_rows(ws, log_fn=_log_excel)
-        wb.Save()
-        _log_excel("SUCCESS export_all")
-    except Exception as exc:
-        _log_excel(f"ERROR export_all error={exc!r}")
-        raise
-    finally:
-        if wb is not None:
-            wb.Close(SaveChanges=True)
-        excel.Quit()
+    from google_sheets_client import get_master_template_id
+    from drive_upload import publish_sheet_from_template
+
+    _log_excel("START export_to_sheets")
+
+    export_payload = build_google_sheet_export_payload()
+    writes = export_payload.get("writes", [])
+    clear_ranges = export_payload.get("clear_ranges", [])
+    row_insertions = export_payload.get("row_insertions", [])
+
+    empresa_nombre = (FORM_CACHE.get("section_1") or {}).get("nombre_empresa") or "Empresa"
+    base_name = _sanitize_filename(empresa_nombre)
+
+    result = publish_sheet_from_template(
+        template_id=get_master_template_id(),
+        sheet_writes=writes,
+        base_name=base_name,
+        folder_name=_sanitize_filename(empresa_nombre),
+        clear_ranges=clear_ranges,
+        row_insertions=row_insertions or None,
+        extra_visible_sheets=["2.1 EVALUACION FOTOS"],
+    )
+
+    _log_excel(f"SUCCESS export_to_sheets link={result.get('webViewLink', '')}")
     clear_cache_file()
     clear_form_cache()
-    return output_path
+
+    return {
+        "output_path": result.get("webViewLink", ""),
+        "drive_file_id": result.get("file_id", ""),
+        "already_in_drive": True,
+    }
 
 EXCEL_MAPPING = {
     "section_1": {
@@ -797,10 +725,10 @@ EXCEL_MAPPING = {
         "observaciones_generales": "A205",
     },
     "section_7": {
-        "cargos_compatibles": "A208",
+        "cargos_compatibles": "A207",
     },
     "section_8": {
-        "start_row": 212,
+        "start_row": 211,
         "name_col": "C",
         "cargo_col": "O",
         "label_name_col": "A",

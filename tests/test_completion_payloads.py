@@ -191,6 +191,25 @@ class CompletionPayloadTests(unittest.TestCase):
         self.assertEqual(parsed["nombre_profesional"], "")
         self.assertEqual(parsed["candidatos_profesional"], ["Leidy Novoa"])
 
+    def test_google_sheets_url_does_not_degrade_attachment_filename(self) -> None:
+        result = completion_payloads.build_completion_payload(
+            "sensibilizacion",
+            "Sensibilizacion",
+            {
+                "section_1": {
+                    "fecha_visita": "2026-03-17",
+                    "nombre_empresa": "Empresa Demo",
+                    "nit_empresa": "900123456",
+                    "modalidad": "Mixta",
+                }
+            },
+            output_path="https://docs.google.com/spreadsheets/d/abc123/edit",
+            session_id="session-4b",
+            app_version="2.0.0",
+        )
+
+        self.assertEqual(result["payload_normalized"]["attachment"]["filename"], "Sensibilizacion")
+
     def test_builds_followup_payload(self) -> None:
         result = completion_payloads.build_followup_completion_payload(
             case_ref=r"C:\tmp\seguimiento.xlsx",
@@ -230,6 +249,37 @@ class CompletionPayloadTests(unittest.TestCase):
         self.assertEqual(payload["parsed_raw"]["participantes"][0]["cedula_usuario"], "999")
         self.assertIn("seguimientos:", result["source_item_key"])
         self.assertTrue(result["source_item_key"].endswith(":followup:2"))
+
+    def test_strips_internal_cache_metadata_from_raw_payload(self) -> None:
+        result = completion_payloads.build_completion_payload(
+            "induccion_organizacional",
+            "Induccion Organizacional",
+            {
+                "section_1": {
+                    "fecha_visita": "2026-03-17",
+                    "nombre_empresa": "Empresa Demo",
+                    "nit_empresa": "900123456",
+                    "modalidad": "Presencial",
+                    "profesional_asignado": "Leidy Novoa",
+                },
+                "section_2": [{"nombre_oferente": "Ana", "cargo_oferente": "Auxiliar"}],
+                "section_6": [{"nombre": "Leidy Novoa", "cargo": "Profesional"}],
+                "_section_history": {"section_3": [{"payload": {"foo": "bar"}}]},
+                "_last_saved_at": "2026-03-27 10:00:00",
+                "_last_saved_section": "section_3",
+                "_last_saved_source": "autosave",
+            },
+            output_path=r"C:\tmp\induccion.xlsx",
+            session_id="session-6",
+            app_version="2.0.0",
+        )
+
+        raw_cache = result["payload_raw"]["cache_snapshot"]
+        self.assertNotIn("_section_history", raw_cache)
+        self.assertNotIn("_last_saved_at", raw_cache)
+        self.assertNotIn("_last_saved_section", raw_cache)
+        self.assertNotIn("_last_saved_source", raw_cache)
+        self.assertIn("section_1", raw_cache)
 
 
 if __name__ == "__main__":

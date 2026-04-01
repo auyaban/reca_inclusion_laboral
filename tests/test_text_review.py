@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 import text_review
 
@@ -29,6 +30,98 @@ class TextReviewTargetTests(unittest.TestCase):
         self.assertIn(("section_2_1", "funciones_tareas"), paths)
         self.assertIn(("section_5", "observaciones_peligros"), paths)
         self.assertIn(("section_7", "observaciones_recomendaciones"), paths)
+
+
+class TextReviewBatchTests(unittest.TestCase):
+    def test_build_review_batches_respects_item_and_char_limits(self) -> None:
+        settings = {
+            "batch_max_items": 2,
+            "batch_max_chars": 10,
+        }
+
+        batches = text_review._build_review_batches(
+            ["abcd", "ef", "ghij", "k"],
+            settings,
+        )
+
+        self.assertEqual(batches, [["abcd", "ef"], ["ghij", "k"]])
+
+    def test_parse_batch_review_output_accepts_json_code_fences(self) -> None:
+        reviewed = text_review._parse_batch_review_output(
+            """```json
+{"items":[{"id":"item_1","text":"Hola"},{"id":"item_2","text":"Mundo"}]}
+```""",
+            ["item_1", "item_2"],
+        )
+
+        self.assertEqual(reviewed, ["Hola", "Mundo"])
+
+    def test_review_export_cache_batches_unique_texts(self) -> None:
+        cache_snapshot = {
+            "section_2_1": {
+                "observaciones": "texto a",
+                "funciones_tareas": "texto b",
+                "conocimientos_basicos": "texto a",
+            }
+        }
+        settings = {
+            "enabled": True,
+            "api_key": "",
+            "model": "gpt-4.1-nano",
+            "function_name": "text-review-orthography",
+            "timeout": 45,
+            "batch_max_items": 8,
+            "batch_max_chars": 12000,
+        }
+
+        with (
+            mock.patch.object(text_review, "_read_settings", return_value=settings),
+            mock.patch.object(text_review, "_load_supabase_credentials", return_value=("url", "key")),
+            mock.patch.object(text_review, "_supabase_get_access_token", return_value="jwt"),
+            mock.patch.object(
+                text_review,
+                "_review_text_batch",
+                return_value=["texto a corregido", "texto b corregido"],
+            ) as batch_mock,
+            mock.patch.object(text_review, "_review_text") as single_mock,
+        ):
+            result = text_review.review_export_cache("evaluacion_accesibilidad", cache_snapshot)
+
+        self.assertEqual(result.status, "reviewed")
+        self.assertEqual(result.reviewed_count, 3)
+        self.assertEqual(result.cache["section_2_1"]["observaciones"], "texto a corregido")
+        self.assertEqual(result.cache["section_2_1"]["conocimientos_basicos"], "texto a corregido")
+        self.assertEqual(result.cache["section_2_1"]["funciones_tareas"], "texto b corregido")
+        batch_mock.assert_called_once_with(["texto a", "texto b"], settings)
+        single_mock.assert_not_called()
+
+    def test_review_text_batch_falls_back_to_individual_reviews(self) -> None:
+        settings = {
+            "enabled": True,
+            "api_key": "",
+            "model": "gpt-4.1-nano",
+            "function_name": "text-review-orthography",
+            "timeout": 45,
+            "batch_max_items": 8,
+            "batch_max_chars": 12000,
+        }
+
+        with (
+            mock.patch.object(
+                text_review,
+                "_review_text_batch_via_edge",
+                side_effect=RuntimeError("bad batch"),
+            ),
+            mock.patch.object(
+                text_review,
+                "_review_text",
+                side_effect=lambda text, _settings: f"{text} corregido",
+            ) as single_mock,
+        ):
+            reviewed = text_review._review_text_batch(["uno", "dos"], settings)
+
+        self.assertEqual(reviewed, ["uno corregido", "dos corregido"])
+        self.assertEqual(single_mock.call_count, 2)
 
 
 if __name__ == "__main__":

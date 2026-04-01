@@ -200,36 +200,6 @@ WINDOW_CLASS_FORM_ID_MAP = {
 
 
 def _autosave_section(module, section_key, collect_fn):
-    """Guarda silenciosamente los datos de la sección actual al caché local.
-    Se llama al navegar hacia atrás para no perder el trabajo."""
-    try:
-        payload = collect_fn()
-        module.set_section_cache(section_key, payload)
-        module.save_cache_to_file()
-    except Exception:
-        pass
-
-
-def _collect_flat_fields(fields):
-    """Recolecta un dict plano de widgets {field_id: widget} en un payload."""
-    payload = {}
-    for field_id, widget in fields.items():
-        try:
-            if isinstance(widget, tk.BooleanVar):
-                payload[field_id] = widget.get()
-            elif isinstance(widget, tk.Text):
-                payload[field_id] = widget.get("1.0", tk.END).strip()
-            elif isinstance(widget, (ttk.Combobox, tk.Entry)):
-                payload[field_id] = widget.get().strip()
-            elif hasattr(widget, 'get'):
-                raw = widget.get()
-                payload[field_id] = raw.strip() if isinstance(raw, str) else raw
-        except Exception:
-            pass
-    return payload
-
-
-def _autosave_section(module, section_key, collect_fn):
     """Guarda silenciosamente los datos de la seccion actual al cache local.
     Se llama al navegar hacia atras para no perder el trabajo."""
     try:
@@ -2667,7 +2637,7 @@ def _result_with_dependency_down(status_text):
     }
 
 
-def probe_startup_services(log_enabled=False, require_drive_write=True):
+def probe_startup_services(log_enabled=False, require_drive_write=False):
     internet = check_internet(log_enabled=log_enabled)
     if not internet.get("ok"):
         return {
@@ -2683,101 +2653,6 @@ def probe_startup_services(log_enabled=False, require_drive_write=True):
             require_write=require_drive_write,
         ),
     }
-
-
-def _is_seguimiento_form(form_name):
-    return "seguimiento" in str(form_name or "").strip().lower()
-
-
-def _build_company_workbook_path(individual_excel_path, company_name):
-    company_safe = _normalize_ascii_text(company_name) or "Empresa"
-    base_dir = os.path.dirname(individual_excel_path)
-    parent_name = _normalize_ascii_text(os.path.basename(base_dir))
-    folder = base_dir if parent_name.lower() == company_safe.lower() else os.path.join(base_dir, company_safe)
-    os.makedirs(folder, exist_ok=True)
-    return os.path.join(folder, f"{company_safe}.xlsx")
-
-
-def _append_sheet_to_company_workbook(individual_excel_path, company_name, form_name):
-    if not individual_excel_path or not os.path.exists(individual_excel_path):
-        raise RuntimeError("No existe el Excel individual para consolidar.")
-    if _is_seguimiento_form(form_name):
-        return individual_excel_path
-
-    try:
-        import win32com.client as win32  # pyright: ignore[reportMissingModuleSource]
-    except ImportError as exc:
-        raise RuntimeError("Falta pywin32 para consolidar hojas por empresa.") from exc
-
-    company_workbook_path = _build_company_workbook_path(individual_excel_path, company_name)
-    sheet_base = _sanitize_sheet_name(form_name, fallback="Formulario")
-
-    if not os.path.exists(company_workbook_path):
-        shutil.copy2(individual_excel_path, company_workbook_path)
-        excel = win32.DispatchEx("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
-        wb = None
-        try:
-            wb = excel.Workbooks.Open(os.path.abspath(company_workbook_path))
-            existing_names = {str(wb.Worksheets(i).Name) for i in range(1, wb.Worksheets.Count + 1)}
-            first_sheet = wb.Worksheets(1)
-            next_name = sheet_base
-            suffix = 2
-            while next_name in existing_names and next_name != str(first_sheet.Name):
-                next_name = _sanitize_sheet_name(f"{sheet_base} {suffix}", fallback=sheet_base)
-                suffix += 1
-            first_sheet.Name = next_name
-            wb.Save()
-            return company_workbook_path
-        finally:
-            try:
-                if wb is not None:
-                    wb.Close(SaveChanges=False)
-            except Exception:
-                pass
-            try:
-                excel.Quit()
-            except Exception:
-                pass
-
-    excel = win32.DispatchEx("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
-    src_wb = None
-    dst_wb = None
-    try:
-        src_wb = excel.Workbooks.Open(os.path.abspath(individual_excel_path))
-        dst_wb = excel.Workbooks.Open(os.path.abspath(company_workbook_path))
-        existing_names = {str(dst_wb.Worksheets(i).Name) for i in range(1, dst_wb.Worksheets.Count + 1)}
-
-        # In COM automation, cross-workbook copy is reliable with "Before".
-        src_wb.Worksheets(1).Copy(Before=dst_wb.Worksheets(1))
-        new_sheet = dst_wb.Worksheets(1)
-
-        next_name = sheet_base
-        suffix = 2
-        while next_name in existing_names:
-            next_name = _sanitize_sheet_name(f"{sheet_base} {suffix}", fallback=sheet_base)
-            suffix += 1
-        new_sheet.Name = next_name
-        dst_wb.Save()
-        return company_workbook_path
-    finally:
-        try:
-            if src_wb is not None:
-                src_wb.Close(SaveChanges=False)
-        except Exception:
-            pass
-        try:
-            if dst_wb is not None:
-                dst_wb.Close(SaveChanges=False)
-        except Exception:
-            pass
-        try:
-            excel.Quit()
-        except Exception:
-            pass
 
 
 def _maximize_window(window):
@@ -2921,7 +2796,7 @@ def _finalize_export_flow(window, loading, completion_result):
         if remote_url:
             message = f"{message}\nLink: {remote_url}"
         elif output_path:
-            message = f"{message}\nCopia local: {output_path}"
+            message = f"{message}\nArchivo local: {output_path}"
         _finish_with_loading(
             loading,
             message,
@@ -2929,7 +2804,7 @@ def _finalize_export_flow(window, loading, completion_result):
             open_prompt=(
                 "¿Quieres abrirlo en Google Drive?"
                 if remote_url
-                else "¿Quieres abrir la copia local?"
+                else "¿Quieres abrir el archivo local?"
             ),
         )
         return
@@ -2937,7 +2812,7 @@ def _finalize_export_flow(window, loading, completion_result):
     if status == "pending":
         message = (
             "Formulario completado.\n"
-            "La copia local quedó guardada y la subida a Google Drive quedó pendiente.\n"
+            "Se conservó un archivo local y la subida a Google Drive quedó pendiente.\n"
             "La información del formulario se conserva para soporte o reintento manual.\n"
             f"Archivo local: {output_path}"
         )
@@ -2947,7 +2822,7 @@ def _finalize_export_flow(window, loading, completion_result):
             loading,
             message,
             open_target=output_path,
-            open_prompt="¿Quieres abrir la copia local?",
+            open_prompt="¿Quieres abrir el archivo local?",
         )
         return
 
@@ -2964,16 +2839,16 @@ def _finalize_export_flow(window, loading, completion_result):
             loading,
             message,
             open_target=output_path,
-            open_prompt="¿Quieres abrir la copia local?",
+            open_prompt="¿Quieres abrir el archivo local?",
         )
         return
 
     if status == "local":
         _finish_with_loading(
             loading,
-            "Formato completado. ¿Quieres abrir la copia local?",
+            "Formato completado. ¿Quieres abrir el archivo local?",
             open_target=output_path,
-            open_prompt="¿Quieres abrir la copia local?",
+            open_prompt="¿Quieres abrir el archivo local?",
         )
         return
 
@@ -4693,13 +4568,13 @@ def _start_background_finalization(
                     restore_original_cache = True
                     _update_loading_async(
                         loading,
-                        status="Ortografía revisada. Generando Excel...",
+                        status="Ortografía revisada. Preparando acta...",
                         progress=50,
                     )
                 elif review_result.status in {"skipped", "failed"}:
                     _update_loading_async(
                         loading,
-                        status="Revisión ortográfica omitida. Generando Excel...",
+                        status="Revisión ortográfica omitida. Preparando acta...",
                         progress=50,
                     )
 
@@ -4719,8 +4594,8 @@ def _start_background_finalization(
                 )
             if not already_in_drive and not os.path.exists(output_path):
                 raise FinalizeProcessError(
-                    "verificando el archivo generado",
-                    RuntimeError(f"No se encontró el archivo generado:\n{output_path}"),
+                    "verificando el acta generada",
+                    RuntimeError(f"No se encontró el acta generada:\n{output_path}"),
                 )
             if module and hasattr(module, "get_form_cache"):
                 try:
@@ -5262,7 +5137,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             messagebox.showerror("Error", str(exc))
             return
         loading = LoadingDialog(self, title="Guardando")
-        loading.set_status("Guardando Excel...")
+        loading.set_status("Preparando acta...")
         loading.set_progress(30)
         cache_snapshot = presentacion_programa.get_form_cache()
         cache = cache_snapshot
@@ -5279,7 +5154,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             company_name=company_name,
             form_id="presentacion_programa",
             worker_fn=lambda: _raise_finalize_stage(
-                "guardando el Excel",
+                "preparando el acta",
                 presentacion_programa.export_to_excel,
             ),
         )
@@ -10350,7 +10225,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                 )
 
             return _raise_finalize_stage(
-                "guardando el Excel",
+                "preparando el acta",
                 lambda: evaluacion_accesibilidad.export_to_excel(progress_callback=_on_progress),
             )
 
@@ -11944,7 +11819,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             messagebox.showerror("Error", str(exc))
             return
         loading = LoadingDialog(self, title="Guardando")
-        loading.set_status("Guardando Excel...")
+        loading.set_status("Preparando acta...")
         loading.set_progress(30)
         cache_snapshot = condiciones_vacante.get_form_cache()
         cache = cache_snapshot
@@ -11957,7 +11832,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             company_name=company_name,
             form_id=getattr(self, "_form_id", self.FORM_META_ID),
             worker_fn=lambda: _raise_finalize_stage(
-                "guardando el Excel",
+                "preparando el acta",
                 condiciones_vacante.export_to_excel,
             ),
         )
@@ -13393,7 +13268,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             messagebox.showerror("Error", str(exc))
             return
         loading = LoadingDialog(self, title="Guardando")
-        loading.set_status("Generando Excel...")
+        loading.set_status("Preparando acta...")
         loading.set_progress(40)
         cache_snapshot = self._seleccion_module.get_form_cache()
         cache = cache_snapshot
@@ -13402,7 +13277,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
         def _worker():
             output_path = _raise_finalize_stage(
-                "generando el Excel",
+                "preparando el acta",
                 lambda: self._seleccion_module.export_to_excel(clear_cache=False),
             )
             _update_loading_async(
@@ -14549,7 +14424,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             messagebox.showerror("Error", str(exc))
             return
         loading = LoadingDialog(self, title="Guardando")
-        loading.set_status("Generando Excel...")
+        loading.set_status("Preparando acta...")
         loading.set_progress(40)
         cache = contratacion_incluyente.get_form_cache()
         section_1 = cache.get("section_1", {})
@@ -14557,7 +14432,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
         def _worker():
             output_path = _raise_finalize_stage(
-                "generando el Excel",
+                "preparando el acta",
                 lambda: contratacion_incluyente.export_to_excel(clear_cache=False),
             )
             _update_loading_async(
@@ -15502,7 +15377,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _export_form(self):
         loading = LoadingDialog(self, title="Guardando")
-        loading.set_status("Exportando Excel...")
+        loading.set_status("Preparando acta...")
         loading.set_progress(35)
 
         cache_snapshot = induccion_organizacional.get_form_cache()
@@ -15510,7 +15385,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
         company_name = section_1.get("nombre_empresa")
         def _worker():
             output_path = _raise_finalize_stage(
-                "exportando el Excel",
+                "preparando el acta",
                 lambda: induccion_organizacional.export_to_excel(clear_cache=False),
             )
             return output_path
@@ -16439,7 +16314,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _export_form(self):
         loading = LoadingDialog(self, title="Guardando")
-        loading.set_status("Exportando Excel...")
+        loading.set_status("Preparando acta...")
         loading.set_progress(35)
 
         cache_snapshot = induccion_operativa.get_form_cache()
@@ -16447,7 +16322,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         company_name = section_1.get("nombre_empresa")
         def _worker():
             output_path = _raise_finalize_stage(
-                "exportando el Excel",
+                "preparando el acta",
                 lambda: induccion_operativa.export_to_excel(clear_cache=False),
             )
             return output_path
@@ -16878,7 +16753,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _export_form(self):
         loading = LoadingDialog(self, title="Guardando")
-        loading.set_status("Exportando Excel...")
+        loading.set_status("Preparando acta...")
         loading.set_progress(35)
 
         cache_snapshot = sensibilizacion.get_form_cache()
@@ -16886,7 +16761,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         company_name = section_1.get("nombre_empresa")
         def _worker():
             output_path = _raise_finalize_stage(
-                "exportando el Excel",
+                "preparando el acta",
                 lambda: sensibilizacion.export_to_excel(clear_cache=False),
             )
             return output_path

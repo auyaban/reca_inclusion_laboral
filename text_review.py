@@ -484,7 +484,7 @@ def _call_edge_review(payload, settings):
     supabase_url, supabase_key = _load_supabase_credentials(".env")
     jwt_token = str(_supabase_get_access_token(".env") or "").strip()
     if not jwt_token:
-        raise RuntimeError("No hay sesiÃ³n vÃ¡lida para revisar ortografÃ­a.")
+        raise RuntimeError("No hay sesión válida para revisar ortografía.")
     function_name = str(settings.get("function_name") or DEFAULT_EDGE_FUNCTION_NAME).strip() or DEFAULT_EDGE_FUNCTION_NAME
     url = f"{supabase_url.rstrip('/')}/functions/v1/{function_name}"
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -509,7 +509,7 @@ def _call_edge_review(payload, settings):
             message = str(err.get("message") or "").strip()
             if message:
                 raise RuntimeError(message)
-        raise RuntimeError(str(response_payload.get("message") or "La funciÃ³n de revisiÃ³n no devolviÃ³ texto."))
+        raise RuntimeError(str(response_payload.get("message") or "La función de revisión no devolvió texto."))
     return response_payload
 
 
@@ -524,7 +524,7 @@ def _review_text_direct(text, settings):
     payload = _call_openai_responses_api(str(text or ""), settings, instructions=REVIEW_PROMPT)
     reviewed = _extract_output_text(payload)
     if not reviewed:
-        raise RuntimeError("OpenAI no devolvio texto corregido.")
+        raise RuntimeError("OpenAI no devolvió texto corregido.")
     return reviewed
 
 
@@ -573,7 +573,7 @@ def _review_text_batch_direct(batch_items, settings):
     payload = _call_openai_responses_api(input_payload, settings, instructions=BATCH_REVIEW_PROMPT)
     reviewed = _extract_output_text(payload)
     if not reviewed:
-        raise RuntimeError("OpenAI no devolvio lote corregido.")
+        raise RuntimeError("OpenAI no devolvió lote corregido.")
     expected_ids = [item["id"] for item in batch_items]
     return _parse_batch_review_output(reviewed, expected_ids)
 
@@ -588,7 +588,7 @@ def _review_text_batch_via_edge(batch_items, settings):
     )
     reviewed_items = response_payload.get("items")
     if not isinstance(reviewed_items, list):
-        raise RuntimeError("La funcion de revision no devolvio items por lote.")
+        raise RuntimeError("La función de revisión no devolvió items por lote.")
     expected_ids = [item["id"] for item in batch_items]
     return _parse_batch_review_output(
         json.dumps({"items": reviewed_items}, ensure_ascii=False),

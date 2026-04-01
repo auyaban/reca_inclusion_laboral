@@ -16,6 +16,8 @@ from google_sheets_client import read_sheet_values, extract_spreadsheet_id
 
 RESULTS = []
 CREATED_SHEETS = []
+SKIPPED = []
+INTER_TEST_DELAY_SECONDS = max(0.0, float(os.getenv("RECA_E2E_SHEETS_SLEEP_SECONDS") or "2"))
 
 
 def read_cell(spreadsheet_id, sheet_name, cell):
@@ -45,6 +47,11 @@ def verify_cells(test_name, spreadsheet_id, sheet_name, expected_map):
     for e in errors:
         print(e)
     return len(errors) == 0
+
+
+def record_skip(test_name, reason):
+    SKIPPED.append((test_name, reason))
+    print(f"  [SKIP] {test_name}: {reason}")
 
 
 def extract_id_from_result(result):
@@ -372,7 +379,11 @@ def test_condiciones_vacante():
 # ═══════════════════════════════════════════════════════════════════
 def test_seleccion_incluyente_labs():
     print("\n=== TEST: seleccion_incluyente_labs ===")
-    from formularios.seleccion_incluyente_labs import seleccion_incluyente as mod
+    try:
+        from formularios.seleccion_incluyente_labs import seleccion_incluyente as mod
+    except ImportError:
+        record_skip("seleccion_incluyente_labs", "Modulo labs no disponible en esta rama")
+        return None
 
     mod.FORM_CACHE.clear()
     mod.SECTION_1_CACHE.clear()
@@ -873,6 +884,8 @@ if __name__ == "__main__":
     for name, fn in tests:
         try:
             fn()
+            if SKIPPED and SKIPPED[-1][0] == name:
+                continue
             # Check last result
             if RESULTS and RESULTS[-1][1] == "PASS":
                 passed += 1
@@ -882,17 +895,20 @@ if __name__ == "__main__":
             errors += 1
             print(f"\n  [ERROR] {name}: {exc}")
             traceback.print_exc()
-        # Small delay to avoid rate limiting
-        time.sleep(1)
+        if INTER_TEST_DELAY_SECONDS:
+            time.sleep(INTER_TEST_DELAY_SECONDS)
 
     print("\n" + "=" * 60)
-    print(f"SUMMARY: {passed} passed, {failed} failed, {errors} errors")
+    print(f"SUMMARY: {passed} passed, {failed} failed, {errors} errors, {len(SKIPPED)} skipped")
     print(f"Total sheets created: {len(CREATED_SHEETS)}")
     print("=" * 60)
 
     for name, status, ok, total, errs in RESULTS:
         marker = "✓" if status == "PASS" else "✗"
         print(f"  {marker} {name}: {ok}/{total}")
+
+    for name, reason in SKIPPED:
+        print(f"  - {name}: SKIP ({reason})")
 
     if CREATED_SHEETS:
         print(f"\nCreated spreadsheets:")

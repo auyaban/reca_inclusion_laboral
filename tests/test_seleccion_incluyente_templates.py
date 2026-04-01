@@ -79,6 +79,29 @@ class SeleccionIncluyenteUnifiedTests(unittest.TestCase):
             "Oferente 2",
         )
 
+    def test_section_6_group_overflow_shifts_with_oferentes_and_keeps_simple_row_contract(self) -> None:
+        payload = [{"nombre": f"Asistente {idx}", "cargo": "Profesional"} for idx in range(1, 7)]
+
+        insertions = si._build_section_6_row_insertions(payload, num_oferentes=4)
+        writes = si._build_section_6_writes(payload, num_oferentes=4)
+        start_row = si.SECTION_6_BASE_START_ROW + (3 * si.OFERENTE_BLOCK_HEIGHT)
+
+        self.assertEqual(len(insertions), 1)
+        self.assertEqual(insertions[0]["sheet_name"], si.SHEET_NAME)
+        self.assertEqual(insertions[0]["start_row"], start_row)
+        self.assertEqual(insertions[0]["base_rows"], si.SECTION_6["rows"])
+        self.assertEqual(insertions[0]["total_rows"], 6)
+        self.assertNotIn("template_start_row", insertions[0])
+        self.assertNotIn("repeat_count", insertions[0])
+        self.assertEqual(
+            writes[0]["range"],
+            f"'{si.SHEET_NAME}'!{si.SECTION_6_NOMBRE_COL}{start_row}",
+        )
+        self.assertEqual(
+            writes[-1]["range"],
+            f"'{si.SHEET_NAME}'!{si.SECTION_6_CARGO_COL}{start_row + 5}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

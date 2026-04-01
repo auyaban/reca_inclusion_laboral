@@ -181,6 +181,19 @@ class DriveResilienceTests(unittest.TestCase):
         self.assertTrue(result["internet"]["ok"])
         drive_probe.assert_called_once_with(log_enabled=False, require_write=False)
 
+    def test_probe_startup_services_defaults_to_read_only_drive_probe(self) -> None:
+        with patch.object(app, "check_internet", return_value={"ok": True}):
+            with patch.object(app, "probe_supabase_service", return_value={"ok": True}):
+                with patch.object(
+                    app.drive_upload,
+                    "probe_drive_service",
+                    return_value={"ok": True},
+                ) as drive_probe:
+                    result = app.probe_startup_services()
+
+        self.assertTrue(result["internet"]["ok"])
+        drive_probe.assert_called_once_with(log_enabled=False, require_write=False)
+
     def test_read_followup_case_state_returns_error_instead_of_raising(self) -> None:
         with patch.object(app.seguimientos, "suggest_next_step", side_effect=RuntimeError("boom")):
             with patch.object(app.seguimientos, "describe_case") as describe_case:

@@ -13,10 +13,17 @@ except ImportError:  # pragma: no cover
 
 from logging_utils import log_drive_event
 from formularios.common import _load_env_file, _sanitize_filename as _shared_sanitize_filename
+from google_api_requests import (
+    execute_google_create_with_confirmation,
+    execute_google_request_with_retry,
+)
 
 
 SCOPE = "https://www.googleapis.com/auth/drive"
 DEFAULT_CONFIG_PATH = "config.json"
+GOOGLE_SHEETS_MIME = "application/vnd.google-apps.spreadsheet"
+GOOGLE_FOLDER_MIME = "application/vnd.google-apps.folder"
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def _get_bundle_dir():
@@ -33,6 +40,10 @@ def _get_bundle_dir():
 
 def _sanitize_filename(value):
     return _shared_sanitize_filename(value, default="archivo", max_length=200)
+
+
+def _google_request_logger(log_base_path=None):
+    return lambda message: _log_drive(message, log_base_path)
 
 
 def _load_runtime_env():
@@ -109,11 +120,15 @@ def _resolve_target_root_id(service, configured_id, log_base_path=None):
         return target_id
 
     try:
-        metadata = service.files().get(
-            fileId=target_id,
-            fields="id,name,driveId,parents,mimeType,trashed",
-            supportsAllDrives=True,
-        ).execute()
+        metadata = execute_google_request_with_retry(
+            service.files().get(
+                fileId=target_id,
+                fields="id,name,driveId,parents,mimeType,trashed",
+                supportsAllDrives=True,
+            ),
+            operation_name="drive.get_root_metadata",
+            logger=_google_request_logger(log_base_path),
+        )
     except Exception as exc:
         _log_drive(f"WARN root_metadata_unavailable id={target_id} error={exc}", log_base_path)
         return target_id
@@ -136,35 +151,44 @@ def _resolve_target_root_id(service, configured_id, log_base_path=None):
     return target_id
 
 
-def _get_or_create_folder(service, parent_folder_id, folder_name):
+def _get_or_create_folder(service, parent_folder_id, folder_name, log_base_path=None):
     safe_name = _sanitize_filename(folder_name)
     safe_query_name = safe_name.replace("'", "\\'")
     query = (
-        "mimeType='application/vnd.google-apps.folder' "
+        f"mimeType='{GOOGLE_FOLDER_MIME}' "
         f"and name='{safe_query_name}' "
         f"and '{parent_folder_id}' in parents and trashed=false"
     )
-    result = service.files().list(
-        q=query,
-        fields="files(id,name)",
-        includeItemsFromAllDrives=True,
-        supportsAllDrives=True,
-        pageSize=1,
-    ).execute()
+    result = execute_google_request_with_retry(
+        service.files().list(
+            q=query,
+            fields="files(id,name)",
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True,
+            pageSize=1,
+        ),
+        operation_name="drive.find_folder",
+        logger=_google_request_logger(log_base_path),
+    )
     files = result.get("files", [])
     if files:
         return files[0]["id"]
 
     metadata = {
         "name": safe_name,
-        "mimeType": "application/vnd.google-apps.folder",
+        "mimeType": GOOGLE_FOLDER_MIME,
         "parents": [parent_folder_id],
     }
-    created = service.files().create(
-        body=metadata,
-        fields="id,name",
-        supportsAllDrives=True,
-    ).execute()
+    created = execute_google_create_with_confirmation(
+        lambda: service.files().create(
+            body=metadata,
+            fields="id,name",
+            supportsAllDrives=True,
+        ),
+        lambda: _find_named_folder(service, parent_folder_id, safe_name),
+        operation_name="drive.create_folder",
+        logger=_google_request_logger(log_base_path),
+    )
     return created["id"]
 
 
@@ -182,7 +206,68 @@ def _list_drive_items(service, *, parent_id=None, drive_id=None, query=None, fie
         params["q"] = query
     elif parent_id:
         params["q"] = f"'{parent_id}' in parents and trashed=false"
-    return service.files().list(**params).execute()
+    return execute_google_request_with_retry(
+        service.files().list(**params),
+        operation_name="drive.list_items",
+        logger=_google_request_logger(),
+    )
+
+
+def _build_request_app_properties(kind, request_id, extra_properties=None):
+    app_properties = {}
+    for key, value in (extra_properties or {}).items():
+        if value is None:
+            continue
+        app_properties[str(key)] = str(value)
+    if kind:
+        app_properties["kind"] = str(kind)
+    if request_id:
+        app_properties["request_id"] = str(request_id)
+    return app_properties
+
+
+def _find_drive_file_by_request_id(
+    service,
+    parent_folder_id,
+    filename,
+    request_id,
+    *,
+    mime_type=None,
+):
+    safe_name = _sanitize_filename(filename)
+    safe_query_name = safe_name.replace("'", "\\'")
+    query_parts = [f"name='{safe_query_name}'", f"'{parent_folder_id}' in parents", "trashed=false"]
+    if mime_type:
+        query_parts.insert(0, f"mimeType='{mime_type}'")
+    result = _list_drive_items(
+        service,
+        parent_id=parent_folder_id,
+        query=" and ".join(query_parts),
+        fields="files(id,name,mimeType,webViewLink,appProperties)",
+    )
+    for item in result.get("files", []):
+        app_properties = item.get("appProperties") or {}
+        if str(app_properties.get("request_id") or "").strip() == str(request_id or "").strip():
+            return item
+    return None
+
+
+def _find_named_folder(service, parent_folder_id, folder_name):
+    safe_name = _sanitize_filename(folder_name)
+    safe_query_name = safe_name.replace("'", "\\'")
+    query = (
+        f"mimeType='{GOOGLE_FOLDER_MIME}' "
+        f"and name='{safe_query_name}' "
+        f"and '{parent_folder_id}' in parents and trashed=false"
+    )
+    result = _list_drive_items(
+        service,
+        parent_id=parent_folder_id,
+        query=query,
+        fields="files(id,name,webViewLink)",
+    )
+    files = result.get("files", [])
+    return files[0] if files else None
 
 
 def _drive_item_exists(service, parent_folder_id, filename):
@@ -207,7 +292,7 @@ def _find_existing_spreadsheet(service, parent_folder_id, filename):
     safe_name = _sanitize_filename(filename)
     safe_query_name = safe_name.replace("'", "\\'")
     query = (
-        "mimeType='application/vnd.google-apps.spreadsheet' "
+        f"mimeType='{GOOGLE_SHEETS_MIME}' "
         f"and name='{safe_query_name}' "
         f"and '{parent_folder_id}' in parents and trashed=false"
     )
@@ -402,11 +487,15 @@ def _probe_parent_read_access(service, target_id, log_base_path=None):
         )
         return {"sample_id": sample.get("id"), "sample_name": sample.get("name")}
 
-    metadata = service.files().get(
-        fileId=target_id,
-        fields="id,name,driveId,mimeType,trashed",
-        supportsAllDrives=True,
-    ).execute()
+    metadata = execute_google_request_with_retry(
+        service.files().get(
+            fileId=target_id,
+            fields="id,name,driveId,mimeType,trashed",
+            supportsAllDrives=True,
+        ),
+        operation_name="drive.probe_read_parent",
+        logger=_google_request_logger(log_base_path),
+    )
     _log_drive(
         f"PROBE_READ_OK folder_id={metadata.get('id')} name={metadata.get('name')!r} drive_id={metadata.get('driveId')}",
         log_base_path,
@@ -418,26 +507,35 @@ def _probe_parent_write_access(service, parent_folder_id, log_base_path=None):
     probe_name = f".reca_drive_probe_{uuid.uuid4().hex[:8]}"
     metadata = {
         "name": probe_name,
-        "mimeType": "application/vnd.google-apps.folder",
+        "mimeType": GOOGLE_FOLDER_MIME,
         "parents": [parent_folder_id],
     }
-    created = service.files().create(
-        body=metadata,
-        fields="id,name",
-        supportsAllDrives=True,
-    ).execute()
+    created = execute_google_create_with_confirmation(
+        lambda: service.files().create(
+            body=metadata,
+            fields="id,name",
+            supportsAllDrives=True,
+        ),
+        lambda: _find_named_folder(service, parent_folder_id, probe_name),
+        operation_name="drive.probe_create_parent",
+        logger=_google_request_logger(log_base_path),
+    )
     probe_id = created.get("id")
     _log_drive(
         f"PROBE_WRITE_CREATE_OK parent={parent_folder_id} probe_id={probe_id} probe_name={created.get('name')!r}",
         log_base_path,
     )
     try:
-        service.files().update(
-            fileId=probe_id,
-            body={"trashed": True},
-            fields="id,trashed",
-            supportsAllDrives=True,
-        ).execute()
+        execute_google_request_with_retry(
+            service.files().update(
+                fileId=probe_id,
+                body={"trashed": True},
+                fields="id,trashed",
+                supportsAllDrives=True,
+            ),
+            operation_name="drive.probe_trash_parent",
+            logger=_google_request_logger(log_base_path),
+        )
         _log_drive(
             f"PROBE_WRITE_TRASH_OK parent={parent_folder_id} probe_id={probe_id}",
             log_base_path,
@@ -591,6 +689,7 @@ def upload_excel_to_drive(
                 service,
                 root_folder_id,
                 resolved_folder_name,
+                log_base_path=excel_path,
             )
         except Exception as exc:
             _log_drive(
@@ -600,19 +699,30 @@ def upload_excel_to_drive(
             target_folder_id = root_folder_id
 
     filename = _get_available_filename(service, target_folder_id, requested_filename, excel_path)
-    metadata = {"name": filename, "parents": [target_folder_id]}
-    media = MediaFileUpload(
-        excel_path,
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        resumable=False,
-    )
+    request_id = uuid.uuid4().hex
+    metadata = {
+        "name": filename,
+        "parents": [target_folder_id],
+        "appProperties": _build_request_app_properties("excel_upload", request_id),
+    }
     try:
-        result = service.files().create(
-            body=metadata,
-            media_body=media,
-            fields="id,name,webViewLink",
-            supportsAllDrives=True,
-        ).execute()
+        result = execute_google_create_with_confirmation(
+            lambda: service.files().create(
+                body=metadata,
+                media_body=MediaFileUpload(excel_path, mimetype=XLSX_MIME, resumable=False),
+                fields="id,name,webViewLink,mimeType,appProperties",
+                supportsAllDrives=True,
+            ),
+            lambda: _find_drive_file_by_request_id(
+                service,
+                target_folder_id,
+                filename,
+                request_id,
+                mime_type=XLSX_MIME,
+            ),
+            operation_name="drive.upload_excel",
+            logger=_google_request_logger(excel_path),
+        )
     except Exception as exc:
         _log_drive(f"ERROR upload_excel {exc}", excel_path)
         raise
@@ -721,6 +831,7 @@ def publish_sheet_from_template(
                 service,
                 root_folder_id,
                 folder_name,
+                log_base_path=requested_filename,
             )
         except Exception as exc:
             _log_drive(
@@ -740,13 +851,29 @@ def publish_sheet_from_template(
             _log_drive(f"REUSE_SHEET id={spreadsheet_id} name={requested_filename!r}")
         else:
             filename = _get_available_filename(service, target_folder_id, requested_filename)
-            metadata = {"name": filename, "parents": [target_folder_id]}
-            copied = service.files().copy(
-                fileId=resolved_template_id,
-                body=metadata,
-                fields="id,name",
-                supportsAllDrives=True,
-            ).execute()
+            request_id = uuid.uuid4().hex
+            metadata = {
+                "name": filename,
+                "parents": [target_folder_id],
+                "appProperties": _build_request_app_properties("google_sheet_publish", request_id),
+            }
+            copied = execute_google_create_with_confirmation(
+                lambda: service.files().copy(
+                    fileId=resolved_template_id,
+                    body=metadata,
+                    fields="id,name,webViewLink,mimeType,appProperties",
+                    supportsAllDrives=True,
+                ),
+                lambda: _find_drive_file_by_request_id(
+                    service,
+                    target_folder_id,
+                    filename,
+                    request_id,
+                    mime_type=GOOGLE_SHEETS_MIME,
+                ),
+                operation_name="drive.copy_template_spreadsheet",
+                logger=_google_request_logger(requested_filename),
+            )
             spreadsheet_id = str(copied.get("id") or "").strip()
             file_name = copied.get("name", filename)
             if not spreadsheet_id:
@@ -943,12 +1070,16 @@ def publish_sheet_from_template(
         _log_drive(f"ERROR publish_sheet {exc}")
         if spreadsheet_id and not is_reuse:
             try:
-                service.files().update(
-                    fileId=spreadsheet_id,
-                    body={"trashed": True},
-                    fields="id,trashed",
-                    supportsAllDrives=True,
-                ).execute()
+                execute_google_request_with_retry(
+                    service.files().update(
+                        fileId=spreadsheet_id,
+                        body={"trashed": True},
+                        fields="id,trashed",
+                        supportsAllDrives=True,
+                    ),
+                    operation_name="drive.trash_failed_spreadsheet",
+                    logger=_google_request_logger(requested_filename),
+                )
                 _log_drive(f"CLEANUP_SHEET_TRASH_OK id={spreadsheet_id}")
             except Exception as cleanup_exc:
                 _log_drive(

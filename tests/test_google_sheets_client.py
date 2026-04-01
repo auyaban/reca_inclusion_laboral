@@ -57,6 +57,22 @@ class GoogleSheetsClientTests(unittest.TestCase):
         self.assertTrue(requests[1]["updateSheetProperties"]["properties"]["hidden"])
         self.assertEqual(requests[1]["updateSheetProperties"]["properties"]["sheetId"], 1)
 
+    def test_hide_sheets_raises_when_keep_sheet_does_not_exist(self) -> None:
+        meta = {
+            "sheets": [
+                {"properties": {"sheetId": 1, "title": "Anterior", "hidden": False}},
+                {"properties": {"sheetId": 2, "title": "Archivada", "hidden": True}},
+            ]
+        }
+        fake_service = _FakeService(meta)
+
+        with patch.object(sheets_client, "extract_spreadsheet_id", return_value="sheet-id"):
+            with patch.object(sheets_client, "get_google_sheets_service", return_value=fake_service):
+                with self.assertRaisesRegex(RuntimeError, "No existe ninguna hoja con el nombre solicitado"):
+                    sheets_client.hide_sheets("sheet-id", ["Actual"])
+
+        self.assertEqual(fake_service._spreadsheets.batch_bodies, [])
+
 
 if __name__ == "__main__":
     unittest.main()

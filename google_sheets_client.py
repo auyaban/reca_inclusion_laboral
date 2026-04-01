@@ -3,10 +3,11 @@ import os
 import re
 import sys
 from functools import lru_cache
-from pathlib import Path
+
 from openpyxl.utils.cell import range_boundaries
 
 from formularios.common import _load_env_file
+from google_api_requests import execute_google_request_with_retry
 
 
 DEFAULT_CONFIG_PATH = "config.json"
@@ -168,10 +169,13 @@ def clear_google_sheets_service_cache():
 def get_sheet_titles(spreadsheet_id_or_url):
     spreadsheet_id = extract_spreadsheet_id(spreadsheet_id_or_url)
     service = get_google_sheets_service()
-    meta = service.spreadsheets().get(
-        spreadsheetId=spreadsheet_id,
-        fields="sheets.properties.title",
-    ).execute()
+    meta = execute_google_request_with_retry(
+        service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets.properties.title",
+        ),
+        operation_name="sheets.get_titles",
+    )
     titles = []
     for sheet in meta.get("sheets", []):
         title = str((sheet.get("properties") or {}).get("title") or "").strip()
@@ -183,21 +187,23 @@ def get_sheet_titles(spreadsheet_id_or_url):
 def get_spreadsheet(spreadsheet_id_or_url, include_grid_data=False):
     spreadsheet_id = extract_spreadsheet_id(spreadsheet_id_or_url)
     service = get_google_sheets_service()
-    return (
-        service.spreadsheets()
-        .get(spreadsheetId=spreadsheet_id, includeGridData=include_grid_data)
-        .execute()
+    return execute_google_request_with_retry(
+        service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            includeGridData=include_grid_data,
+        ),
+        operation_name="sheets.get_spreadsheet",
     )
 
 
 def read_sheet_values(spreadsheet_id_or_url, range_name):
     spreadsheet_id = extract_spreadsheet_id(spreadsheet_id_or_url)
     service = get_google_sheets_service()
-    response = (
+    response = execute_google_request_with_retry(
         service.spreadsheets()
         .values()
-        .get(spreadsheetId=spreadsheet_id, range=range_name)
-        .execute()
+        .get(spreadsheetId=spreadsheet_id, range=range_name),
+        operation_name="sheets.read_values",
     )
     return list(response.get("values", []))
 
@@ -208,11 +214,11 @@ def batch_read_sheet_values(spreadsheet_id_or_url, ranges):
     if not cleaned:
         return {}
     service = get_google_sheets_service()
-    response = (
+    response = execute_google_request_with_retry(
         service.spreadsheets()
         .values()
-        .batchGet(spreadsheetId=spreadsheet_id, ranges=cleaned)
-        .execute()
+        .batchGet(spreadsheetId=spreadsheet_id, ranges=cleaned),
+        operation_name="sheets.batch_get_values",
     )
     result = {}
     for item in response.get("valueRanges", []):
@@ -232,7 +238,7 @@ def write_sheet_values(
     spreadsheet_id = extract_spreadsheet_id(spreadsheet_id_or_url)
     service = get_google_sheets_service()
     body = {"values": values}
-    return (
+    return execute_google_request_with_retry(
         service.spreadsheets()
         .values()
         .update(
@@ -240,8 +246,8 @@ def write_sheet_values(
             range=range_name,
             valueInputOption=value_input_option,
             body=body,
-        )
-        .execute()
+        ),
+        operation_name="sheets.write_values",
     )
 
 
@@ -251,14 +257,14 @@ def clear_sheet_ranges(spreadsheet_id_or_url, ranges):
     if not cleaned_ranges:
         return {"clearedRanges": []}
     service = get_google_sheets_service()
-    return (
+    return execute_google_request_with_retry(
         service.spreadsheets()
         .values()
         .batchClear(
             spreadsheetId=spreadsheet_id,
             body={"ranges": cleaned_ranges},
-        )
-        .execute()
+        ),
+        operation_name="sheets.clear_ranges",
     )
 
 
@@ -266,10 +272,13 @@ def unmerge_cells_in_area(spreadsheet_id_or_url, sheet_name, start_row, end_row,
     """Unmerge all merged cells overlapping the given area (0-indexed rows/cols)."""
     spreadsheet_id = extract_spreadsheet_id(spreadsheet_id_or_url)
     service = get_google_sheets_service()
-    meta = service.spreadsheets().get(
-        spreadsheetId=spreadsheet_id,
-        fields="sheets(properties(sheetId,title),merges)",
-    ).execute()
+    meta = execute_google_request_with_retry(
+        service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets(properties(sheetId,title),merges)",
+        ),
+        operation_name="sheets.get_merges",
+    )
     sheet_id = None
     for s in meta.get("sheets", []):
         if s.get("properties", {}).get("title") == sheet_name:
@@ -291,10 +300,13 @@ def unmerge_cells_in_area(spreadsheet_id_or_url, sheet_name, start_row, end_row,
                     "startColumnIndex": sc, "endColumnIndex": ec,
                 }}})
     if requests:
-        service.spreadsheets().batchUpdate(
-            spreadsheetId=spreadsheet_id,
-            body={"requests": requests},
-        ).execute()
+        execute_google_request_with_retry(
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={"requests": requests},
+            ),
+            operation_name="sheets.unmerge_cells",
+        )
 
 
 def list_protected_ranges(spreadsheet_id_or_url):
@@ -338,15 +350,18 @@ def clear_protected_ranges(spreadsheet_id_or_url, protected_range_ids=None):
 
     unique_target_ids = list(dict.fromkeys(target_ids))
     service = get_google_sheets_service()
-    service.spreadsheets().batchUpdate(
-        spreadsheetId=spreadsheet_id,
-        body={
-            "requests": [
-                {"deleteProtectedRange": {"protectedRangeId": protected_range_id}}
-                for protected_range_id in unique_target_ids
-            ]
-        },
-    ).execute()
+    execute_google_request_with_retry(
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={
+                "requests": [
+                    {"deleteProtectedRange": {"protectedRangeId": protected_range_id}}
+                    for protected_range_id in unique_target_ids
+                ]
+            },
+        ),
+        operation_name="sheets.clear_protected_ranges",
+    )
     return {
         "deletedProtectedRangeIds": unique_target_ids,
         "deletedProtectedRangeCount": len(unique_target_ids),
@@ -376,10 +391,13 @@ def copy_sheet_to_spreadsheet(
     destination_spreadsheet_id = extract_spreadsheet_id(destination_spreadsheet_id_or_url)
     service = get_google_sheets_service()
 
-    meta = service.spreadsheets().get(
-        spreadsheetId=source_spreadsheet_id,
-        fields="sheets.properties(sheetId,title)",
-    ).execute()
+    meta = execute_google_request_with_retry(
+        service.spreadsheets().get(
+            spreadsheetId=source_spreadsheet_id,
+            fields="sheets.properties(sheetId,title)",
+        ),
+        operation_name="sheets.get_source_sheet",
+    )
     source_sheet_id = None
     for sheet in meta.get("sheets", []):
         props = sheet.get("properties", {}) or {}
@@ -389,37 +407,40 @@ def copy_sheet_to_spreadsheet(
     if source_sheet_id is None:
         raise RuntimeError(f"No existe la hoja '{source_sheet_name}' en el archivo maestro.")
 
-    copied = (
+    copied = execute_google_request_with_retry(
         service.spreadsheets()
         .sheets()
         .copyTo(
             spreadsheetId=source_spreadsheet_id,
             sheetId=source_sheet_id,
             body={"destinationSpreadsheetId": destination_spreadsheet_id},
-        )
-        .execute()
+        ),
+        operation_name="sheets.copy_sheet_to_spreadsheet",
     )
     copied_sheet_id = copied.get("sheetId")
     copied_title = str(copied.get("title") or "").strip()
     target_title = str(new_sheet_name or copied_title or source_sheet_name or "").strip()
 
     if copied_sheet_id is not None and target_title and target_title != copied_title:
-        service.spreadsheets().batchUpdate(
-            spreadsheetId=destination_spreadsheet_id,
-            body={
-                "requests": [
-                    {
-                        "updateSheetProperties": {
-                            "properties": {
-                                "sheetId": copied_sheet_id,
-                                "title": target_title,
-                            },
-                            "fields": "title",
+        execute_google_request_with_retry(
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=destination_spreadsheet_id,
+                body={
+                    "requests": [
+                        {
+                            "updateSheetProperties": {
+                                "properties": {
+                                    "sheetId": copied_sheet_id,
+                                    "title": target_title,
+                                },
+                                "fields": "title",
+                            }
                         }
-                    }
-                ]
-            },
-        ).execute()
+                    ]
+                },
+            ),
+            operation_name="sheets.rename_copied_sheet",
+        )
         copied_title = target_title
 
     return {
@@ -443,10 +464,13 @@ def insert_template_rows(
         return {"insertedRows": 0}
 
     service = get_google_sheets_service()
-    meta = service.spreadsheets().get(
-        spreadsheetId=spreadsheet_id,
-        fields="sheets.properties(sheetId,title)",
-    ).execute()
+    meta = execute_google_request_with_retry(
+        service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets.properties(sheetId,title)",
+        ),
+        operation_name="sheets.get_insert_rows_target",
+    )
 
     sheet_id = None
     for sheet in meta.get("sheets", []):
@@ -493,10 +517,13 @@ def insert_template_rows(
             }
         )
 
-    service.spreadsheets().batchUpdate(
-        spreadsheetId=spreadsheet_id,
-        body={"requests": requests},
-    ).execute()
+    execute_google_request_with_retry(
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": requests},
+        ),
+        operation_name="sheets.insert_template_rows",
+    )
     return {"sheetId": sheet_id, "insertedRows": total_rows}
 
 
@@ -524,10 +551,13 @@ def insert_template_block_rows(
     total_rows = block_height * total_blocks
 
     service = get_google_sheets_service()
-    meta = service.spreadsheets().get(
-        spreadsheetId=spreadsheet_id,
-        fields="sheets.properties(sheetId,title)",
-    ).execute()
+    meta = execute_google_request_with_retry(
+        service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets.properties(sheetId,title)",
+        ),
+        operation_name="sheets.get_insert_block_target",
+    )
 
     sheet_id = None
     for sheet in meta.get("sheets", []):
@@ -578,10 +608,13 @@ def insert_template_block_rows(
                 }
             )
 
-    service.spreadsheets().batchUpdate(
-        spreadsheetId=spreadsheet_id,
-        body={"requests": requests},
-    ).execute()
+    execute_google_request_with_retry(
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": requests},
+        ),
+        operation_name="sheets.insert_template_block_rows",
+    )
     return {
         "sheetId": sheet_id,
         "insertedRows": total_rows,
@@ -610,51 +643,80 @@ def hide_sheets(spreadsheet_id_or_url, sheet_names_to_keep):
         return
 
     service = get_google_sheets_service()
-    meta = service.spreadsheets().get(
-        spreadsheetId=spreadsheet_id, fields="sheets.properties"
-    ).execute()
+    meta = execute_google_request_with_retry(
+        service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets.properties",
+        ),
+        operation_name="sheets.get_hide_targets",
+    )
 
+    resolved_keep_ids = set()
+    sheets = list(meta.get("sheets", []))
+    for sheet in sheets:
+        props = sheet.get("properties", {}) or {}
+        title = str(props.get("title") or "").strip()
+        sheet_id = props.get("sheetId")
+        if title in keep and sheet_id is not None:
+            resolved_keep_ids.add(sheet_id)
+    if not resolved_keep_ids:
+        missing = ", ".join(sorted(keep))
+        raise RuntimeError(
+            f"No existe ninguna hoja con el nombre solicitado en la spreadsheet destino: {missing}"
+        )
+
+    visible_after_update = 0
     unhide_requests = []
     hide_requests = []
-    for sheet in meta.get("sheets", []):
-        props = sheet.get("properties", {})
-        title = props.get("title", "")
+    for sheet in sheets:
+        props = sheet.get("properties", {}) or {}
         sheet_id = props.get("sheetId")
-        is_hidden = props.get("hidden", False)
-        should_keep = title in keep
+        is_hidden = bool(props.get("hidden", False))
+        should_keep = sheet_id in resolved_keep_ids
+        will_be_hidden = not should_keep
+        if not will_be_hidden:
+            visible_after_update += 1
+        if sheet_id is None:
+            continue
         if should_keep and is_hidden:
-            # Unhide sheets that should be visible (important for file reuse)
-            unhide_requests.append({
-                "updateSheetProperties": {
-                    "properties": {
-                        "sheetId": sheet_id,
-                        "hidden": False,
-                    },
-                    "fields": "hidden",
+            unhide_requests.append(
+                {
+                    "updateSheetProperties": {
+                        "properties": {
+                            "sheetId": sheet_id,
+                            "hidden": False,
+                        },
+                        "fields": "hidden",
+                    }
                 }
-            })
+            )
         elif not should_keep and not is_hidden:
-            hide_requests.append({
-                "updateSheetProperties": {
-                    "properties": {
-                        "sheetId": sheet_id,
-                        "hidden": True,
-                    },
-                    "fields": "hidden",
+            hide_requests.append(
+                {
+                    "updateSheetProperties": {
+                        "properties": {
+                            "sheetId": sheet_id,
+                            "hidden": True,
+                        },
+                        "fields": "hidden",
+                    }
                 }
-            })
+            )
+
+    if visible_after_update <= 0:
+        raise RuntimeError("Google Sheets requiere al menos una hoja visible.")
+
     requests = [*unhide_requests, *hide_requests]
     if not requests:
         return
-    # Safety: never hide ALL sheets
-    total_sheets = len(meta.get("sheets", []))
-    if len(hide_requests) >= total_sheets:
-        requests.remove(hide_requests[-1])
 
-    service.spreadsheets().batchUpdate(
-        spreadsheetId=spreadsheet_id,
-        body={"requests": requests},
-    ).execute()
+    execute_google_request_with_retry(
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": requests},
+        ),
+        operation_name="sheets.hide_sheets",
+    )
 
 
 def _col_letter_to_index(col_str):
@@ -708,9 +770,13 @@ def set_native_checkboxes(spreadsheet_id_or_url, checkbox_cells):
     spreadsheet_id = extract_spreadsheet_id(spreadsheet_id_or_url)
     service = get_google_sheets_service()
 
-    meta = service.spreadsheets().get(
-        spreadsheetId=spreadsheet_id, fields="sheets.properties"
-    ).execute()
+    meta = execute_google_request_with_retry(
+        service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets.properties",
+        ),
+        operation_name="sheets.get_checkbox_targets",
+    )
     name_to_id = {}
     for sheet in meta.get("sheets", []):
         props = sheet.get("properties", {})
@@ -744,10 +810,13 @@ def set_native_checkboxes(spreadsheet_id_or_url, checkbox_cells):
         })
 
     if requests:
-        service.spreadsheets().batchUpdate(
-            spreadsheetId=spreadsheet_id,
-            body={"requests": requests},
-        ).execute()
+        execute_google_request_with_retry(
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={"requests": requests},
+            ),
+            operation_name="sheets.set_native_checkboxes",
+        )
 
 
 def set_sheet_ranges_bold(spreadsheet_id_or_url, ranges, *, bold):
@@ -793,10 +862,13 @@ def set_sheet_ranges_bold(spreadsheet_id_or_url, ranges, *, bold):
         )
     if requests:
         service = get_google_sheets_service()
-        service.spreadsheets().batchUpdate(
-            spreadsheetId=spreadsheet_id,
-            body={"requests": requests},
-        ).execute()
+        execute_google_request_with_retry(
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={"requests": requests},
+            ),
+            operation_name="sheets.set_ranges_bold",
+        )
     return {"updatedRanges": updated_ranges}
 
 
@@ -827,7 +899,7 @@ def batch_write_sheet_updates(
         return {"totalUpdatedCells": 0, "totalUpdatedRows": 0, "responses": []}
 
     service = get_google_sheets_service()
-    return (
+    return execute_google_request_with_retry(
         service.spreadsheets()
         .values()
         .batchUpdate(
@@ -836,41 +908,6 @@ def batch_write_sheet_updates(
                 "valueInputOption": value_input_option,
                 "data": rows,
             },
-        )
-        .execute()
+        ),
+        operation_name="sheets.batch_write_updates",
     )
-
-
-def export_spreadsheet_to_excel(spreadsheet_id_or_url, destination):
-    spreadsheet = get_spreadsheet(spreadsheet_id_or_url, include_grid_data=False)
-    destination_path = Path(destination).expanduser()
-    destination_path.parent.mkdir(parents=True, exist_ok=True)
-
-    try:
-        from openpyxl import Workbook
-    except ImportError as exc:
-        raise RuntimeError("openpyxl no esta instalado.") from exc
-
-    wb = Workbook()
-    default_ws = wb.active
-    wb.remove(default_ws)
-
-    for sheet in spreadsheet.get("sheets", []):
-        props = sheet.get("properties", {})
-        title = str(props.get("title") or "Sheet")
-        ws = wb.create_sheet(title=title[:31] or "Sheet")
-        rows = read_sheet_values(spreadsheet["spreadsheetId"], f"'{title}'")
-        for row_idx, row in enumerate(rows, start=1):
-            for col_idx, value in enumerate(row, start=1):
-                ws.cell(row=row_idx, column=col_idx, value=value)
-
-        grid_props = props.get("gridProperties", {}) or {}
-        frozen_rows = int(grid_props.get("frozenRowCount", 0) or 0)
-        frozen_cols = int(grid_props.get("frozenColumnCount", 0) or 0)
-        if frozen_rows > 0 or frozen_cols > 0:
-            ws.freeze_panes = ws.cell(row=frozen_rows + 1, column=frozen_cols + 1)
-
-    if not wb.worksheets:
-        wb.create_sheet("Sheet")
-    wb.save(destination_path)
-    return destination_path

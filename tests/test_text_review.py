@@ -4,6 +4,20 @@ from unittest import mock
 import text_review
 
 
+class _FakeHttpResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self):
+        return self._payload
+
+
 class TextReviewTargetTests(unittest.TestCase):
     def test_condiciones_vacante_labs_reuses_regular_review_targets(self) -> None:
         cache_snapshot = {
@@ -33,6 +47,31 @@ class TextReviewTargetTests(unittest.TestCase):
 
 
 class TextReviewBatchTests(unittest.TestCase):
+    def test_call_edge_review_requires_valid_session_without_mojibake(self) -> None:
+        settings = {"timeout": 30, "function_name": "text-review-orthography"}
+
+        with (
+            mock.patch.object(text_review, "_load_supabase_credentials", return_value=("url", "key")),
+            mock.patch.object(text_review, "_supabase_get_access_token", return_value=""),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "No hay sesión válida para revisar ortografía."):
+                text_review._call_edge_review({"items": []}, settings)
+
+    def test_call_edge_review_uses_utf8_default_error_message(self) -> None:
+        settings = {"timeout": 30, "function_name": "text-review-orthography"}
+
+        with (
+            mock.patch.object(text_review, "_load_supabase_credentials", return_value=("https://example.supabase.co", "key")),
+            mock.patch.object(text_review, "_supabase_get_access_token", return_value="jwt-token"),
+            mock.patch.object(
+                text_review.urllib.request,
+                "urlopen",
+                return_value=_FakeHttpResponse(b'{"ok": false}'),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "La función de revisión no devolvió texto."):
+                text_review._call_edge_review({"items": []}, settings)
+
     def test_build_review_batches_respects_item_and_char_limits(self) -> None:
         settings = {
             "batch_max_items": 2,

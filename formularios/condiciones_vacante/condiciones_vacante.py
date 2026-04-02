@@ -10,6 +10,13 @@ from formularios.common import (
     _normalize_text,
     _sanitize_filename,
 )
+from formularios.finalize_validation import (
+    field_pairs,
+    raise_validation_error,
+    require_any_true,
+    require_value,
+    validate_dynamic_rows,
+)
 from logging_utils import log_excel_event
 from version_info import resource_path
 
@@ -1254,9 +1261,113 @@ def _write_section_with_ws(ws, section_id, payload):
         ws_write(ws, cell, write.get("value", ""))
 
 
+def _tuple_pairs(items):
+    pairs = []
+    for item in items or []:
+        if not isinstance(item, (tuple, list)) or len(item) < 2:
+            continue
+        field_id = str(item[0] or "").strip()
+        if not field_id:
+            continue
+        pairs.append((field_id, str(item[1] or "").strip() or field_id))
+    return pairs
+
+
+def validate_before_finalize(cache=None):
+    cache_data = FORM_CACHE if cache is None else (cache or {})
+    issues = []
+
+    section_1 = cache_data.get("section_1", {})
+    for field_id, label in field_pairs(SECTION_1.get("fields")):
+        require_value(issues, "section_1", section_1, field_id, label)
+
+    section_2 = cache_data.get("section_2", {})
+    for field_id, label in field_pairs(SECTION_2.get("fields")):
+        require_value(issues, "section_2", section_2, field_id, label)
+    require_value(
+        issues,
+        "section_2",
+        section_2,
+        "requiere_certificado_observaciones",
+        "Observaciones (Requiere certificado)",
+    )
+
+    section_2_1 = cache_data.get("section_2_1", {})
+    require_any_true(
+        issues,
+        "section_2_1",
+        section_2_1,
+        [field_id for field_id, _label, _cell in SECTION_2_1.get("checkboxes", [])],
+        "Niveles educativos",
+    )
+    for field_id, label in field_pairs(SECTION_2_1.get("fields")):
+        require_value(issues, "section_2_1", section_2_1, field_id, label)
+
+    section_3 = cache_data.get("section_3", {})
+    for category in SECTION_3.get("categories", []):
+        for field_id, label in _tuple_pairs(category.get("items")):
+            require_value(issues, "section_3", section_3, field_id, label)
+        require_value(
+            issues,
+            "section_3",
+            section_3,
+            category.get("observaciones_id"),
+            category.get("observaciones_label") or "Observaciones",
+        )
+
+    section_4 = cache_data.get("section_4", {})
+    for field_id, label in _tuple_pairs(SECTION_4.get("fields")):
+        require_value(issues, "section_4", section_4, f"{field_id}_tiempo", f"{label} - Tiempo")
+        require_value(
+            issues,
+            "section_4",
+            section_4,
+            f"{field_id}_frecuencia",
+            f"{label} - Frecuencia",
+        )
+
+    section_5 = cache_data.get("section_5", {})
+    for category in SECTION_5.get("categories", []):
+        for field_id, label in _tuple_pairs(category.get("items")):
+            require_value(issues, "section_5", section_5, field_id, label)
+    require_value(
+        issues,
+        "section_5",
+        section_5,
+        SECTION_5.get("observaciones", {}).get("id"),
+        SECTION_5.get("observaciones", {}).get("label") or "Observaciones",
+    )
+
+    validate_dynamic_rows(
+        issues,
+        "section_6",
+        cache_data.get("section_6", []),
+        [("discapacidad", "Discapacidad"), ("descripcion", "Descripcion")],
+        min_rows_label="Discapacidades y descripciones",
+    )
+
+    require_value(
+        issues,
+        "section_7",
+        cache_data.get("section_7", {}),
+        SECTION_7.get("field_id"),
+        "Observaciones / Recomendaciones",
+    )
+
+    validate_dynamic_rows(
+        issues,
+        "section_8",
+        cache_data.get("section_8", []),
+        [("nombre", "Nombre"), ("cargo", "Cargo")],
+        min_rows_label="Asistentes",
+    )
+    return issues
+
+
 def export_to_excel(progress_callback=None):
     if not FORM_CACHE.get("section_1") and cache_file_exists():
         load_cache_from_file()
+    raise_validation_error(validate_before_finalize())
 
     from google_sheets_client import get_master_template_id
     from drive_upload import publish_sheet_from_template

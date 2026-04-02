@@ -43,17 +43,24 @@ class RuntimeEnvResolutionTests(unittest.TestCase):
 
         self.assertEqual(spreadsheet_id, "demoSheetId-123")
 
-    def test_seguimientos_template_id_reads_env_file(self) -> None:
+    def test_seguimientos_template_id_uses_master_template_id(self) -> None:
+        with patch.object(seguimientos, "get_master_template_id", return_value="masterSheetId-789"):
+            template_id = seguimientos.get_seguimientos_template_id()
+
+        self.assertEqual(template_id, "masterSheetId-789")
+
+    def test_seguimientos_template_id_falls_back_to_legacy_env_file(self) -> None:
         spreadsheet_url = "https://docs.google.com/spreadsheets/d/templateSheetId-456/edit"
 
-        with patch.object(
-            seguimientos,
-            "_load_runtime_env",
-            return_value={"GOOGLE_SHEETS_SEGUIMIENTOS_TEMPLATE_ID": spreadsheet_url},
-        ):
-            with patch.dict(os.environ, {}, clear=True):
-                with patch.object(seguimientos.drive_upload, "_load_config", return_value={}):
-                    template_id = seguimientos.get_seguimientos_template_id()
+        with patch.object(seguimientos, "get_master_template_id", side_effect=RuntimeError("missing")):
+            with patch.object(
+                seguimientos,
+                "_load_runtime_env",
+                return_value={"GOOGLE_SHEETS_SEGUIMIENTOS_TEMPLATE_ID": spreadsheet_url},
+            ):
+                with patch.dict(os.environ, {}, clear=True):
+                    with patch.object(seguimientos.drive_upload, "_load_config", return_value={}):
+                        template_id = seguimientos.get_seguimientos_template_id()
 
         self.assertEqual(template_id, "templateSheetId-456")
 

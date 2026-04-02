@@ -72,6 +72,7 @@ from formularios.common import (
     _next_available_file_path,
     probe_supabase_service,
 )
+from formularios.finalize_validation import format_issues_for_message
 from version_info import get_version
 from updater import (
     get_latest_release_assets,
@@ -2142,6 +2143,61 @@ def _guard_form_action(window, *, action_label):
     )
     first_section = missing_sections[0][0]
     show_fn = getattr(window, f"_show_{first_section}", None)
+    if callable(show_fn):
+        try:
+            show_fn()
+        except Exception:
+            pass
+    return True
+
+
+def _guard_form_finalization(window, *, loading=None):
+    form_id = getattr(window, "_form_id", "") or WINDOW_CLASS_FORM_ID_MAP.get(window.__class__.__name__, "")
+    module = FORM_MODULE_MAP.get(form_id)
+    if (
+        not module
+        or not hasattr(module, "get_form_cache")
+        or not hasattr(module, "validate_before_finalize")
+    ):
+        return False
+    _run_pending_section_autosave(window)
+    if hasattr(module, "save_cache_to_file"):
+        try:
+            module.save_cache_to_file()
+        except Exception:
+            pass
+    try:
+        cache_snapshot = copy.deepcopy(module.get_form_cache() or {})
+    except Exception:
+        cache_snapshot = {}
+    try:
+        issues = list(module.validate_before_finalize(cache_snapshot) or [])
+    except Exception as exc:
+        messagebox.showerror(
+            "Datos incompletos",
+            f"No se pudo validar el formulario antes de finalizar.\n\nDetalle: {exc}",
+            parent=window,
+        )
+        try:
+            if loading is not None:
+                loading.close()
+        except Exception:
+            pass
+        return True
+    if not issues:
+        return False
+    try:
+        if loading is not None:
+            loading.close()
+    except Exception:
+        pass
+    messagebox.showerror(
+        "Datos incompletos",
+        format_issues_for_message(issues),
+        parent=window,
+    )
+    first_issue = issues[0]
+    show_fn = getattr(window, f"_show_{first_issue.section_id}", None)
     if callable(show_fn):
         try:
             show_fn()
@@ -4720,6 +4776,8 @@ def _start_background_finalization(
             loading.close()
         except Exception:
             pass
+        return
+    if _guard_form_finalization(window, loading=loading):
         return
     return _original_start_background_finalization(
         window,
@@ -7531,7 +7589,15 @@ class HubWindow(tk.Tk):
             ui_snapshot
         )
 
-    def _persist_form_draft(self, window, *, allow_empty=False, silent=False, toast_text=""):
+    def _persist_form_draft(
+        self,
+        window,
+        *,
+        allow_empty=False,
+        silent=False,
+        toast_text="",
+        source="manual",
+    ):
         form_id = getattr(window, "_form_id", "") or ""
         form_name = getattr(window, "_form_name", "") or form_id
         form_meta = _resolve_form_meta(form_id)
@@ -7556,6 +7622,10 @@ class HubWindow(tk.Tk):
                 _log_capture(f"[DRAFT] capture_failed form={form_id} err={exc}")
                 return False
             messagebox.showerror("Guardar", f"No se pudo leer el formulario actual: {exc}")
+            return False
+
+        draft_source = str(source or "manual").strip().lower() or "manual"
+        if draft_source == "autosave" and ui_section == "section_1":
             return False
 
         if not allow_empty and not self._draft_state_has_content(cache_snapshot, ui_snapshot):
@@ -7683,6 +7753,7 @@ class HubWindow(tk.Tk):
                 allow_empty=True,
                 silent=True,
                 toast_text="",
+                source="autosave",
             )
 
         try:
@@ -7808,6 +7879,7 @@ class HubWindow(tk.Tk):
             allow_empty=allow_empty,
             silent=silent,
             toast_text="" if silent else toast_text,
+            source="manual",
         )
 
     def _open_draft_entry(self, draft):
@@ -17994,7 +18066,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
                 self._set_widget_edit_state(self.content_frame, True)
                 if self.save_button is not None:
                     self.save_button.config(state="normal")
-                self.status_var.set("Hoja base y seguimiento 1 habilitados hasta registrar la fecha del seguimiento 1.")
+                self.status_var.set("Hoja base y seguimiento 1 habilitados hasta diligenciar el seguimiento 1.")
                 return
             self._set_widget_edit_state(self.content_frame, False)
             next_date_widget = self._get_base_followup_date_widget(next_followup)

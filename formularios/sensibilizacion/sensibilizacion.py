@@ -8,6 +8,12 @@ from formularios.common import (
     _sanitize_filename,
     build_sheet_updates,
 )
+from formularios.finalize_validation import (
+    field_pairs,
+    raise_validation_error,
+    require_value,
+    validate_dynamic_rows,
+)
 from logging_utils import log_excel_event
 
 
@@ -347,9 +353,36 @@ def _write_section_5(ws, payload):
         ws_write(ws, cell, write.get("value", ""))
 
 
+def validate_before_finalize(cache=None):
+    cache_data = FORM_CACHE if cache is None else (cache or {})
+    issues = []
+
+    section_1 = cache_data.get("section_1", {})
+    for field_id, label in field_pairs(SECTION_1.get("fields")):
+        require_value(issues, "section_1", section_1, field_id, label)
+
+    require_value(
+        issues,
+        "section_3",
+        cache_data.get("section_3", {}),
+        "observaciones",
+        "Observaciones",
+    )
+
+    validate_dynamic_rows(
+        issues,
+        "section_5",
+        cache_data.get("section_5", []),
+        [("nombre", "Nombre"), ("cargo", "Cargo")],
+        min_rows_label="Asistentes",
+    )
+    return issues
+
+
 def export_to_excel(clear_cache=True):
     if not FORM_CACHE.get("section_1") and cache_file_exists():
         load_cache_from_file()
+    raise_validation_error(validate_before_finalize())
 
     from google_sheets_client import get_master_template_id
     from drive_upload import publish_sheet_from_template

@@ -10,6 +10,12 @@ from formularios.common import (
     _supabase_get,
     build_sheet_updates,
 )
+from formularios.finalize_validation import (
+    field_pairs,
+    raise_validation_error,
+    require_value,
+    validate_dynamic_rows,
+)
 from logging_utils import log_excel_event
 
 
@@ -1014,9 +1020,119 @@ def _has_meaningful_values(value):
     return str(value or "").strip() != ""
 
 
+def validate_before_finalize(cache=None):
+    cache_data = FORM_CACHE if cache is None else (cache or {})
+    issues = []
+
+    section_1 = cache_data.get("section_1", {})
+    for field_id, label in field_pairs(SECTION_1.get("fields")):
+        require_value(issues, "section_1", section_1, field_id, label)
+
+    validate_dynamic_rows(
+        issues,
+        "section_2",
+        cache_data.get("section_2", []),
+        field_pairs(SECTION_2.get("fields")),
+        min_rows_label="Vinculados",
+    )
+
+    section_3 = cache_data.get("section_3", {})
+    for item in SECTION_3.get("items", []):
+        item_id = item.get("id")
+        item_label = item.get("label") or item_id
+        item_payload = section_3.get(item_id, {}) if isinstance(section_3, dict) else {}
+        require_value(issues, "section_3", item_payload, "ejecucion", f"{item_label} - Ejecucion")
+        require_value(
+            issues,
+            "section_3",
+            item_payload,
+            "observaciones",
+            f"{item_label} - Observaciones",
+        )
+
+    section_4 = cache_data.get("section_4", {})
+    section_4_items = section_4.get("items", {}) if isinstance(section_4, dict) else {}
+    section_4_notes = section_4.get("notes", {}) if isinstance(section_4, dict) else {}
+    for block in SECTION_4.get("blocks", []):
+        for item in block.get("items", []):
+            item_id = item.get("id")
+            item_label = item.get("label") or item_id
+            item_payload = section_4_items.get(item_id, {}) if isinstance(section_4_items, dict) else {}
+            require_value(issues, "section_4", item_payload, "nivel_apoyo", f"{item_label} - Nivel de apoyo")
+            require_value(
+                issues,
+                "section_4",
+                item_payload,
+                "observaciones",
+                f"{item_label} - Observaciones",
+            )
+        block_id = block.get("id")
+        block_title = block.get("title") or block_id
+        require_value(
+            issues,
+            "section_4",
+            section_4_notes,
+            block_id,
+            f"{block_title} - Nota",
+        )
+
+    section_5 = cache_data.get("section_5", {})
+    for row_cfg in SECTION_5.get("rows", []):
+        row_id = row_cfg.get("id")
+        row_label = row_cfg.get("label") or row_id
+        row_payload = section_5.get(row_id, {}) if isinstance(section_5, dict) else {}
+        require_value(
+            issues,
+            "section_5",
+            row_payload,
+            "nivel_apoyo_requerido",
+            f"{row_label} - Nivel de apoyo requerido",
+        )
+        require_value(
+            issues,
+            "section_5",
+            row_payload,
+            "observaciones",
+            f"{row_label} - Observaciones",
+        )
+
+    require_value(
+        issues,
+        "section_6",
+        cache_data.get("section_6", {}),
+        "ajustes_requeridos",
+        "Ajustes requeridos",
+    )
+    require_value(
+        issues,
+        "section_7",
+        cache_data.get("section_7", {}),
+        "fecha_primer_seguimiento",
+        "Fecha del primer seguimiento",
+    )
+    require_value(
+        issues,
+        "section_8",
+        cache_data.get("section_8", {}),
+        "observaciones_recomendaciones",
+        "Observaciones / Recomendaciones",
+    )
+
+    validate_dynamic_rows(
+        issues,
+        "section_9",
+        cache_data.get("section_9", []),
+        [("nombre", "Nombre"), ("cargo", "Cargo")],
+        min_rows_label="Asistentes",
+    )
+    return issues
+
+
 def _validate_cache_before_export():
     section_3 = FORM_CACHE.get("section_3", {})
     if _has_meaningful_values(section_3):
+        issues = validate_before_finalize()
+        raise_validation_error(issues)
         return
     later_sections_have_data = any(
         _has_meaningful_values(FORM_CACHE.get(section_id))

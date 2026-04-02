@@ -25,6 +25,7 @@ from google_sheets_client import (
     batch_write_sheet_updates,
     clear_protected_ranges,
     extract_spreadsheet_id,
+    get_master_template_id,
     get_google_sheets_service,
     get_spreadsheet,
     read_sheet_values,
@@ -353,14 +354,17 @@ def _pick_case_file(files):
 
 
 def get_seguimientos_template_id():
-    runtime_env = _load_runtime_env()
-    raw = str(
-        os.getenv("GOOGLE_SHEETS_SEGUIMIENTOS_TEMPLATE_ID")
-        or runtime_env.get("GOOGLE_SHEETS_SEGUIMIENTOS_TEMPLATE_ID")
-        or drive_upload._load_config().get("google_sheets_seguimientos_template_id")
-        or DEFAULT_SEGUIMIENTOS_TEMPLATE_ID
-    ).strip()
-    return extract_spreadsheet_id(raw)
+    try:
+        return get_master_template_id()
+    except Exception:
+        runtime_env = _load_runtime_env()
+        raw = str(
+            os.getenv("GOOGLE_SHEETS_SEGUIMIENTOS_TEMPLATE_ID")
+            or runtime_env.get("GOOGLE_SHEETS_SEGUIMIENTOS_TEMPLATE_ID")
+            or drive_upload._load_config().get("google_sheets_seguimientos_template_id")
+            or DEFAULT_SEGUIMIENTOS_TEMPLATE_ID
+        ).strip()
+        return extract_spreadsheet_id(raw)
 
 
 def _get_drive_cache_dir():
@@ -683,7 +687,7 @@ def _build_base_sheet_updates(payload, base_sheet_name=SHEET_BASE):
         "tipo_contrato": "C20",
         "fecha_inicio_contrato": "M20",
         "fecha_fin_contrato": "T20",
-        "apoyos_ajustes": "A21",
+        "apoyos_ajustes": "E21",
     }
     for field_id, cell in mapping.items():
         updates.append({"range": f"'{base_sheet_name}'!{cell}", "value": payload.get(field_id, "")})
@@ -1257,7 +1261,11 @@ def get_workflow_state(case_ref):
         next_followup = None
         for idx in range(1, max_seguimientos + 1):
             has_followup_date = bool(_get_followup_date_from_base(base_payload, idx))
-            if has_followup_date:
+            followup_payload = get_followup_payload(case_ref, idx)
+            followup_completed = has_followup_date and _is_followup_payload_completed(
+                followup_payload
+            )
+            if followup_completed:
                 completed_followups.append(idx)
                 continue
             next_followup = idx
@@ -1273,7 +1281,7 @@ def get_workflow_state(case_ref):
         suggested_sheet = base_sheet_name if next_followup == 1 else editable_sheet
         visible_followups = next_followup
         if next_followup == 1:
-            message = "Hoja base y seguimiento 1 habilitados hasta registrar la fecha del seguimiento 1."
+            message = "Hoja base y seguimiento 1 habilitados hasta diligenciar el seguimiento 1."
         else:
             message = (
                 f"Seguimiento {next_followup} habilitado. "
@@ -1493,7 +1501,7 @@ def get_base_payload(case_ref):
             f"'{base_sheet_name}'!C20",
             f"'{base_sheet_name}'!M20",
             f"'{base_sheet_name}'!T20",
-            f"'{base_sheet_name}'!A21",
+            f"'{base_sheet_name}'!E21",
             f"'{base_sheet_name}'!B23:B27",
             f"'{base_sheet_name}'!N23:N27",
             f"'{base_sheet_name}'!C29:C31",
@@ -1533,7 +1541,7 @@ def get_base_payload(case_ref):
             "fecha_inicio_contrato": _first_batch_value(values, f"'{base_sheet_name}'!M20"),
             "fecha_fin_contrato": _first_batch_value(values, f"'{base_sheet_name}'!T20"),
             "fecha_firma_contrato": _first_batch_value(values, f"'{SHEET_FINAL}'!N18"),
-            "apoyos_ajustes": _first_batch_value(values, f"'{base_sheet_name}'!A21"),
+            "apoyos_ajustes": _first_batch_value(values, f"'{base_sheet_name}'!E21"),
             "funciones_1_5": _column_batch_values(values, f"'{base_sheet_name}'!B23:B27", 5),
             "funciones_6_10": _column_batch_values(values, f"'{base_sheet_name}'!N23:N27", 5),
             "seguimiento_fechas_1_3": _column_batch_values(values, f"'{base_sheet_name}'!C29:C31", 3),
@@ -1573,7 +1581,7 @@ def get_base_payload(case_ref):
         "fecha_inicio_contrato": _cell_value(ws, "M20"),
         "fecha_fin_contrato": _cell_value(ws, "T20"),
         "fecha_firma_contrato": _cell_value(ponderado_ws, "N18") if ponderado_ws else "",
-        "apoyos_ajustes": _cell_value(ws, "A21"),
+        "apoyos_ajustes": _cell_value(ws, "E21"),
         "funciones_1_5": [_cell_value(ws, f"B{r}") for r in range(23, 28)],
         "funciones_6_10": [_cell_value(ws, f"N{r}") for r in range(23, 28)],
         "seguimiento_fechas_1_3": [_cell_value(ws, f"C{r}") for r in range(29, 32)],
@@ -1633,7 +1641,7 @@ def save_base_payload(case_ref, payload, overwrite=True):
         "tipo_contrato": "C20",
         "fecha_inicio_contrato": "M20",
         "fecha_fin_contrato": "T20",
-        "apoyos_ajustes": "A21",
+        "apoyos_ajustes": "E21",
     }
     for key, cell in mapping.items():
         if key in payload:

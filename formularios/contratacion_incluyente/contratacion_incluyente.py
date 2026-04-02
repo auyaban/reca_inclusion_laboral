@@ -15,6 +15,15 @@ from formularios.common import (
     _supabase_get,
     _supabase_upsert_with_queue,
 )
+from formularios.finalize_validation import (
+    append_missing_issue,
+    field_pairs,
+    humanize_field_id,
+    is_meaningful,
+    raise_validation_error,
+    require_value,
+    validate_dynamic_rows,
+)
 from logging_utils import log_excel_event
 
 
@@ -1100,9 +1109,79 @@ def _build_section_1_writes(payload):
     return writes
 
 
+def _validate_section_2_rows(issues, rows):
+    row_pairs = [
+        (field_id, humanize_field_id(field_id))
+        for field_id in VINCULADO_CELL_MAP.keys()
+        if field_id != "numero"
+    ]
+    row_list = rows if isinstance(rows, list) else []
+    meaningful_rows = 0
+    shared_desarrollo_present = False
+    for row_index, row in enumerate(row_list, start=1):
+        row_payload = row if isinstance(row, dict) else {}
+        filled = [
+            field_id
+            for field_id, _label in row_pairs
+            if is_meaningful(row_payload.get(field_id))
+        ]
+        if not filled:
+            continue
+        meaningful_rows += 1
+        if is_meaningful(row_payload.get("desarrollo_actividad")):
+            shared_desarrollo_present = True
+        for field_id, label in row_pairs:
+            require_value(issues, "section_2", row_payload, field_id, label, row_index=row_index)
+    if meaningful_rows:
+        if not shared_desarrollo_present:
+            append_missing_issue(
+                issues,
+                "section_2",
+                "desarrollo_actividad",
+                "Desarrollo de la actividad",
+            )
+        return
+    append_missing_issue(
+        issues,
+        "section_2",
+        "",
+        "Vinculados",
+        message="Debes diligenciar al menos un vinculado.",
+    )
+
+
+def validate_before_finalize(cache=None):
+    cache_data = FORM_CACHE if cache is None else (cache or {})
+    issues = []
+
+    section_1 = cache_data.get("section_1", {})
+    for field_id, label in field_pairs(SECTION_1.get("fields")):
+        require_value(issues, "section_1", section_1, field_id, label)
+
+    _validate_section_2_rows(issues, cache_data.get("section_2", []))
+
+    require_value(
+        issues,
+        "section_6",
+        cache_data.get("section_6", {}),
+        "ajustes_recomendaciones",
+        "Ajustes razonables / recomendaciones",
+    )
+
+    validate_dynamic_rows(
+        issues,
+        "section_7",
+        cache_data.get("section_7", []),
+        [("nombre", "Nombre"), ("cargo", "Cargo")],
+        min_rows_label="Asistentes",
+    )
+    return issues
+
+
 def export_to_excel(clear_cache=True):
     if not FORM_CACHE.get("section_1") and cache_file_exists():
         load_cache_from_file()
+    raise_validation_error(validate_before_finalize())
 
     from google_sheets_client import get_master_template_id
     from drive_upload import publish_sheet_from_template

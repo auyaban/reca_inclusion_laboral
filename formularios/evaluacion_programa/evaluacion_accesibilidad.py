@@ -15,6 +15,12 @@ from formularios.common import (
     _sanitize_filename,
     _supabase_get,
 )
+from formularios.finalize_validation import (
+    field_pairs,
+    raise_validation_error,
+    require_value,
+    validate_dynamic_rows,
+)
 from logging_utils import log_excel_event
 
 FORM_NAME = "Evaluacion de Accesibilidad"
@@ -412,7 +418,126 @@ def build_google_sheet_export_payload(cache=None):
     }
 
 
+def _validate_question_section(section_id, section_cfg, payload, issues):
+    section_payload = payload if isinstance(payload, dict) else {}
+    for question in section_cfg.get("questions", []):
+        field_id = str(question.get("id") or "").strip()
+        if not field_id:
+            continue
+        label = str(question.get("label") or "").strip() or field_id
+        question_type = str(question.get("type") or "").strip()
+        if question.get("has_accesible") or question_type == "accesible_con_observaciones":
+            require_value(
+                issues,
+                section_id,
+                section_payload,
+                f"{field_id}_accesible",
+                f"{label} - Accesibilidad",
+            )
+        if question_type in {"lista", "lista_doble", "lista_multiple"}:
+            require_value(issues, section_id, section_payload, field_id, label)
+        if question.get("options_secondary"):
+            require_value(
+                issues,
+                section_id,
+                section_payload,
+                f"{field_id}_secundaria",
+                f"{label} - Seleccion 2",
+            )
+        if question.get("options_tertiary"):
+            require_value(
+                issues,
+                section_id,
+                section_payload,
+                f"{field_id}_terciaria",
+                f"{label} - Seleccion 3",
+            )
+        if question.get("options_quaternary"):
+            require_value(
+                issues,
+                section_id,
+                section_payload,
+                f"{field_id}_cuaternaria",
+                f"{label} - Seleccion 4",
+            )
+        if question.get("options_quinary"):
+            require_value(
+                issues,
+                section_id,
+                section_payload,
+                f"{field_id}_quinary",
+                f"{label} - Seleccion 5",
+            )
+        if question.get("has_observaciones") or question_type == "accesible_con_observaciones":
+            require_value(
+                issues,
+                section_id,
+                section_payload,
+                f"{field_id}_observaciones",
+                f"{label} - Observaciones",
+            )
+        if question.get("text_observaciones"):
+            require_value(
+                issues,
+                section_id,
+                section_payload,
+                f"{field_id}_detalle",
+                f"{label} - Detalle",
+            )
+
+
+def validate_before_finalize(cache=None):
+    cache_data = FORM_CACHE if cache is None else (cache or {})
+    issues = []
+
+    section_1 = cache_data.get("section_1", {})
+    for field_id, label in field_pairs(SECTION_1.get("fields")):
+        require_value(issues, "section_1", section_1, field_id, label)
+
+    _validate_question_section("section_2_1", SECTION_2_1, cache_data.get("section_2_1", {}), issues)
+    _validate_question_section("section_2_2", SECTION_2_2, cache_data.get("section_2_2", {}), issues)
+    _validate_question_section("section_2_3", SECTION_2_3, cache_data.get("section_2_3", {}), issues)
+    _validate_question_section("section_2_4", SECTION_2_4, cache_data.get("section_2_4", {}), issues)
+    _validate_question_section("section_2_5", SECTION_2_5, cache_data.get("section_2_5", {}), issues)
+    _validate_question_section("section_2_6", SECTION_2_6, cache_data.get("section_2_6", {}), issues)
+    _validate_question_section("section_3", SECTION_3, cache_data.get("section_3", {}), issues)
+
+    section_4 = cache_data.get("section_4", {})
+    require_value(issues, "section_4", section_4, "nivel_accesibilidad", "Nivel de accesibilidad")
+    require_value(issues, "section_4", section_4, "descripcion", "Descripcion")
+
+    section_5 = cache_data.get("section_5", {})
+    for item in SECTION_5.get("items", []):
+        item_id = str(item.get("id") or "").strip()
+        if not item_id:
+            continue
+        item_label = str(item.get("label") or "").strip() or item_id
+        require_value(issues, "section_5", section_5, item_id, item_label)
+        require_value(issues, "section_5", section_5, f"{item_id}_nota", f"{item_label} - Nota")
+
+    section_6 = cache_data.get("section_6", {})
+    for field_id, label in field_pairs(SECTION_6.get("fields")):
+        require_value(issues, "section_6", section_6, field_id, label)
+
+    section_7 = cache_data.get("section_7", {})
+    for field_id, label in field_pairs(SECTION_7.get("fields")):
+        require_value(issues, "section_7", section_7, field_id, label)
+
+    validate_dynamic_rows(
+        issues,
+        "section_8",
+        cache_data.get("section_8", []),
+        [("nombre", "Nombre"), ("cargo", "Cargo")],
+        min_rows_label="Asistentes",
+    )
+    return issues
+
+
 def export_to_excel(progress_callback=None):
+    if not FORM_CACHE.get("section_1") and cache_file_exists():
+        load_cache_from_file()
+    raise_validation_error(validate_before_finalize())
+
     from google_sheets_client import get_master_template_id
     from drive_upload import publish_evaluacion_accesibilidad_sheet
 

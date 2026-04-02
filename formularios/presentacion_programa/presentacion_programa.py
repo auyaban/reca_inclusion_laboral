@@ -8,6 +8,13 @@ from formularios.common import (
     _supabase_get,
     build_sheet_updates,
 )
+from formularios.finalize_validation import (
+    field_pairs,
+    raise_validation_error,
+    require_any_true,
+    require_value,
+    validate_dynamic_rows,
+)
 from logging_utils import log_excel_event
 
 FORM_NAME = "Presentacion/Reactivacion del programa de inclusion laboral"
@@ -738,12 +745,49 @@ def _build_section_5_row_insertions(sheet_name, payload):
     ]
 
 
+def validate_before_finalize(cache=None):
+    cache_data = FORM_CACHE if cache is None else (cache or {})
+    issues = []
+
+    section_1 = cache_data.get("section_1", {})
+    for field_id, label in field_pairs(SECTION_1.get("fields")):
+        require_value(issues, "section_1", section_1, field_id, label)
+
+    motivation_payload = cache_data.get("section_3_item_8", {})
+    motivation_ids = list((SECTION_3.get("items") or [])[7].get("content", {}).keys())
+    require_any_true(
+        issues,
+        "section_3_item_8",
+        motivation_payload,
+        motivation_ids,
+        "Motivacion empresarial",
+    )
+
+    require_value(
+        issues,
+        "section_4",
+        cache_data.get("section_4", {}),
+        "acuerdos_observaciones",
+        "Acuerdos y observaciones",
+    )
+
+    validate_dynamic_rows(
+        issues,
+        "section_5",
+        cache_data.get("section_5", []),
+        [("nombre", "Nombre"), ("cargo", "Cargo")],
+        min_rows_label="Asistentes",
+    )
+    return issues
+
+
 def export_to_excel(cache=None):
     if cache is None:
         cache = FORM_CACHE
     if not cache.get("section_1") and cache_file_exists():
         load_cache_from_file()
         cache = FORM_CACHE
+    raise_validation_error(validate_before_finalize(cache))
 
     from google_sheets_client import get_master_template_id
     from drive_upload import publish_sheet_from_template

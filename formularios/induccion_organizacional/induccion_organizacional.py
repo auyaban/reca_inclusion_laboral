@@ -10,6 +10,12 @@ from formularios.common import (
     _supabase_get,
     build_sheet_updates,
 )
+from formularios.finalize_validation import (
+    field_pairs,
+    raise_validation_error,
+    require_value,
+    validate_dynamic_rows,
+)
 from logging_utils import log_excel_event
 
 
@@ -815,9 +821,83 @@ def _has_meaningful_values(value):
     return str(value or "").strip() != ""
 
 
+def validate_before_finalize(cache=None):
+    cache_data = FORM_CACHE if cache is None else (cache or {})
+    issues = []
+
+    section_1 = cache_data.get("section_1", {})
+    for field_id, label in field_pairs(SECTION_1.get("fields")):
+        require_value(issues, "section_1", section_1, field_id, label)
+
+    validate_dynamic_rows(
+        issues,
+        "section_2",
+        cache_data.get("section_2", []),
+        field_pairs(SECTION_2.get("fields")),
+        min_rows_label="Vinculados",
+    )
+
+    section_3 = cache_data.get("section_3", {})
+    for subsection in SECTION_3.get("subsections", []):
+        for item in subsection.get("items", []):
+            item_id = item.get("id")
+            item_label = item.get("label") or item_id
+            item_payload = section_3.get(item_id, {}) if isinstance(section_3, dict) else {}
+            require_value(issues, "section_3", item_payload, "visto", f"{item_label} - Visto")
+            require_value(
+                issues,
+                "section_3",
+                item_payload,
+                "responsable",
+                f"{item_label} - Responsable",
+            )
+            require_value(
+                issues,
+                "section_3",
+                item_payload,
+                "medio_socializacion",
+                f"{item_label} - Medio de socializacion",
+            )
+            require_value(
+                issues,
+                "section_3",
+                item_payload,
+                "descripcion",
+                f"{item_label} - Descripcion",
+            )
+
+    validate_dynamic_rows(
+        issues,
+        "section_4",
+        cache_data.get("section_4", []),
+        [("medio", "Medio"), ("recomendacion", "Recomendacion")],
+        min_rows=3,
+        min_rows_label="Ajustes razonables",
+    )
+
+    require_value(
+        issues,
+        "section_5",
+        cache_data.get("section_5", {}),
+        "observaciones",
+        "Observaciones",
+    )
+
+    validate_dynamic_rows(
+        issues,
+        "section_6",
+        cache_data.get("section_6", []),
+        [("nombre", "Nombre"), ("cargo", "Cargo")],
+        min_rows_label="Asistentes",
+    )
+    return issues
+
+
 def _validate_cache_before_export():
     section_3 = FORM_CACHE.get("section_3", {})
     if _has_meaningful_values(section_3):
+        issues = validate_before_finalize()
+        raise_validation_error(issues)
         return
     later_sections_have_data = any(
         _has_meaningful_values(FORM_CACHE.get(section_id))

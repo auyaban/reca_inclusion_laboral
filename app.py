@@ -3145,6 +3145,28 @@ def _result_with_dependency_down(status_text):
     }
 
 
+def _get_services_badge_state(internet_state, supabase_state, drive_state, total_pending=0, total_failed=0):
+    if int(total_failed or 0) > 0:
+        return "● Error de sincronización", COLOR_DANGER
+    if int(total_pending or 0) > 0:
+        return f"● {int(total_pending or 0)} por sincronizar", COLOR_WARNING
+
+    internet_ok = bool((internet_state or {}).get("ok"))
+    if not internet_ok:
+        return "● Sin conexión", COLOR_DANGER
+
+    service_states = [supabase_state or {}, drive_state or {}]
+    if all(bool(state.get("ok")) for state in service_states):
+        return "● Conectado", COLOR_SUCCESS
+
+    error_codes = {str((state or {}).get("error_code") or "").strip() for state in service_states if not state.get("ok")}
+    if error_codes & {"credentials", "config", "folder_config", "missing_dependencies"}:
+        return "● Configuración incompleta", COLOR_WARNING
+    if error_codes & {"auth"}:
+        return "● Credenciales inválidas", COLOR_WARNING
+    return "● Servicios no disponibles", COLOR_WARNING
+
+
 def probe_startup_services(log_enabled=False, require_drive_write=False):
     internet = check_internet(log_enabled=log_enabled)
     if not internet.get("ok"):
@@ -8046,17 +8068,14 @@ class HubWindow(tk.Tk):
                     ),
                     fg=color,
                 )
-                if total_failed:
-                    self._net_status_label.config(text="● Error de sincronización", fg=COLOR_DANGER)
-                elif total_pending:
-                    self._net_status_label.config(
-                        text=f"● {total_pending} por sincronizar",
-                        fg=COLOR_WARNING,
-                    )
-                elif self._is_online and supabase_state.get("ok") and drive_state.get("ok"):
-                    self._net_status_label.config(text="● Conectado", fg=COLOR_SUCCESS)
-                else:
-                    self._net_status_label.config(text="● Sin conexión", fg=COLOR_DANGER)
+                badge_text, badge_color = _get_services_badge_state(
+                    internet_state,
+                    supabase_state,
+                    drive_state,
+                    total_pending=total_pending,
+                    total_failed=total_failed,
+                )
+                self._net_status_label.config(text=badge_text, fg=badge_color)
             if self._sync_panel_btn:
                 self._sync_panel_btn.config(text="Ver detalles")
             self._net_status_after_id = self.after(9000, self._start_network_status_monitor)

@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.0.2 - 2026-04-03
+
+Esta version corrige la distribucion de credenciales de Google en el instalador y evita que la interfaz confunda un problema de configuracion con falta de internet.
+
+### Cambios principales
+
+- El instalador ahora copia `service-account.json` al perfil del usuario desde la maquina de build, dejando lista la autenticacion de Google Drive y Google Sheets en instalaciones nuevas o actualizadas.
+- El badge de estado del Hub ya no muestra `Sin conexión` cuando la red esta bien pero faltan credenciales o configuracion de servicios.
+- Los estados degradados de servicios conectados ahora se clasifican como `Configuración incompleta`, `Credenciales inválidas` o `Servicios no disponibles` segun el tipo de falla.
+
+### Como afecta a los usuarios
+
+- Los formularios que dependen de Google dejan de fallar en equipos actualizados por ausencia del `service-account.json`.
+- Cuando exista un problema de configuracion, el usuario vera un estado mas preciso y no un falso `Sin conexión`.
+
 ## 2.0.1 - 2026-04-03
 
 Esta version corrige un faltante de empaquetado que podia impedir la finalizacion de formularios en instalaciones de usuario final.

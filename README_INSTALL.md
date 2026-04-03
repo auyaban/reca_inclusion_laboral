@@ -22,7 +22,8 @@ Preparar `config.json`
 Notas
 - `GOOGLE_SERVICE_ACCOUNT_FILE` puede ser ruta absoluta o relativa al directorio del `.env`.
 - La ubicacion recomendada es `%APPDATA%\RECA Inclusion Laboral\.env`.
-- Coloca `service-account.json` en `%APPDATA%\RECA Inclusion Laboral\` para no empaquetar secretos en el release.
+- El build del instalador toma `service-account.json` desde `GOOGLE_SERVICE_ACCOUNT_FILE` y lo copia a `%APPDATA%\RECA Inclusion Laboral\` durante la instalacion.
+- Si se requiere una rotacion de credenciales, recompila y redistribuye el instalador para reemplazar ese archivo.
 
 Build local
 1) `powershell -ExecutionPolicy Bypass -File build.ps1`

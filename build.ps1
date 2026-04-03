@@ -148,12 +148,14 @@ if (-not [System.IO.Path]::IsPathRooted($googleServiceAccount)) {
 }
 $googleServiceAccountPath = (Resolve-Path $googleServiceAccount).Path
 $googleServiceAccountFileName = [System.IO.Path]::GetFileName($googleServiceAccountPath)
+$googleServiceAccountSourcePath = $googleServiceAccountPath.Replace('"', '""')
 
 $installerConfig = @"
 #define SupabaseUrl "$supabaseUrl"
 #define SupabaseKey "$supabaseKey"
 #define InstallerAssetName "$installerAsset"
 #define GoogleServiceAccountFileName "$googleServiceAccountFileName"
+#define GoogleServiceAccountSourcePath "$googleServiceAccountSourcePath"
 "@
 Set-Content -Path (Join-Path $root "installer_config.local.iss") -Value $installerConfig -Encoding UTF8
 

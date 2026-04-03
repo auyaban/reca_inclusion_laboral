@@ -28,6 +28,7 @@ WizardStyle=modern
 
 [Files]
 Source: "dist\RECA_INCLUSION_LABORAL\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#GoogleServiceAccountSourcePath}"; DestDir: "{userappdata}\RECA Inclusion Laboral"; DestName: "{#GoogleServiceAccountFileName}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

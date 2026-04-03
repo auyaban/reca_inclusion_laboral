@@ -3475,13 +3475,6 @@ def _show_acta_published_dialog(parent, *, sheet_url, company_name="", pdf_folde
     dialog.grab_set()
 
     dialog_w = 440
-    dialog_h = 290 if pdf_folder_url else 230
-    dialog.update_idletasks()
-    px = parent.winfo_rootx() + max(0, (parent.winfo_width() - dialog_w) // 2)
-    py = parent.winfo_rooty() + max(0, (parent.winfo_height() - dialog_h) // 2)
-    dialog.geometry(f"{dialog_w}x{dialog_h}+{px}+{py}")
-    dialog.lift()
-    dialog.focus_force()
 
     # ── Header ──────────────────────────────────────────────────────────
     header = tk.Frame(dialog, bg=COLOR_SUCCESS, height=58)
@@ -3489,22 +3482,23 @@ def _show_acta_published_dialog(parent, *, sheet_url, company_name="", pdf_folde
     header.pack_propagate(False)
     tk.Label(
         header,
-        text="✅  ¡Acta publicada!",
+        text="\u2705  \u00a1Acta publicada!",
         font=("Arial", 14, "bold"),
-        fg=COLOR_SURFACE,
+        fg="#FFFFFF",
         bg=COLOR_SUCCESS,
     ).pack(expand=True)
 
     # ── Cuerpo ───────────────────────────────────────────────────────────
+    # fill="x" (no expand) para que no consuma espacio que necesitan los botones
     body = tk.Frame(dialog, bg=COLOR_SURFACE, padx=24, pady=14)
-    body.pack(fill="both", expand=True)
+    body.pack(fill="x")
 
     company_line = f" de {company_name}" if company_name else ""
     tk.Label(
         body,
-        text=f"El acta{company_line} quedó guardada en Google Sheets.",
-        font=FONT_SUBTITLE,
-        fg=COLOR_TEXT_PRIMARY,
+        text=f"El acta{company_line} qued\u00f3 guardada en Google Sheets.",
+        font=("Arial", 11),
+        fg="#2D2D2D",
         bg=COLOR_SURFACE,
         wraplength=390,
         justify="left",
@@ -3513,15 +3507,18 @@ def _show_acta_published_dialog(parent, *, sheet_url, company_name="", pdf_folde
     if pdf_folder_url:
         tk.Label(
             body,
-            text="El PDF se está generando y estará disponible\nen la carpeta de Drive en unos segundos.",
+            text="El PDF se est\u00e1 generando y estar\u00e1 disponible\nen la carpeta de Drive en unos segundos.",
             font=("Arial", 10),
-            fg=COLOR_TEXT_SECONDARY,
+            fg="#5B5563",
             bg=COLOR_SURFACE,
             justify="left",
         ).pack(anchor="w", pady=(8, 0))
 
+    # ── Separador ────────────────────────────────────────────────────────
+    tk.Frame(dialog, bg=COLOR_BORDER, height=1).pack(fill="x", padx=24)
+
     # ── Botones ──────────────────────────────────────────────────────────
-    btn_area = tk.Frame(dialog, bg=COLOR_SURFACE, padx=24, pady=(0, 20))
+    btn_area = tk.Frame(dialog, bg=COLOR_SURFACE, padx=24, pady=16)
     btn_area.pack(fill="x")
 
     def _open_sheet():
@@ -3541,55 +3538,63 @@ def _show_acta_published_dialog(parent, *, sheet_url, company_name="", pdf_folde
             _open_url_prefer_chrome(pdf_folder_url)
         dialog.destroy()
 
-    _BTN_STYLE = dict(font=("Arial", 10, "bold"), relief="flat", padx=12, pady=7, cursor="hand2")
+    _BTN = dict(font=("Arial", 10, "bold"), relief="flat", padx=12, pady=8, cursor="hand2", bd=0)
 
     if pdf_folder_url:
         tk.Label(
             btn_area,
-            text="¿Qué deseas abrir?",
+            text="\u00bfQu\u00e9 deseas abrir?",
             font=("Arial", 10, "bold"),
-            fg=COLOR_TEXT_PRIMARY,
+            fg="#2D2D2D",
             bg=COLOR_SURFACE,
-        ).pack(anchor="w", pady=(0, 8))
+        ).pack(anchor="w", pady=(0, 10))
 
         row = tk.Frame(btn_area, bg=COLOR_SURFACE)
-        row.pack(fill="x")
+        row.pack(anchor="w")
 
         tk.Button(
-            row, text="📊 Google Sheet",
-            bg=COLOR_PRIMARY, fg=COLOR_SURFACE,
-            command=_open_sheet, **_BTN_STYLE,
+            row, text="Abrir Google Sheet",
+            bg=COLOR_PRIMARY, fg="#FFFFFF",
+            command=_open_sheet, **_BTN,
         ).pack(side="left", padx=(0, 8))
 
         tk.Button(
-            row, text="📁 Carpeta de PDFs",
-            bg=COLOR_ACCENT, fg=COLOR_SURFACE,
-            command=_open_pdf_folder, **_BTN_STYLE,
+            row, text="Ver PDFs en Drive",
+            bg=COLOR_ACCENT, fg="#FFFFFF",
+            command=_open_pdf_folder, **_BTN,
         ).pack(side="left", padx=(0, 8))
 
         tk.Button(
             row, text="Abrir ambos",
-            bg=COLOR_SURFACE, fg=COLOR_TEXT_SECONDARY,
-            font=("Arial", 10), relief="flat", padx=8, pady=7, cursor="hand2",
+            bg="#E5E7EB", fg="#374151",
+            font=("Arial", 10), relief="flat", padx=10, pady=8, cursor="hand2", bd=0,
             command=_open_both,
         ).pack(side="left")
     else:
         row = tk.Frame(btn_area, bg=COLOR_SURFACE)
-        row.pack(fill="x")
+        row.pack(anchor="w")
 
         tk.Button(
-            row, text="📊 Abrir Google Sheet",
-            bg=COLOR_PRIMARY, fg=COLOR_SURFACE,
-            command=_open_sheet, **_BTN_STYLE,
+            row, text="Abrir Google Sheet",
+            bg=COLOR_PRIMARY, fg="#FFFFFF",
+            command=_open_sheet, **_BTN,
         ).pack(side="left", padx=(0, 10))
 
         tk.Button(
             row, text="Cerrar",
-            bg=COLOR_SURFACE, fg=COLOR_TEXT_SECONDARY,
-            font=("Arial", 10), relief="flat", padx=8, pady=7, cursor="hand2",
+            bg="#E5E7EB", fg="#374151",
+            font=("Arial", 10), relief="flat", padx=10, pady=8, cursor="hand2", bd=0,
             command=dialog.destroy,
         ).pack(side="left")
 
+    # Centrar una vez que todos los widgets están empaquetados
+    dialog.update_idletasks()
+    natural_h = dialog.winfo_reqheight()
+    px = parent.winfo_rootx() + max(0, (parent.winfo_width() - dialog_w) // 2)
+    py = parent.winfo_rooty() + max(0, (parent.winfo_height() - natural_h) // 2)
+    dialog.geometry(f"{dialog_w}x{natural_h}+{px}+{py}")
+    dialog.lift()
+    dialog.focus_force()
     dialog.wait_window()
 
 

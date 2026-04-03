@@ -46,6 +46,41 @@ class CondicionesVacanteMappingTests(unittest.TestCase):
             vacante.FORM_CACHE.clear()
             vacante.FORM_CACHE.update(original_cache)
 
+    def test_row_insertions_shift_section_8_after_extra_disability_rows(self) -> None:
+        cache = {
+            "section_6": [
+                {"discapacidad": f"Discapacidad {index}", "descripcion": f"Descripcion {index}"}
+                for index in range(8)
+            ],
+            "section_8": [
+                {"nombre": "Uno", "cargo": "Cargo 1"},
+                {"nombre": "Dos", "cargo": "Cargo 2"},
+                {"nombre": "Tres", "cargo": "Cargo 3"},
+                {"nombre": "Cuatro", "cargo": "Cargo 4"},
+                {"nombre": "Cinco", "cargo": "Cargo 5"},
+            ],
+        }
+
+        row_insertions = vacante._build_row_insertions(cache)
+
+        self.assertEqual(
+            row_insertions,
+            [
+                {
+                    "sheet_name": vacante.SHEET_NAME,
+                    "start_row": 153,
+                    "base_rows": 4,
+                    "total_rows": 8,
+                },
+                {
+                    "sheet_name": vacante.SHEET_NAME,
+                    "start_row": 165,
+                    "base_rows": 3,
+                    "total_rows": 5,
+                },
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

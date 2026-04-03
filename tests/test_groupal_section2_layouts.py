@@ -56,6 +56,31 @@ class GroupalSection2LayoutTests(_TkTestCase):
             window.oferente_frames[0].master,
         )
 
+    def test_seleccion_section_2_rebinds_dictation_after_adding_oferente(self) -> None:
+        with patch.object(app.seleccion_incluyente, "cache_file_exists", return_value=False):
+            with patch.object(app.seleccion_incluyente, "get_usuarios_reca_cedulas", return_value=[]):
+                window = app.SeleccionIncluyenteWindow(self.root)
+        self.addCleanup(destroy_widget, window)
+
+        window._form_id = "seleccion_incluyente"
+        window._current_section = "section_2"
+
+        with patch.object(app, "_attach_dictation_for_section", return_value=None) as attach_mock:
+            window._show_section_2()
+            window.update()
+            initial_calls = attach_mock.call_count
+
+            add_button = next(
+                widget
+                for widget in app._iter_widget_tree(window.section_container)
+                if isinstance(widget, app.ttk.Button) and widget.cget("text") == "Agregar oferente"
+            )
+            add_button.invoke()
+            window.update()
+
+        self.assertGreater(attach_mock.call_count, initial_calls)
+        self.assertEqual(attach_mock.call_args.args[1:], ("seleccion_incluyente", "section_2"))
+
     def test_contratacion_section_2_uses_groupal_titles_and_options_with_single_vinculado(self) -> None:
         with patch.object(app.contratacion_incluyente, "cache_file_exists", return_value=False):
             with patch.object(app.contratacion_incluyente, "get_usuarios_reca_cedulas", return_value=[]):
@@ -102,6 +127,31 @@ class GroupalSection2LayoutTests(_TkTestCase):
 
         window._show_section_7()
         self.assertEqual(window.header_title.cget("text"), "6. ASISTENTES")
+
+    def test_contratacion_section_2_rebinds_dictation_after_adding_vinculado(self) -> None:
+        with patch.object(app.contratacion_incluyente, "cache_file_exists", return_value=False):
+            with patch.object(app.contratacion_incluyente, "get_usuarios_reca_cedulas", return_value=[]):
+                window = app.ContratacionIncluyenteWindow(self.root)
+        self.addCleanup(destroy_widget, window)
+
+        window._form_id = "contratacion_incluyente"
+        window._current_section = "section_2"
+
+        with patch.object(app, "_attach_dictation_for_section", return_value=None) as attach_mock:
+            window._show_section_2()
+            window.update()
+            initial_calls = attach_mock.call_count
+
+            add_button = next(
+                widget
+                for widget in app._iter_widget_tree(window.section_container)
+                if isinstance(widget, app.ttk.Button) and widget.cget("text") == "Agregar vinculado"
+            )
+            add_button.invoke()
+            window.update()
+
+        self.assertGreater(attach_mock.call_count, initial_calls)
+        self.assertEqual(attach_mock.call_args.args[1:], ("contratacion_incluyente", "section_2"))
 
 
 if __name__ == "__main__":

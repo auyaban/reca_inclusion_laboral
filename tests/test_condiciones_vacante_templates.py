@@ -99,6 +99,25 @@ class CondicionesVacanteTemplateWriterTests(unittest.TestCase):
         self.assertEqual(ws.insert_calls, [164, 164])
         self.assertEqual(ws.copy_calls, [(163, 164)] * 2)
 
+    def test_section_8_overflow_shifts_insert_boundary_after_section_6_growth(self) -> None:
+        ws = _DummyWorksheet()
+        cv.FORM_CACHE["section_6"] = [{"discapacidad": f"D{i}"} for i in range(8)]
+        section_8 = {
+            "asistentes": [
+                {"nombre": "Uno", "cargo": "Cargo 1"},
+                {"nombre": "Dos", "cargo": "Cargo 2"},
+                {"nombre": "Tres", "cargo": "Cargo 3"},
+                {"nombre": "Cuatro", "cargo": "Cargo 4"},
+                {"nombre": "Cinco", "cargo": "Cargo 5"},
+            ]
+        }
+
+        with patch.object(cv, "ws_write"), patch.object(cv, "_log_excel"):
+            cv._write_section_with_ws(ws, "section_8", section_8)
+
+        self.assertEqual(ws.insert_calls, [168, 168])
+        self.assertEqual(ws.copy_calls, [(167, 168)] * 2)
+
 
 if __name__ == "__main__":
     unittest.main()

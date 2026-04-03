@@ -3461,6 +3461,138 @@ def _return_to_hub(window):
         return
 
 
+def _show_acta_published_dialog(parent, *, sheet_url, company_name="", pdf_folder_url=None):
+    """Dialog de éxito al publicar un acta.
+
+    Muestra un mensaje amigable y permite abrir el Google Sheet y/o la
+    carpeta de PDFs en Drive. Si ``pdf_folder_url`` se proporciona, ofrece
+    tres acciones: abrir solo el Sheet, solo la carpeta de PDFs, o ambos.
+    """
+    dialog = tk.Toplevel(parent)
+    dialog.title("Acta publicada")
+    dialog.configure(bg=COLOR_SURFACE)
+    dialog.resizable(False, False)
+    dialog.grab_set()
+
+    dialog_w = 440
+    dialog_h = 290 if pdf_folder_url else 230
+    dialog.update_idletasks()
+    px = parent.winfo_rootx() + max(0, (parent.winfo_width() - dialog_w) // 2)
+    py = parent.winfo_rooty() + max(0, (parent.winfo_height() - dialog_h) // 2)
+    dialog.geometry(f"{dialog_w}x{dialog_h}+{px}+{py}")
+    dialog.lift()
+    dialog.focus_force()
+
+    # ── Header ──────────────────────────────────────────────────────────
+    header = tk.Frame(dialog, bg=COLOR_SUCCESS, height=58)
+    header.pack(fill="x")
+    header.pack_propagate(False)
+    tk.Label(
+        header,
+        text="✅  ¡Acta publicada!",
+        font=("Arial", 14, "bold"),
+        fg=COLOR_SURFACE,
+        bg=COLOR_SUCCESS,
+    ).pack(expand=True)
+
+    # ── Cuerpo ───────────────────────────────────────────────────────────
+    body = tk.Frame(dialog, bg=COLOR_SURFACE, padx=24, pady=14)
+    body.pack(fill="both", expand=True)
+
+    company_line = f" de {company_name}" if company_name else ""
+    tk.Label(
+        body,
+        text=f"El acta{company_line} quedó guardada en Google Sheets.",
+        font=FONT_SUBTITLE,
+        fg=COLOR_TEXT_PRIMARY,
+        bg=COLOR_SURFACE,
+        wraplength=390,
+        justify="left",
+    ).pack(anchor="w")
+
+    if pdf_folder_url:
+        tk.Label(
+            body,
+            text="El PDF se está generando y estará disponible\nen la carpeta de Drive en unos segundos.",
+            font=("Arial", 10),
+            fg=COLOR_TEXT_SECONDARY,
+            bg=COLOR_SURFACE,
+            justify="left",
+        ).pack(anchor="w", pady=(8, 0))
+
+    # ── Botones ──────────────────────────────────────────────────────────
+    btn_area = tk.Frame(dialog, bg=COLOR_SURFACE, padx=24, pady=(0, 20))
+    btn_area.pack(fill="x")
+
+    def _open_sheet():
+        if sheet_url:
+            _open_url_prefer_chrome(sheet_url)
+        dialog.destroy()
+
+    def _open_pdf_folder():
+        if pdf_folder_url:
+            _open_url_prefer_chrome(pdf_folder_url)
+        dialog.destroy()
+
+    def _open_both():
+        if sheet_url:
+            _open_url_prefer_chrome(sheet_url)
+        if pdf_folder_url:
+            _open_url_prefer_chrome(pdf_folder_url)
+        dialog.destroy()
+
+    _BTN_STYLE = dict(font=("Arial", 10, "bold"), relief="flat", padx=12, pady=7, cursor="hand2")
+
+    if pdf_folder_url:
+        tk.Label(
+            btn_area,
+            text="¿Qué deseas abrir?",
+            font=("Arial", 10, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_SURFACE,
+        ).pack(anchor="w", pady=(0, 8))
+
+        row = tk.Frame(btn_area, bg=COLOR_SURFACE)
+        row.pack(fill="x")
+
+        tk.Button(
+            row, text="📊 Google Sheet",
+            bg=COLOR_PRIMARY, fg=COLOR_SURFACE,
+            command=_open_sheet, **_BTN_STYLE,
+        ).pack(side="left", padx=(0, 8))
+
+        tk.Button(
+            row, text="📁 Carpeta de PDFs",
+            bg=COLOR_ACCENT, fg=COLOR_SURFACE,
+            command=_open_pdf_folder, **_BTN_STYLE,
+        ).pack(side="left", padx=(0, 8))
+
+        tk.Button(
+            row, text="Abrir ambos",
+            bg=COLOR_SURFACE, fg=COLOR_TEXT_SECONDARY,
+            font=("Arial", 10), relief="flat", padx=8, pady=7, cursor="hand2",
+            command=_open_both,
+        ).pack(side="left")
+    else:
+        row = tk.Frame(btn_area, bg=COLOR_SURFACE)
+        row.pack(fill="x")
+
+        tk.Button(
+            row, text="📊 Abrir Google Sheet",
+            bg=COLOR_PRIMARY, fg=COLOR_SURFACE,
+            command=_open_sheet, **_BTN_STYLE,
+        ).pack(side="left", padx=(0, 10))
+
+        tk.Button(
+            row, text="Cerrar",
+            bg=COLOR_SURFACE, fg=COLOR_TEXT_SECONDARY,
+            font=("Arial", 10), relief="flat", padx=8, pady=7, cursor="hand2",
+            command=dialog.destroy,
+        ).pack(side="left")
+
+    dialog.wait_window()
+
+
 def _finalize_export_flow(window, loading, completion_result):
     result = dict(completion_result or {})
     status = str(result.get("status") or "").strip()
@@ -3478,22 +3610,39 @@ def _finalize_export_flow(window, loading, completion_result):
             )
 
     if status == "synced":
-        open_target = remote_url or output_path
-        message = "Formulario completado.\nEl archivo quedó publicado en Google Drive."
         if remote_url:
-            message = f"{message}\nLink: {remote_url}"
-        elif output_path:
-            message = f"{message}\nArchivo local: {output_path}"
-        _finish_with_loading(
-            loading,
-            message,
-            open_target=open_target,
-            open_prompt=(
-                "¿Quieres abrirlo en Google Drive?"
-                if remote_url
-                else "¿Quieres abrir el archivo local?"
-            ),
-        )
+            # Dialog amigable con acciones directas
+            pdf_folder_id = str(result.get("pdf_folder_id") or "").strip()
+            pdf_folder_url = (
+                f"https://drive.google.com/drive/folders/{pdf_folder_id}"
+                if pdf_folder_id
+                else None
+            )
+            company_name = str(result.get("company_name") or "").strip()
+            loading.set_status("Listo")
+            loading.set_progress(100)
+            try:
+                loading.window.grab_release()
+            except tk.TclError:
+                pass
+            loading.close()
+            _show_acta_published_dialog(
+                window,
+                sheet_url=remote_url,
+                company_name=company_name,
+                pdf_folder_url=pdf_folder_url,
+            )
+        else:
+            open_target = output_path
+            message = "Formulario completado.\nEl archivo quedó publicado en Google Drive."
+            if output_path:
+                message = f"{message}\nArchivo local: {output_path}"
+            _finish_with_loading(
+                loading,
+                message,
+                open_target=open_target,
+                open_prompt="¿Quieres abrir el archivo local?",
+            )
         return
 
     if status == "pending":
@@ -5607,6 +5756,10 @@ def _start_background_finalization(
                                 company_name=company_name,
                                 registro_id=_pdf_registro_id,
                             )
+                            # Pasar info al dialog de éxito para que ofrezca abrir carpeta de PDFs
+                            if isinstance(completion_result, dict):
+                                completion_result["pdf_folder_id"] = _pdf_folder_id
+                                completion_result["company_name"] = company_name
                             _log_capture(
                                 f"[PDF_EXPORT] job enqueued tipo={export_result.get('tipo_acta')!r} "
                                 f"sheet_id={drive_file_id}"

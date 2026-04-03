@@ -173,6 +173,22 @@ foreach ($relativePath in $requiredBuildInputs) {
     }
 }
 
+# Validar claves obligatorias dentro de config.json
+$configPath = Join-Path $root "config.json"
+$configContent = Get-Content -Path $configPath -Raw | ConvertFrom-Json
+$requiredConfigKeys = @(
+    "google_drive_folder_id",
+    "google_sheets_master_template_id",
+    "pdf_export_folder_id"
+)
+foreach ($key in $requiredConfigKeys) {
+    if (-not ($configContent.PSObject.Properties.Name -contains $key) -or
+        [string]::IsNullOrWhiteSpace($configContent.$key)) {
+        throw "config.json falta la clave obligatoria: '$key'. Consulta config.example.json."
+    }
+}
+Write-Host "config.json validado: todas las claves obligatorias presentes."
+
 $pyiArgs = @(
     "--noconfirm",
     "--windowed",

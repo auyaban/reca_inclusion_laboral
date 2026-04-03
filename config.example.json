@@ -10,5 +10,6 @@
   "fix_drive_permissions_service_account_email": "service-account@example.iam.gserviceaccount.com",
   "fix_drive_permissions_allowed_emails": [
     "admin@example.com"
-  ]
+  ],
+  "pdf_export_folder_id": "your-pdf-export-drive-folder-id"
 }

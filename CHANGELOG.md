@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.0.1 - 2026-04-03
+
+Esta version corrige un faltante de empaquetado que podia impedir la finalizacion de formularios en instalaciones de usuario final.
+
+### Cambios principales
+
+- Se incluye `config.json` dentro del ejecutable distribuido y del instalador para que la app instalada pueda resolver IDs de Google Sheets y Google Drive definidos por configuracion.
+- El proceso de build ahora valida antes y despues de PyInstaller que los recursos runtime criticos queden presentes en `dist\RECA_INCLUSION_LABORAL`.
+- Se documento la ruta de recuperacion manual para instalaciones ya desplegadas que necesiten restaurar `config.json`.
+
+### Como afecta a los usuarios
+
+- `Presentacion Programa` y otros flujos que dependen de plantillas o carpetas remotas dejan de fallar por configuracion ausente en equipos instalados.
+- Los nuevos releases tienen una proteccion adicional para evitar publicar instaladores incompletos.
+
 ## 2.0.0 - 2026-04-03
 
 Esta version consolida una actualizacion amplia de estabilidad, seguridad operativa y experiencia de uso en los flujos principales de Inclusion Laboral.

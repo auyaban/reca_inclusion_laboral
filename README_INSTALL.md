@@ -12,6 +12,13 @@ Preparar `.env`
   - `GOOGLE_SERVICE_ACCOUNT_FILE=...`
   - `INSTALLER_ASSET_NAME=RECA_INCLUSION_LABORAL_Setup.exe` (opcional)
 
+Preparar `config.json`
+- Debe existir al momento del build si la app usa IDs de Drive/Sheets definidos por configuracion.
+- Desde este cambio se empaqueta dentro del release y queda dentro del bundle instalado.
+- Para reparar una instalacion ya desplegada sin reinstalar, copia `config.json` a una de estas rutas:
+  - `%APPDATA%\\RECA Inclusion Laboral\\config.json`
+  - o la carpeta donde quede `RECA_INCLUSION_LABORAL.exe`
+
 Notas
 - `GOOGLE_SERVICE_ACCOUNT_FILE` puede ser ruta absoluta o relativa al directorio del `.env`.
 - La ubicacion recomendada es `%APPDATA%\RECA Inclusion Laboral\.env`.

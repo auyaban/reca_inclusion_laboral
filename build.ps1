@@ -157,11 +157,26 @@ $installerConfig = @"
 "@
 Set-Content -Path (Join-Path $root "installer_config.local.iss") -Value $installerConfig -Encoding UTF8
 
+$requiredBuildInputs = @(
+    "config.json",
+    "Diccionario.txt",
+    "VERSION",
+    "templates"
+)
+
+foreach ($relativePath in $requiredBuildInputs) {
+    $candidate = Join-Path $root $relativePath
+    if (!(Test-Path $candidate)) {
+        throw "Falta recurso requerido para el build: $relativePath"
+    }
+}
+
 $pyiArgs = @(
     "--noconfirm",
     "--windowed",
     "--name", "RECA_INCLUSION_LABORAL",
     "--additional-hooks-dir", "pyinstaller_hooks",
+    "--add-data", "config.json;.",
     "--add-data", "templates;templates",
     "--add-data", "Diccionario.txt;.",
     "--add-data", "VERSION;.",
@@ -178,3 +193,25 @@ if ($Clean) {
 }
 
 & $python -m PyInstaller @pyiArgs
+
+$distRoot = Join-Path $root "dist\RECA_INCLUSION_LABORAL"
+$runtimeContentRoot = Join-Path $distRoot "_internal"
+if (!(Test-Path $runtimeContentRoot)) {
+    $runtimeContentRoot = $distRoot
+}
+
+$requiredRuntimePaths = @(
+    "config.json",
+    "Diccionario.txt",
+    "VERSION",
+    "templates"
+)
+
+foreach ($relativePath in $requiredRuntimePaths) {
+    $candidate = Join-Path $runtimeContentRoot $relativePath
+    if (!(Test-Path $candidate)) {
+        throw "Build incompleto: falta $relativePath en $runtimeContentRoot"
+    }
+}
+
+Write-Host "Build verificado: recursos runtime presentes en $runtimeContentRoot."

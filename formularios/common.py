@@ -50,6 +50,16 @@ def _get_project_root():
         return os.getcwd()
 
 
+def _get_bundle_dir():
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if bundle_dir:
+        return os.path.abspath(bundle_dir)
+    try:
+        return os.path.dirname(os.path.abspath(sys.executable))
+    except Exception:
+        return ""
+
+
 def _get_roaming_app_dir(create=False):
     appdata = str(os.getenv("APPDATA") or "").strip()
     if not appdata:
@@ -103,6 +113,9 @@ def _resolve_config_candidates(config_path="config.json"):
     roaming_dir = _get_roaming_app_dir(create=False)
     if roaming_dir:
         candidates.append(os.path.join(roaming_dir, config_path))
+    bundle_dir = _get_bundle_dir()
+    if bundle_dir:
+        candidates.append(os.path.join(bundle_dir, config_path))
     try:
         exe_dir = os.path.dirname(os.path.abspath(sys.executable))
         candidates.append(os.path.join(exe_dir, config_path))

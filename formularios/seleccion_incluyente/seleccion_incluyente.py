@@ -1721,6 +1721,42 @@ def export_to_excel(clear_cache=True):
 
     _log_excel("SUCCESS export_all")
 
+    # Determinar tipo_acta y extra_name para el PDF
+    section_1 = FORM_CACHE.get("section_1") or {}
+    fecha_visita_raw = str(section_1.get("fecha_visita") or "").strip()
+
+    if num_oferentes == 1:
+        tipo_acta = "seleccion_individual"
+        # CRITERIOS ROTULACIÓN: primer nombre + primer apellido
+        nombre_completo = str((oferentes[0] if oferentes else {}).get("nombre_oferente") or "").strip()
+        extra_name = _primer_nombre_apellido(nombre_completo)
+    else:
+        tipo_acta = "seleccion_grupal"
+        extra_name = str(num_oferentes)
+
+    # Construir participantes para RECA ODS
+    participantes = [
+        {
+            "nombre_usuario": str(o.get("nombre_oferente") or "").strip(),
+            "cedula_usuario": str(o.get("cedula") or "").strip(),
+            "discapacidad_usuario": str(o.get("discapacidad") or "").strip(),
+            "genero_usuario": "",
+        }
+        for o in oferentes
+        if isinstance(o, dict)
+    ]
+
+    acta_metadata = {
+        "tipo_acta": tipo_acta,
+        "nit_empresa": str(section_1.get("nit_empresa") or "").strip(),
+        "nombre_empresa": str(empresa_nombre or "").strip(),
+        "fecha_servicio": fecha_visita_raw,
+        "nombre_profesional": str(section_1.get("profesional_asignado") or section_1.get("asesor") or "").strip(),
+        "modalidad_servicio": str(section_1.get("modalidad") or "").strip(),
+        "participantes": participantes,
+        "asistentes": [],
+    }
+
     if clear_cache:
         clear_cache_file()
         clear_form_cache()
@@ -1729,4 +1765,24 @@ def export_to_excel(clear_cache=True):
         "output_path": result.get("webViewLink", ""),
         "drive_file_id": result.get("file_id", ""),
         "already_in_drive": True,
+        "tipo_acta": tipo_acta,
+        "fecha_servicio": fecha_visita_raw,
+        "acta_metadata": acta_metadata,
+        "extra_name": extra_name,
     }
+
+
+def _primer_nombre_apellido(nombre_completo: str) -> str:
+    """Extrae primer nombre y primer apellido de un nombre completo.
+
+    Sigue los CRITERIOS DE ROTULACIÓN de RECA: "Debe ir el primer nombre
+    y primer apellido."
+
+    Heurística para nombres colombianos:
+    - 1-2 palabras  → retorna tal cual ("Juan Pérez")
+    - 3+ palabras   → words[0] + words[-2]  ("Juan Carlos Pérez García" → "Juan Pérez")
+    """
+    words = nombre_completo.strip().split()
+    if len(words) <= 2:
+        return nombre_completo.strip()
+    return f"{words[0]} {words[-2]}"

@@ -1185,7 +1185,13 @@ def _drive_upload_operation_label(job):
 
 
 # Tipos de acta que tienen exportación a PDF habilitada
-_PDF_EXPORT_ENABLED_TIPOS = {"presentacion_programa", "reactivacion_programa", "condiciones_vacante"}
+_PDF_EXPORT_ENABLED_TIPOS = {
+    "presentacion_programa",
+    "reactivacion_programa",
+    "condiciones_vacante",
+    "seleccion_individual",
+    "seleccion_grupal",
+}
 
 
 def _enqueue_pdf_export_job(*, sheet_file_id, tipo_acta, fecha_servicio, acta_metadata, extra_name=None, pdf_folder_id, company_name="", registro_id=""):
@@ -13929,6 +13935,23 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             for entry_fields in self.oferente_blocks:
                 entry_fields["desarrollo_actividad"] = self.section2_shared_desarrollo_widget
 
+        def _refresh_section_dictation_binding():
+            section_name = str(getattr(self, "_current_section", "section_2") or "section_2").strip() or "section_2"
+            if section_name != "section_2":
+                return
+            form_id = str(
+                getattr(self, "_form_id", getattr(self, "FORM_META_ID", "seleccion_incluyente"))
+                or getattr(self, "FORM_META_ID", "seleccion_incluyente")
+            ).strip()
+            if not form_id:
+                return
+            try:
+                self.after_idle(
+                    lambda w=self, fid=form_id, sec=section_name: _attach_dictation_for_section(w, fid, sec)
+                )
+            except Exception:
+                pass
+
         def _create_shared_desarrollo_section(parent, *, after_widget=None, before_widget=None):
             shared_value = _get_shared_desarrollo_value()
             if self.section2_shared_desarrollo_frame is not None:
@@ -13981,6 +14004,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             self.section2_shared_desarrollo_frame = section3_frame
             self.section2_shared_desarrollo_proxy_fields = proxy_fields
             _refresh_shared_desarrollo_refs()
+            _refresh_section_dictation_binding()
 
         def _reposition_shared_desarrollo_section():
             before_widget = self.oferente_frames[0] if self.oferente_frames else actions
@@ -14905,6 +14929,20 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             if value:
                 widget.insert("1.0", value)
 
+        def _refresh_section_dictation_binding():
+            section_name = str(getattr(self, "_current_section", "section_2") or "section_2").strip() or "section_2"
+            if section_name != "section_2":
+                return
+            form_id = str(getattr(self, "_form_id", "contratacion_incluyente") or "contratacion_incluyente").strip()
+            if not form_id:
+                return
+            try:
+                self.after_idle(
+                    lambda w=self, fid=form_id, sec=section_name: _attach_dictation_for_section(w, fid, sec)
+                )
+            except Exception:
+                pass
+
         def _create_shared_desarrollo_section(parent, *, after_widget=None, before_widget=None):
             shared_value = _get_shared_desarrollo_value()
             current_frame = getattr(self, "section2_shared_desarrollo_frame", None)
@@ -14940,6 +14978,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             frame.pack(**pack_kwargs)
             self.section2_shared_desarrollo_frame = frame
             self.section2_shared_desarrollo_widget = text_widget
+            _refresh_section_dictation_binding()
 
         def _reposition_shared_desarrollo_section():
             if not self.oferente_frames:

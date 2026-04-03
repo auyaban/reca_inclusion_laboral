@@ -146,6 +146,57 @@ class EvaluacionAccesibilidadWindowTests(_TkTestCase):
             "Mixto",
         )
 
+    def test_section_5_hides_suggested_adjustments_until_aplica_is_selected(self) -> None:
+        window = self._create_window()
+
+        window._show_section_5()
+        first_item = app.evaluacion_accesibilidad.SECTION_5["items"][0]["id"]
+        widgets = window.section5_fields[first_item]
+        combo = widgets["lista"]
+        suggested_label = widgets["_suggested_label"]
+        suggested_value = widgets["_suggested_value"]
+
+        window.update_idletasks()
+        self.assertFalse(suggested_label.winfo_ismapped())
+        self.assertFalse(suggested_value.winfo_ismapped())
+
+        combo.set("Aplica")
+        combo.event_generate("<<ComboboxSelected>>")
+        window.update_idletasks()
+
+        self.assertTrue(suggested_label.winfo_ismapped())
+        self.assertTrue(suggested_value.winfo_ismapped())
+
+    def test_confirm_section_5_sets_no_aplica_adjustments_for_all_items(self) -> None:
+        payload = {}
+        for item in app.evaluacion_accesibilidad.SECTION_5["items"]:
+            item_id = item["id"]
+            payload[item_id] = "No aplica"
+            payload[f"{item_id}_nota"] = "Nota: no aplica"
+
+        result = app.evaluacion_accesibilidad.confirm_section_5(payload)
+
+        for item in app.evaluacion_accesibilidad.SECTION_5["items"]:
+            with self.subTest(item=item["id"]):
+                self.assertEqual(result[f"{item['id']}_ajustes"], "No aplica")
+
+    def test_section_5_continue_ignores_internal_ui_labels(self) -> None:
+        window = self._create_window()
+
+        window._show_section_5()
+        for item in app.evaluacion_accesibilidad.SECTION_5["items"]:
+            widgets = window.section5_fields[item["id"]]
+            widgets["lista"].set("No aplica")
+            widgets["nota"].insert(0, "Sin ajuste")
+
+        window._confirm_section_5()
+
+        payload = app.evaluacion_accesibilidad.get_form_cache().get("section_5", {})
+        self.assertTrue(payload)
+        self.assertEqual(payload["discapacidad_fisica"], "No aplica")
+        self.assertEqual(payload["discapacidad_fisica_ajustes"], "No aplica")
+        self.assertEqual(window.header_title.cget("text"), "6. OBSERVACIONES")
+
 
 if __name__ == "__main__":
     unittest.main()

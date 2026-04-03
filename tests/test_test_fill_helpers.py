@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 import app
 
@@ -19,9 +20,14 @@ class _DummyWindow:
 
 class TestFillHelpersTests(unittest.TestCase):
     def test_login_allows_test_fill_only_for_testaaron(self) -> None:
-        self.assertTrue(app._login_allows_test_fill("testaaron"))
-        self.assertTrue(app._login_allows_test_fill(" TestAaron "))
-        self.assertFalse(app._login_allows_test_fill("otro.usuario"))
+        with patch.dict(
+            "os.environ",
+            {"RECA_ENABLE_TEST_FILL": "1", "RECA_TEST_FILL_LOGIN": "testaaron"},
+            clear=False,
+        ):
+            self.assertTrue(app._login_allows_test_fill("testaaron"))
+            self.assertTrue(app._login_allows_test_fill(" TestAaron "))
+            self.assertFalse(app._login_allows_test_fill("otro.usuario"))
 
     def test_pick_test_combobox_value_uses_first_non_empty_value(self) -> None:
         self.assertEqual(app._pick_test_combobox_value(["", "Primera", "Segunda"]), "Primera")
@@ -36,8 +42,13 @@ class TestFillHelpersTests(unittest.TestCase):
         self.assertEqual(app._get_test_fill_entry_value(""), "Pendiente")
 
     def test_get_test_fill_command_requires_allowed_login(self) -> None:
-        allowed = app._get_test_fill_command(_DummyWindow("testaaron"))
-        blocked = app._get_test_fill_command(_DummyWindow("otro.usuario"))
+        with patch.dict(
+            "os.environ",
+            {"RECA_ENABLE_TEST_FILL": "1", "RECA_TEST_FILL_LOGIN": "testaaron"},
+            clear=False,
+        ):
+            allowed = app._get_test_fill_command(_DummyWindow("testaaron"))
+            blocked = app._get_test_fill_command(_DummyWindow("otro.usuario"))
 
         self.assertTrue(callable(allowed))
         self.assertIsNone(blocked)

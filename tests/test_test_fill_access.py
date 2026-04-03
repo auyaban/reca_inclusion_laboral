@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import app
 
@@ -17,15 +18,25 @@ class _DummyWindow:
 
 class TestFillAccessTests(unittest.TestCase):
     def test_login_allows_test_fill_only_for_testaaron(self):
-        self.assertTrue(app._login_allows_test_fill("testaaron"))
-        self.assertTrue(app._login_allows_test_fill("TESTAARON"))
-        self.assertFalse(app._login_allows_test_fill("aarontest"))
-        self.assertFalse(app._login_allows_test_fill("aaron"))
+        with patch.dict(
+            "os.environ",
+            {"RECA_ENABLE_TEST_FILL": "1", "RECA_TEST_FILL_LOGIN": "testaaron"},
+            clear=False,
+        ):
+            self.assertTrue(app._login_allows_test_fill("testaaron"))
+            self.assertTrue(app._login_allows_test_fill("TESTAARON"))
+            self.assertFalse(app._login_allows_test_fill("aarontest"))
+            self.assertFalse(app._login_allows_test_fill("aaron"))
 
     def test_window_allows_test_fill_only_for_supported_form_and_login(self):
-        self.assertTrue(app._window_allows_test_fill(_DummyWindow("testaaron")))
-        self.assertFalse(app._window_allows_test_fill(_DummyWindow("otro_usuario")))
-        self.assertFalse(app._window_allows_test_fill(_DummyWindow("testaaron", form_id="")))
+        with patch.dict(
+            "os.environ",
+            {"RECA_ENABLE_TEST_FILL": "1", "RECA_TEST_FILL_LOGIN": "testaaron"},
+            clear=False,
+        ):
+            self.assertTrue(app._window_allows_test_fill(_DummyWindow("testaaron")))
+            self.assertFalse(app._window_allows_test_fill(_DummyWindow("otro_usuario")))
+            self.assertFalse(app._window_allows_test_fill(_DummyWindow("testaaron", form_id="")))
 
 
 if __name__ == "__main__":

@@ -212,7 +212,7 @@ class DriveResilienceTests(unittest.TestCase):
 
         message = app._format_followup_case_state_error(exc)
 
-        self.assertIn("falla temporal de conexión", message)
+        self.assertIn("falla temporal de conex", message)
         self.assertNotIn("WinError 10053", message)
 
     def test_transient_drive_exception_detects_wrapped_winerror_10053_text(self) -> None:
@@ -247,7 +247,7 @@ class DriveResilienceTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as caught:
                 app._load_followup_editor_bootstrap({"file_id": "demo"})
 
-        self.assertIn("falla temporal de conexion", str(caught.exception).lower())
+        self.assertIn("falla temporal de conex", str(caught.exception).lower())
         self.assertNotIn("WinError 10053", str(caught.exception))
 
     def test_open_editor_bootstraps_before_constructing_window(self) -> None:
@@ -318,7 +318,7 @@ class DriveResilienceTests(unittest.TestCase):
                     captured["on_success"](payload)
 
         self.assertEqual(captured["title"], "Abriendo seguimiento")
-        self.assertEqual(captured["on_error_title"], "Seguimientos")
+        self.assertEqual(captured["on_error_context"], "followup_case")
         load_bootstrap.assert_called_once_with(dummy.case_record)
         editor_window.assert_called_once_with(
             dummy,

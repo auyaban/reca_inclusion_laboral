@@ -5,6 +5,7 @@ from functools import lru_cache
 
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
+    _get_local_app_cache_dir,
     _normalize_cedula,
     _normalize_decimal_value,
     _normalize_text,
@@ -1106,20 +1107,13 @@ def register_form():
     return {
         "id": FORM_ID,
         "name": FORM_NAME,
+        "hub_description": "Registra el proceso de selección, oferentes y ajustes razonables.",
+        "singleton_window": True,
     }
 
 
 def _get_cache_dir():
-    base = os.getenv("LOCALAPPDATA")
-    if not base:
-        userprofile = os.getenv("USERPROFILE")
-        if userprofile:
-            base = os.path.join(userprofile, "AppData", "Local")
-    if not base:
-        base = os.getcwd()
-    cache_dir = os.path.join(base, "RECA", "cache")
-    os.makedirs(cache_dir, exist_ok=True)
-    return cache_dir
+    return _get_local_app_cache_dir()
 
 
 
@@ -1736,4 +1730,3 @@ def export_to_excel(clear_cache=True):
         "drive_file_id": result.get("file_id", ""),
         "already_in_drive": True,
     }
-

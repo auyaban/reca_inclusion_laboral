@@ -10,11 +10,15 @@ venv/
 
 # Env files
 .env
+config.json
 installer_config.iss
 installer_config.local.iss
 
 # Google service account credentials – never commit to version control
 t-collective-*.json
+*service-account*.json
+*credentials*.json
+!config.example.json
 
 # Build artifacts
 build/

@@ -3,7 +3,9 @@ import json
 import re
 import time
 from formularios.common import (
+    _get_local_app_cache_dir,
     _normalize_text,
+    _merge_company_row_with_cache,
     _sanitize_filename,
     _supabase_get,
     build_sheet_updates,
@@ -402,16 +404,7 @@ def _map_company_row(row):
 
 
 def _get_cache_dir():
-    base = os.getenv("LOCALAPPDATA")
-    if not base:
-        userprofile = os.getenv("USERPROFILE")
-        if userprofile:
-            base = os.path.join(userprofile, "AppData", "Local")
-    if not base:
-        base = os.getcwd()
-    cache_dir = os.path.join(base, "RECA", "cache")
-    os.makedirs(cache_dir, exist_ok=True)
-    return cache_dir
+    return _get_local_app_cache_dir()
 
 
 def _get_cache_path():
@@ -512,7 +505,15 @@ def get_empresa_by_nit(nit, env_path=".env"):
         "limit": 1,
     }
     data = _supabase_get("empresas", params, env_path=env_path)
-    return _map_company_row(data[0]) if data else None
+    return (
+        _merge_company_row_with_cache(
+            _map_company_row(data[0]),
+            field_map=SECTION_1_SUPABASE_MAP,
+            nit=nit,
+        )
+        if data
+        else None
+    )
 
 
 def get_empresa_by_nombre(nombre, env_path=".env"):
@@ -534,7 +535,11 @@ def get_empresa_by_nombre(nombre, env_path=".env"):
         return None
     if len(data) > 1:
         raise ValueError("Hay más de una empresa con ese nombre. Usa el NIT.")
-    return _map_company_row(data[0])
+    return _merge_company_row_with_cache(
+        _map_company_row(data[0]),
+        field_map=SECTION_1_SUPABASE_MAP,
+        nombre=nombre,
+    )
 
 
 def get_empresas_by_nombre_prefix(prefix, env_path=".env", limit=50):
@@ -839,6 +844,6 @@ def register_form():
         "id": "presentacion_programa",
         "name": FORM_NAME,
         "module": __name__,
+        "hub_description": "Registra la presentación o reactivación inicial con datos de empresa y temario.",
+        "singleton_window": True,
     }
-
-

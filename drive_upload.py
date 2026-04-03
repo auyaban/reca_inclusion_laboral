@@ -12,7 +12,15 @@ except ImportError:  # pragma: no cover
     ZoneInfo = None
 
 from logging_utils import log_drive_event
-from formularios.common import _load_env_file, _sanitize_filename as _shared_sanitize_filename
+from formularios.common import (
+    DEFAULT_SERVICE_ACCOUNT_FILE_NAME,
+    FORBIDDEN_CONFIG_KEYS,
+    _get_roaming_app_dir,
+    _load_env_file,
+    _load_json_config,
+    _resolve_existing_path,
+    _sanitize_filename as _shared_sanitize_filename,
+)
 from google_api_requests import (
     execute_google_create_with_confirmation,
     execute_google_request_with_retry,
@@ -62,31 +70,32 @@ def _split_filename(filename):
 
 
 def _get_credentials_path():
-    runtime_env = _load_runtime_env()
+    runtime_env, env_source = _load_env_file(".env", include_source=True)
     path = (
         os.getenv("GOOGLE_DRIVE_SA_JSON")
         or os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
         or runtime_env.get("GOOGLE_DRIVE_SA_JSON")
         or runtime_env.get("GOOGLE_SERVICE_ACCOUNT_FILE")
     )
-    if not path:
-        config = _load_config()
-        path = (
-            config.get("google_drive_sa_json")
-            or config.get("google_service_account_file")
-            or config.get("google_sheets_sa_json")
-        )
-    if not path:
+    search_dirs = []
+    if env_source:
+        search_dirs.append(os.path.dirname(os.path.abspath(env_source)))
+    roaming_dir = _get_roaming_app_dir(create=False)
+    if roaming_dir:
+        search_dirs.append(roaming_dir)
+    search_dirs.extend([_get_bundle_dir(), os.getcwd()])
+    if path:
+        resolved_path = _resolve_existing_path(path, base_dirs=search_dirs)
+        if not resolved_path:
+            raise RuntimeError("El archivo de credenciales de Google Drive configurado no es válido.")
+        return resolved_path
+    resolved_path = _resolve_existing_path(DEFAULT_SERVICE_ACCOUNT_FILE_NAME, base_dirs=search_dirs)
+    if not resolved_path:
         raise RuntimeError(
-            "Falta GOOGLE_DRIVE_SA_JSON/GOOGLE_SERVICE_ACCOUNT_FILE o config.json con google_drive_sa_json."
+            "Faltan credenciales de Google Drive. Configure GOOGLE_SERVICE_ACCOUNT_FILE "
+            "en el .env de la aplicación o coloque service-account.json en %APPDATA%\\RECA Inclusion Laboral."
         )
-    # Resolve relative paths against the bundle / script directory so the app
-    # works correctly whether running from source or as a PyInstaller bundle.
-    if not os.path.isabs(path):
-        path = os.path.join(_get_bundle_dir(), path)
-    if not os.path.exists(path):
-        raise RuntimeError(f"No existe el JSON de credenciales: {path}")
-    return path
+    return resolved_path
 
 
 def _get_folder_id():
@@ -453,6 +462,24 @@ def _rewrite_sheet_payloads(
     )
 
 
+def _rewrite_excluded_auto_resize_rows(excluded_rows_by_sheet, replacements):
+    rewritten = {}
+    for sheet_name, rows in (excluded_rows_by_sheet or {}).items():
+        source_name = str(sheet_name or "").strip()
+        if not source_name:
+            continue
+        target_name = replacements.get(source_name, source_name)
+        target_rows = rewritten.setdefault(target_name, set())
+        for row in rows or []:
+            try:
+                row_number = int(row or 0)
+            except Exception:
+                continue
+            if row_number > 0:
+                target_rows.add(row_number)
+    return rewritten
+
+
 def _get_available_filename(service, parent_folder_id, filename, log_base_path=None):
     base_name = _sanitize_filename(filename)
     stem, ext = _split_filename(base_name)
@@ -549,19 +576,10 @@ def _probe_parent_write_access(service, parent_folder_id, log_base_path=None):
 
 
 def _load_config():
-    # Look for config.json next to the bundle / script first, then fall back to
-    # the current working directory so the dev workflow still works.
-    bundle_path = os.path.join(_get_bundle_dir(), DEFAULT_CONFIG_PATH)
-    cwd_path = DEFAULT_CONFIG_PATH
-
-    for candidate in (bundle_path, cwd_path):
-        if os.path.exists(candidate):
-            try:
-                with open(candidate, "r", encoding="utf-8") as handle:
-                    return json.load(handle) or {}
-            except (OSError, json.JSONDecodeError):
-                return {}
-    return {}
+    return _load_json_config(
+        DEFAULT_CONFIG_PATH,
+        forbidden_keys=FORBIDDEN_CONFIG_KEYS,
+    )
 
 
 def _log_drive(message, base_path=None):
@@ -751,6 +769,7 @@ def publish_sheet_from_template(
     row_insertions=None,
     extra_visible_sheets=None,
     checkbox_cells=None,
+    auto_resize_excluded_rows=None,
 ):
     """Copy a Google Sheets template and write data into the copy.
 
@@ -922,9 +941,9 @@ def publish_sheet_from_template(
 
                 current_values = batch_read_sheet_values(spreadsheet_id, ranges)
                 populated_ranges = _count_populated_target_ranges(current_values, ranges)
-                if populated_ranges < len(ranges):
+                if populated_ranges <= 0:
                     _log_drive(
-                        f"REUSE_PARTIAL_SHEET sheet={sheet_name!r} id={spreadsheet_id} "
+                        f"REUSE_EMPTY_TARGET_SHEET sheet={sheet_name!r} id={spreadsheet_id} "
                         f"populated_ranges={populated_ranges}/{len(ranges)}"
                     )
                     continue
@@ -958,6 +977,10 @@ def publish_sheet_from_template(
                     checkbox_cells,
                     unmerge_areas,
                     row_insertions,
+                    replacements,
+                )
+                auto_resize_excluded_rows = _rewrite_excluded_auto_resize_rows(
+                    auto_resize_excluded_rows,
                     replacements,
                 )
 
@@ -1035,7 +1058,11 @@ def publish_sheet_from_template(
                     area.get("start_col", 0),
                     area.get("end_col", 21),
                 )
-        batch_write_sheet_updates(spreadsheet_id, sheet_writes)
+        batch_write_sheet_updates(
+            spreadsheet_id,
+            sheet_writes,
+            auto_resize_excluded_rows=auto_resize_excluded_rows,
+        )
 
         if checkbox_cells:
             try:

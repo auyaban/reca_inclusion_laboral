@@ -49,8 +49,6 @@ begin
   begin
     EnvContent := 'SUPABASE_URL={#SupabaseUrl}' + #13#10 +
                   'SUPABASE_KEY={#SupabaseKey}' + #13#10 +
-                  'GITHUB_REPO_OWNER={#GithubRepoOwner}' + #13#10 +
-                  'GITHUB_REPO_NAME={#GithubRepoName}' + #13#10 +
                   'INSTALLER_ASSET_NAME={#InstallerAssetName}' + #13#10 +
                   'GOOGLE_SERVICE_ACCOUNT_FILE={#GoogleServiceAccountFileName}' + #13#10;
 

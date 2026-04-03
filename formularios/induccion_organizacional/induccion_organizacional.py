@@ -5,6 +5,7 @@ import time
 
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
+    _get_local_app_cache_dir,
     _normalize_cedula,
     _sanitize_filename,
     _supabase_get,
@@ -281,7 +282,7 @@ SECTION_1 = {
             "readonly": True,
         },
         {
-            "id": "direcci\u00f3n_empresa",
+            "id": "direccion_empresa",
             "label": "Direcci\u00f3n de la empresa",
             "source": "supabase",
             "table": "empresas",
@@ -401,6 +402,22 @@ SECTION_6_NOMBRE_COL = "C"
 SECTION_6_CARGO_COL = "L"
 SECTION_6_BASE_ROWS = 3
 
+_SECTION_1_LEGACY_KEY_MAP = {
+    "dirección_empresa": "direccion_empresa",
+}
+
+
+def _normalize_section_1_payload(payload):
+    if not isinstance(payload, dict):
+        return {}
+    normalized = dict(payload)
+    for legacy_key, canonical_key in _SECTION_1_LEGACY_KEY_MAP.items():
+        legacy_value = normalized.pop(legacy_key, None)
+        if canonical_key not in normalized or normalized.get(canonical_key) in (None, ""):
+            if legacy_value not in (None, ""):
+                normalized[canonical_key] = legacy_value
+    return normalized
+
 
 def ws_write(ws, cell, value):
     try:
@@ -418,20 +435,17 @@ def _row_after_section_2(base_row, total_vinculados):
 
 
 def register_form():
-    return {"id": FORM_ID, "name": FORM_NAME, "module": __name__}
+    return {
+        "id": FORM_ID,
+        "name": FORM_NAME,
+        "module": __name__,
+        "hub_description": "Registra inducción organizacional, asistentes y compromisos del proceso.",
+        "singleton_window": True,
+    }
 
 
 def _get_cache_dir():
-    base = os.getenv("LOCALAPPDATA")
-    if not base:
-        userprofile = os.getenv("USERPROFILE")
-        if userprofile:
-            base = os.path.join(userprofile, "AppData", "Local")
-    if not base:
-        base = os.getcwd()
-    cache_dir = os.path.join(base, "RECA", "cache")
-    os.makedirs(cache_dir, exist_ok=True)
-    return cache_dir
+    return _get_local_app_cache_dir()
 
 
 def _get_cache_path():
@@ -461,7 +475,8 @@ def load_cache_from_file():
     data = payload.get("data") or {}
     FORM_CACHE.clear()
     FORM_CACHE.update(data)
-    section_1 = data.get("section_1") or {}
+    section_1 = _normalize_section_1_payload(data.get("section_1") or {})
+    data["section_1"] = section_1
     SECTION_1_CACHE.clear()
     SECTION_1_CACHE.update(section_1)
     return True
@@ -511,6 +526,8 @@ def set_section_cache(section_id, payload, *, source="manual"):
     if not section_id:
         raise ValueError("section_id requerido")
     normalized_payload = payload if payload is not None else {}
+    if section_id == "section_1":
+        normalized_payload = _normalize_section_1_payload(normalized_payload)
     FORM_CACHE[section_id] = normalized_payload
     FORM_CACHE["_last_saved_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     FORM_CACHE["_last_saved_section"] = section_id
@@ -519,6 +536,11 @@ def set_section_cache(section_id, payload, *, source="manual"):
 
 
 def get_form_cache():
+    if isinstance(FORM_CACHE.get("section_1"), dict):
+        normalized_section_1 = _normalize_section_1_payload(FORM_CACHE.get("section_1") or {})
+        FORM_CACHE["section_1"] = normalized_section_1
+        SECTION_1_CACHE.clear()
+        SECTION_1_CACHE.update(normalized_section_1)
     return dict(FORM_CACHE)
 
 
@@ -577,6 +599,7 @@ def confirm_section_1(company_data, user_inputs):
             payload[field_id] = user_inputs.get(field_id)
         else:
             payload[field_id] = company_data.get(field_id)
+    payload = _normalize_section_1_payload(payload)
     SECTION_1_CACHE.update(payload)
     set_section_cache("section_1", payload)
     FORM_CACHE["_last_section"] = "section_1"
@@ -825,7 +848,7 @@ def validate_before_finalize(cache=None):
     cache_data = FORM_CACHE if cache is None else (cache or {})
     issues = []
 
-    section_1 = cache_data.get("section_1", {})
+    section_1 = _normalize_section_1_payload(cache_data.get("section_1", {}))
     for field_id, label in field_pairs(SECTION_1.get("fields")):
         require_value(issues, "section_1", section_1, field_id, label)
 

@@ -5,6 +5,8 @@ import time
 
 from formularios.common import (
     _get_desktop_dir,
+    _get_local_app_cache_dir,
+    _merge_company_row_with_cache,
     _next_available_file_path,
     _normalize_text,
     _sanitize_filename,
@@ -143,16 +145,7 @@ def register_form():
 
 
 def _get_cache_dir():
-    base = os.getenv("LOCALAPPDATA")
-    if not base:
-        userprofile = os.getenv("USERPROFILE")
-        if userprofile:
-            base = os.path.join(userprofile, "AppData", "Local")
-    if not base:
-        base = os.getcwd()
-    cache_dir = os.path.join(base, "RECA", "cache")
-    os.makedirs(cache_dir, exist_ok=True)
-    return cache_dir
+    return _get_local_app_cache_dir()
 
 
 def _get_cache_path():
@@ -216,7 +209,11 @@ def get_empresa_by_nit(nit, env_path=".env"):
     select_cols = ",".join(sorted(set(SECTION_1_SUPABASE_MAP.values()) | {"nit_empresa"}))
     params = {"select": select_cols, "nit_empresa": f"eq.{nit}", "limit": 1}
     data = _supabase_get("empresas", params, env_path=env_path)
-    return data[0] if data else None
+    return (
+        _merge_company_row_with_cache(data[0], field_map=SECTION_1_SUPABASE_MAP, nit=nit)
+        if data
+        else None
+    )
 
 
 def get_empresa_by_nombre(nombre, env_path=".env"):
@@ -230,7 +227,11 @@ def get_empresa_by_nombre(nombre, env_path=".env"):
         return None
     if len(data) > 1:
         raise ValueError("Hay más de una empresa con ese nombre. Usa el NIT.")
-    return data[0]
+    return _merge_company_row_with_cache(
+        data[0],
+        field_map=SECTION_1_SUPABASE_MAP,
+        nombre=nombre,
+    )
 
 
 def get_empresas_by_nombre_prefix(prefix, env_path=".env", limit=50):

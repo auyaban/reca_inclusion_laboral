@@ -85,6 +85,40 @@ class SeguimientosWorkflowTests(unittest.TestCase):
 
 
 class SeguimientosBaseSheetMappingTests(unittest.TestCase):
+    def test_get_base_sheet_name_from_spreadsheet_accepts_master_title(self) -> None:
+        spreadsheet = {
+            "sheets": [
+                {
+                    "properties": {
+                        "title": "9. SEGUIMIENTO AL PROCESO DE INCLUSIÓN LABORAL",
+                    }
+                }
+            ]
+        }
+
+        self.assertEqual(
+            seguimientos._get_base_sheet_name_from_spreadsheet(spreadsheet),
+            seguimientos.SHEET_BASE,
+        )
+
+    def test_build_base_payload_from_user_row_does_not_prefill_fecha_firma_contrato(self) -> None:
+        payload = seguimientos._build_base_payload_from_user_row(
+            {
+                "nombre_usuario": "Persona Demo",
+                "cedula_usuario": "123456",
+                "telefono_oferente": "3000000000",
+                "correo_oferente": "persona@example.com",
+                "cargo_oferente": "Analista",
+                "certificado_discapacidad": "Si",
+                "certificado_porcentaje": "25%",
+                "discapacidad_detalle": "Física",
+                "tipo_contrato": "Indefinido",
+                "fecha_firma_contrato": "2026-04-01",
+            }
+        )
+
+        self.assertNotIn("fecha_firma_contrato", payload)
+
     def test_build_base_sheet_updates_writes_apoyos_ajustes_to_e21(self) -> None:
         updates = seguimientos._build_base_sheet_updates(
             {"apoyos_ajustes": "Texto de ajuste"},
@@ -123,6 +157,32 @@ class SeguimientosBaseSheetMappingTests(unittest.TestCase):
 
             payload = seguimientos.get_base_payload(str(case_path))
             self.assertEqual(payload["apoyos_ajustes"], "Ajuste razonable de prueba")
+
+    def test_get_followup_payload_ignores_template_seeded_defaults_until_user_edits(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        template_path = repo_root / "templates" / "seguimientos.xlsx"
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            case_path = Path(tmp_dir) / "seguimiento_demo.xlsx"
+            shutil.copy2(template_path, case_path)
+
+            seguimientos.save_base_payload(
+                str(case_path),
+                {
+                    "nombre_vinculado": "Persona Demo",
+                    "cedula": "123456",
+                    "cargo_vinculado": "Auxiliar",
+                    "discapacidad": "Fisica",
+                    "seguimiento_fechas_1_3": ["2026-04-01", "", ""],
+                    "seguimiento_fechas_4_6": ["", "", ""],
+                },
+            )
+
+            payload = seguimientos.get_followup_payload(str(case_path), 1)
+
+            self.assertEqual(payload["tipo_apoyo"], "")
+            self.assertEqual(payload["modalidad"], "")
+            self.assertTrue(all(not str(item or "").strip() for item in payload["item_autoevaluacion"]))
+            self.assertTrue(all(not str(item or "").strip() for item in payload["item_eval_empresa"]))
 
 
 if __name__ == "__main__":

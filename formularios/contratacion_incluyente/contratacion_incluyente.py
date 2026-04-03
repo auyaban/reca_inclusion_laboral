@@ -6,6 +6,7 @@ from functools import lru_cache
 
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
+    _get_local_app_cache_dir,
     _normalize_cedula,
     _normalize_decimal_value,
     _normalize_text,
@@ -35,25 +36,25 @@ TEMPLATE_VARIANT_INDIVIDUAL = "individual"
 TEMPLATE_VARIANT_GROUP_2_PLUS = "group_2_plus"
 
 # Vinculado block geometry (unified format — one sheet for individual & group)
-VINCULADO_BLOCK_HEIGHT = 52            # rows per vinculado block (rows 19-70 for first)
-VINCULADO_FIRST_BLOCK_START_ROW = 19
+VINCULADO_BLOCK_HEIGHT = 52            # rows per vinculado block (rows 16-67 for first)
+VINCULADO_FIRST_BLOCK_START_ROW = 16
 VINCULADO_SECOND_BLOCK_START_ROW = VINCULADO_FIRST_BLOCK_START_ROW + VINCULADO_BLOCK_HEIGHT
 DESARROLLO_ACTIVIDAD_CELL = "A15"      # shared across all vinculados
 GROUP_EXPORT_TITLE_CELL = "F1"
 SECTION_2_LAST_COLUMN = "Q"
 
 # Base row positions for 1 vinculado (shift by (N-1)*BLOCK_HEIGHT for N vinculados)
-SECTION_6_BASE_AJUSTES_ROW = 73        # ajustes text row
-SECTION_7_BASE_START_ROW = 79          # first asistente data row
+SECTION_6_BASE_AJUSTES_ROW = 70        # ajustes text row
+SECTION_7_BASE_START_ROW = 76          # first asistente data row
 SECTION_7_NOMBRE_COL = "C"
 SECTION_7_CARGO_COL = "K"
 SECTION_6_TITLE_ROW_BY_TEMPLATE = {
-    TEMPLATE_VARIANT_INDIVIDUAL: 72,
-    TEMPLATE_VARIANT_GROUP_2_PLUS: 72,
+    TEMPLATE_VARIANT_INDIVIDUAL: 69,
+    TEMPLATE_VARIANT_GROUP_2_PLUS: 69,
 }
 SECTION_7_TITLE_ROW_BY_TEMPLATE = {
-    TEMPLATE_VARIANT_INDIVIDUAL: 78,
-    TEMPLATE_VARIANT_GROUP_2_PLUS: 78,
+    TEMPLATE_VARIANT_INDIVIDUAL: 75,
+    TEMPLATE_VARIANT_GROUP_2_PLUS: 75,
 }
 
 
@@ -359,7 +360,7 @@ EXCEL_MAPPING = {
         "profesional_asignado": "L13",
     },
     "section_7": {
-        "start_row": 74,
+        "start_row": 71,
         "rows": 4,
         "nombre_col": "C",
         "cargo_col": "K",
@@ -447,103 +448,100 @@ DATE_FIELD_IDS = {
 
 VINCULADO_CELL_MAP = {
     # Row 23 — personal info line 1
-    "numero": ("A", 23),
-    "nombre_oferente": ("C", 23),
-    "cedula": ("H", 23),
-    "certificado_porcentaje": ("K", 23),
-    "discapacidad": ("L", 23),
-    "telefono_oferente": ("O", 23),
+    "numero": ("A", 20),
+    "nombre_oferente": ("C", 20),
+    "cedula": ("H", 20),
+    "certificado_porcentaje": ("K", 20),
+    "discapacidad": ("L", 20),
+    "telefono_oferente": ("O", 20),
     # Row 24 — personal info line 2
-    "genero": ("C", 24),
-    "correo_oferente": ("G", 24),
-    "fecha_nacimiento": ("M", 24),
-    "edad": ("Q", 24),
+    "genero": ("C", 21),
+    "correo_oferente": ("G", 21),
+    "fecha_nacimiento": ("M", 21),
+    "edad": ("Q", 21),
     # Row 25 — identity
-    "lgtbiq": ("E", 25),
-    "grupo_etnico": ("L", 25),
-    "grupo_etnico_cual": ("O", 25),
+    "lgtbiq": ("E", 22),
+    "grupo_etnico": ("L", 22),
+    "grupo_etnico_cual": ("O", 22),
     # Row 26 — cargo / emergency
-    "cargo_oferente": ("C", 26),
-    "contacto_emergencia": ("I", 26),
-    "parentesco": ("M", 26),
-    "telefono_emergencia": ("Q", 26),
+    "cargo_oferente": ("C", 23),
+    "contacto_emergencia": ("I", 23),
+    "parentesco": ("M", 23),
+    "telefono_emergencia": ("Q", 23),
     # Row 27 — certificado / contrato firma
-    "certificado_discapacidad": ("F", 27),
-    "lugar_firma_contrato": ("L", 27),
-    "fecha_firma_contrato": ("Q", 27),
+    "certificado_discapacidad": ("F", 24),
+    "lugar_firma_contrato": ("L", 24),
+    "fecha_firma_contrato": ("Q", 24),
     # Row 29 — datos adicionales
-    "tipo_contrato": ("G", 29),
-    "fecha_fin": ("N", 29),
+    "tipo_contrato": ("G", 26),
+    "fecha_fin": ("N", 26),
     # Section 5.1 Condiciones de la vacante (rows 33-45)
-    "contrato_lee_nivel_apoyo": ("G", 33),
-    "contrato_lee_observacion": ("L", 33),
-    "contrato_lee_nota": ("M", 34),
-    "contrato_comprendido_nivel_apoyo": ("G", 35),
-    "contrato_comprendido_observacion": ("L", 35),
-    "contrato_comprendido_nota": ("M", 36),
-    "contrato_tipo_nivel_apoyo": ("G", 37),
-    "contrato_tipo_observacion": ("L", 37),
-    "contrato_tipo_contrato": ("L", 38),
-    "contrato_jornada": ("L", 39),
-    "contrato_clausulas": ("L", 40),
-    "contrato_tipo_nota": ("M", 41),
-    "condiciones_salariales_nivel_apoyo": ("G", 42),
-    "condiciones_salariales_observacion": ("L", 42),
-    "condiciones_salariales_frecuencia_pago": ("L", 43),
-    "condiciones_salariales_forma_pago": ("L", 44),
-    "condiciones_salariales_nota": ("M", 45),
+    "contrato_lee_nivel_apoyo": ("G", 30),
+    "contrato_lee_observacion": ("L", 30),
+    "contrato_lee_nota": ("M", 31),
+    "contrato_comprendido_nivel_apoyo": ("G", 32),
+    "contrato_comprendido_observacion": ("L", 32),
+    "contrato_comprendido_nota": ("M", 33),
+    "contrato_tipo_nivel_apoyo": ("G", 34),
+    "contrato_tipo_observacion": ("L", 34),
+    "contrato_tipo_contrato": ("L", 35),
+    "contrato_jornada": ("L", 36),
+    "contrato_clausulas": ("L", 37),
+    "contrato_tipo_nota": ("M", 38),
+    "condiciones_salariales_nivel_apoyo": ("G", 39),
+    "condiciones_salariales_observacion": ("L", 39),
+    "condiciones_salariales_frecuencia_pago": ("L", 40),
+    "condiciones_salariales_forma_pago": ("L", 41),
+    "condiciones_salariales_nota": ("M", 42),
     # Section 5.2 Prestaciones de ley (rows 48-59)
-    "prestaciones_cesantias_nivel_apoyo": ("G", 48),
-    "prestaciones_cesantias_observacion": ("L", 48),
-    "prestaciones_cesantias_nota": ("M", 49),
-    "prestaciones_auxilio_transporte_nivel_apoyo": ("G", 50),
-    "prestaciones_auxilio_transporte_observacion": ("L", 50),
-    "prestaciones_auxilio_transporte_nota": ("M", 51),
-    "prestaciones_prima_nivel_apoyo": ("G", 52),
-    "prestaciones_prima_observacion": ("L", 52),
-    "prestaciones_prima_nota": ("M", 53),
-    "prestaciones_seguridad_social_nivel_apoyo": ("G", 54),
-    "prestaciones_seguridad_social_observacion": ("L", 54),
-    "prestaciones_seguridad_social_nota": ("M", 55),
-    "prestaciones_vacaciones_nivel_apoyo": ("G", 56),
-    "prestaciones_vacaciones_observacion": ("L", 56),
-    "prestaciones_vacaciones_nota": ("M", 57),
-    "prestaciones_auxilios_beneficios_nivel_apoyo": ("G", 58),
-    "prestaciones_auxilios_beneficios_observacion": ("L", 58),
-    "prestaciones_auxilios_beneficios_nota": ("M", 59),
+    "prestaciones_cesantias_nivel_apoyo": ("G", 45),
+    "prestaciones_cesantias_observacion": ("L", 45),
+    "prestaciones_cesantias_nota": ("M", 46),
+    "prestaciones_auxilio_transporte_nivel_apoyo": ("G", 47),
+    "prestaciones_auxilio_transporte_observacion": ("L", 47),
+    "prestaciones_auxilio_transporte_nota": ("M", 48),
+    "prestaciones_prima_nivel_apoyo": ("G", 49),
+    "prestaciones_prima_observacion": ("L", 49),
+    "prestaciones_prima_nota": ("M", 50),
+    "prestaciones_seguridad_social_nivel_apoyo": ("G", 51),
+    "prestaciones_seguridad_social_observacion": ("L", 51),
+    "prestaciones_seguridad_social_nota": ("M", 52),
+    "prestaciones_vacaciones_nivel_apoyo": ("G", 53),
+    "prestaciones_vacaciones_observacion": ("L", 53),
+    "prestaciones_vacaciones_nota": ("M", 54),
+    "prestaciones_auxilios_beneficios_nivel_apoyo": ("G", 55),
+    "prestaciones_auxilios_beneficios_observacion": ("L", 55),
+    "prestaciones_auxilios_beneficios_nota": ("M", 56),
     # Section 5.3 Deberes y derechos (rows 62-70)
-    "conducto_regular_nivel_apoyo": ("G", 62),
-    "conducto_regular_observacion": ("L", 62),
-    "descargos_observacion": ("L", 63),
-    "tramites_observacion": ("L", 64),
-    "permisos_observacion": ("L", 65),
-    "conducto_regular_nota": ("M", 66),
-    "causales_fin_nivel_apoyo": ("G", 67),
-    "causales_fin_observacion": ("L", 67),
-    "causales_fin_nota": ("M", 68),
-    "rutas_atencion_nivel_apoyo": ("G", 69),
-    "rutas_atencion_observacion": ("L", 69),
-    "rutas_atencion_nota": ("M", 70),
+    "conducto_regular_nivel_apoyo": ("G", 59),
+    "conducto_regular_observacion": ("L", 59),
+    "descargos_observacion": ("L", 60),
+    "tramites_observacion": ("L", 61),
+    "permisos_observacion": ("L", 62),
+    "conducto_regular_nota": ("M", 63),
+    "causales_fin_nivel_apoyo": ("G", 64),
+    "causales_fin_observacion": ("L", 64),
+    "causales_fin_nota": ("M", 65),
+    "rutas_atencion_nivel_apoyo": ("G", 66),
+    "rutas_atencion_observacion": ("L", 66),
+    "rutas_atencion_nota": ("M", 67),
 }
 
 SECTION_1_CELL_MAP = EXCEL_MAPPING["section_1"]
 
 
 def register_form():
-    return {"id": FORM_ID, "name": FORM_NAME, "module": __name__}
+    return {
+        "id": FORM_ID,
+        "name": FORM_NAME,
+        "module": __name__,
+        "hub_description": "Formaliza la contratación, desarrollo de la actividad y datos del vinculado.",
+        "singleton_window": True,
+    }
 
 
 def _get_cache_dir():
-    base = os.getenv("LOCALAPPDATA")
-    if not base:
-        userprofile = os.getenv("USERPROFILE")
-        if userprofile:
-            base = os.path.join(userprofile, "AppData", "Local")
-    if not base:
-        base = os.getcwd()
-    cache_dir = os.path.join(base, "RECA", "cache")
-    os.makedirs(cache_dir, exist_ok=True)
-    return cache_dir
+    return _get_local_app_cache_dir()
 
 
 def _get_cache_path():
@@ -1091,6 +1089,17 @@ def _build_section_7_row_insertions(payload, num_vinculados=1):
     ]
 
 
+def _build_auto_resize_excluded_rows(num_vinculados=1):
+    total = max(1, int(num_vinculados or 1))
+    excluded_rows = set()
+    trailing_offsets = {1, 50, 51}
+    for idx in range(total):
+        block_start_row = _section_2_group_block_start_row(idx)
+        for offset in trailing_offsets:
+            excluded_rows.add(block_start_row + offset)
+    return {SHEET_NAME: sorted(excluded_rows)}
+
+
 def _build_section_1_writes(payload):
     if not payload:
         payload = SECTION_1_CACHE
@@ -1219,6 +1228,7 @@ def export_to_excel(clear_cache=True):
         folder_name=_sanitize_filename(empresa_nombre),
         row_insertions=row_insertions or None,
         checkbox_cells=checkbox_cells or None,
+        auto_resize_excluded_rows=_build_auto_resize_excluded_rows(num_vinculados=num_vinculados),
     )
 
     _log_excel("SUCCESS export_all")
@@ -1232,4 +1242,3 @@ def export_to_excel(clear_cache=True):
         "drive_file_id": result.get("file_id", ""),
         "already_in_drive": True,
     }
-

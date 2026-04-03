@@ -93,7 +93,14 @@ class DeterministicTemplateLayoutTests(unittest.TestCase):
         workbook = load_workbook(TEMPLATES_DIR / "seguimientos.xlsx", data_only=False)
         try:
             base_sheet_name = seguimientos._get_base_sheet_name_from_workbook(workbook)
-            self.assertIn(base_sheet_name, {seguimientos.SHEET_BASE, seguimientos.LEGACY_SHEET_BASE})
+            self.assertIn(
+                base_sheet_name,
+                {
+                    seguimientos.SHEET_BASE,
+                    seguimientos.LEGACY_SHEET_BASE,
+                    seguimientos.LEGACY_SHEET_BASE_SHORT,
+                },
+            )
             self.assertIn(seguimientos.SHEET_FINAL, workbook.sheetnames)
             ws = workbook[base_sheet_name]
             for cell in ("D8", "R8", "B23", "P29"):
@@ -102,18 +109,19 @@ class DeterministicTemplateLayoutTests(unittest.TestCase):
         finally:
             workbook.close()
 
-    def test_contratacion_incluyente_template_contract_rows(self) -> None:
-        ws = _worksheet("contratacion_incluyente.xlsx", "5. PROCESO CONTRATACION INCLUYE")
-        self.assertRowStartsWith(
-            ws,
+    def test_contratacion_incluyente_runtime_layout_rows(self) -> None:
+        self.assertEqual(contratacion.VINCULADO_FIRST_BLOCK_START_ROW, 16)
+        self.assertEqual(contratacion.VINCULADO_SECOND_BLOCK_START_ROW, 68)
+        self.assertEqual(
             contratacion.SECTION_6_TITLE_ROW_BY_TEMPLATE[contratacion.TEMPLATE_VARIANT_INDIVIDUAL],
-            "5. AJUSTES RAZONABLES Y RECOMENDACIONES",
+            69,
         )
-        self.assertRowStartsWith(
-            ws,
+        self.assertEqual(
             contratacion.SECTION_7_TITLE_ROW_BY_TEMPLATE[contratacion.TEMPLATE_VARIANT_INDIVIDUAL],
-            "6. ASISTENTES",
+            75,
         )
+        self.assertEqual(contratacion.VINCULADO_CELL_MAP["nombre_oferente"], ("C", 20))
+        self.assertEqual(contratacion.VINCULADO_CELL_MAP["rutas_atencion_nota"], ("M", 67))
 
     def test_induccion_organizacional_template_rows_and_offsets(self) -> None:
         ws = _worksheet("induccion_organizacional.xlsx", "6. INDUCCION ORGANIZACIONAL")

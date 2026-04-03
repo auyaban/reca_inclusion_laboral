@@ -2,17 +2,25 @@ import json
 import os
 import re
 import sys
-from functools import lru_cache
 
 from openpyxl.utils.cell import range_boundaries
 
-from formularios.common import _load_env_file
+from formularios.common import (
+    DEFAULT_SERVICE_ACCOUNT_FILE_NAME,
+    FORBIDDEN_CONFIG_KEYS,
+    _get_roaming_app_dir,
+    _load_env_file,
+    _load_json_config,
+    _resolve_existing_path,
+)
 from google_api_requests import execute_google_request_with_retry
 
 
 DEFAULT_CONFIG_PATH = "config.json"
 SCOPE = "https://www.googleapis.com/auth/spreadsheets"
 SPREADSHEET_ID_RE = re.compile(r"/spreadsheets/d/([a-zA-Z0-9-_]+)")
+FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+_SHEETS_SERVICE_CACHE = {"signature": None, "service": None}
 
 
 def _get_bundle_dir():
@@ -22,17 +30,10 @@ def _get_bundle_dir():
 
 
 def _load_config():
-    bundle_path = os.path.join(_get_bundle_dir(), DEFAULT_CONFIG_PATH)
-    cwd_path = DEFAULT_CONFIG_PATH
-    for candidate in (bundle_path, cwd_path):
-        if not os.path.exists(candidate):
-            continue
-        try:
-            with open(candidate, "r", encoding="utf-8") as handle:
-                return json.load(handle) or {}
-        except (OSError, json.JSONDecodeError):
-            return {}
-    return {}
+    return _load_json_config(
+        DEFAULT_CONFIG_PATH,
+        forbidden_keys=FORBIDDEN_CONFIG_KEYS,
+    )
 
 
 def _load_runtime_env():
@@ -42,8 +43,28 @@ def _load_runtime_env():
         return {}
 
 
+def _service_account_search_dirs(env_source=None):
+    dirs = []
+    if env_source:
+        dirs.append(os.path.dirname(os.path.abspath(env_source)))
+    roaming_dir = _get_roaming_app_dir(create=False)
+    if roaming_dir:
+        dirs.append(roaming_dir)
+    dirs.append(_get_bundle_dir())
+    dirs.append(os.getcwd())
+    unique = []
+    seen = set()
+    for path in dirs:
+        key = os.path.normcase(str(path or "").strip())
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
 def _get_credentials_path():
-    runtime_env = _load_runtime_env()
+    runtime_env, env_source = _load_env_file(".env", include_source=True)
     env_path = str(
         os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
         or os.getenv("GOOGLE_SHEETS_SA_JSON")
@@ -51,25 +72,18 @@ def _get_credentials_path():
         or runtime_env.get("GOOGLE_SHEETS_SA_JSON")
         or ""
     ).strip()
+    search_dirs = _service_account_search_dirs(env_source)
     if env_path:
-        path = env_path
-    else:
-        config = _load_config()
-        path = (
-            config.get("google_service_account_file")
-            or config.get("google_sheets_sa_json")
-            or config.get("google_drive_sa_json")
-            or ""
-        )
+        path = _resolve_existing_path(env_path, base_dirs=search_dirs)
+        if not path:
+            raise RuntimeError("El archivo de credenciales de Google Sheets configurado no es válido.")
+        return path
+    path = _resolve_existing_path(DEFAULT_SERVICE_ACCOUNT_FILE_NAME, base_dirs=search_dirs)
     if not path:
         raise RuntimeError(
-            "Falta GOOGLE_SERVICE_ACCOUNT_FILE o config.json con "
-            "google_service_account_file/google_sheets_sa_json/google_drive_sa_json."
+            "Faltan credenciales de Google Sheets. Configure GOOGLE_SERVICE_ACCOUNT_FILE "
+            "en el .env de la aplicación o coloque service-account.json en %APPDATA%\\RECA Inclusion Laboral."
         )
-    if not os.path.isabs(path):
-        path = os.path.join(_get_bundle_dir(), path)
-    if not os.path.exists(path):
-        raise RuntimeError(f"No existe el JSON de credenciales: {path}")
     return path
 
 
@@ -146,9 +160,20 @@ def get_evaluacion_accesibilidad_template_id():
     )
 
 
-@lru_cache(maxsize=1)
 def get_google_sheets_service():
     creds_path = _get_credentials_path()
+    try:
+        stat_result = os.stat(creds_path)
+        cache_signature = (
+            os.path.normcase(os.path.abspath(creds_path)),
+            int(getattr(stat_result, "st_mtime_ns", 0) or 0),
+            int(getattr(stat_result, "st_size", 0) or 0),
+        )
+    except OSError:
+        cache_signature = os.path.normcase(os.path.abspath(creds_path))
+    cached_service = _SHEETS_SERVICE_CACHE.get("service")
+    if cached_service is not None and _SHEETS_SERVICE_CACHE.get("signature") == cache_signature:
+        return cached_service
     try:
         from google.oauth2.service_account import Credentials
         from googleapiclient.discovery import build
@@ -159,11 +184,38 @@ def get_google_sheets_service():
         ) from exc
 
     credentials = Credentials.from_service_account_file(creds_path, scopes=[SCOPE])
-    return build("sheets", "v4", credentials=credentials, cache_discovery=False)
+    service = build("sheets", "v4", credentials=credentials, cache_discovery=False)
+    _SHEETS_SERVICE_CACHE["signature"] = cache_signature
+    _SHEETS_SERVICE_CACHE["service"] = service
+    return service
 
 
 def clear_google_sheets_service_cache():
-    get_google_sheets_service.cache_clear()
+    _SHEETS_SERVICE_CACHE["signature"] = None
+    _SHEETS_SERVICE_CACHE["service"] = None
+
+
+def _escape_sheet_value(value, *, value_input_option="RAW"):
+    if value is None:
+        return ""
+    mode = str(value_input_option or "RAW").strip().upper()
+    if (
+        mode == "USER_ENTERED"
+        and isinstance(value, str)
+        and value
+        and value[0] in FORMULA_PREFIXES
+    ):
+        return "'" + value
+    return value
+
+
+def _sanitize_sheet_values(values, *, value_input_option="RAW"):
+    if isinstance(values, (list, tuple)):
+        return [
+            _sanitize_sheet_values(item, value_input_option=value_input_option)
+            for item in values
+        ]
+    return _escape_sheet_value(values, value_input_option=value_input_option)
 
 
 def get_sheet_titles(spreadsheet_id_or_url):
@@ -233,11 +285,16 @@ def write_sheet_values(
     spreadsheet_id_or_url,
     range_name,
     values,
-    value_input_option="USER_ENTERED",
+    value_input_option="RAW",
 ):
     spreadsheet_id = extract_spreadsheet_id(spreadsheet_id_or_url)
     service = get_google_sheets_service()
-    body = {"values": values}
+    body = {
+        "values": _sanitize_sheet_values(
+            values,
+            value_input_option=value_input_option,
+        )
+    }
     return execute_google_request_with_retry(
         service.spreadsheets()
         .values()
@@ -572,24 +629,44 @@ def insert_template_block_rows(
     source_start_index = start_row - 1
     source_end_index = end_row
 
-    requests = [
-        {
-            "insertDimension": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "dimension": "ROWS",
-                    "startIndex": insert_index,
-                    "endIndex": insert_index + total_rows,
-                },
-                "inheritFromBefore": insert_index > 0,
-            }
-        }
-    ]
+    execute_google_request_with_retry(
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={
+                "requests": [
+                    {
+                        "insertDimension": {
+                            "range": {
+                                "sheetId": sheet_id,
+                                "dimension": "ROWS",
+                                "startIndex": insert_index,
+                                "endIndex": insert_index + total_rows,
+                            },
+                            "inheritFromBefore": insert_index > 0,
+                        }
+                    }
+                ]
+            },
+        ),
+        operation_name="sheets.insert_template_block_rows",
+    )
 
     if paste_type:
+        # The master sheet contains merged cells around the vinculado block. After
+        # inserting rows, Google may temporarily carry overlapping merge metadata
+        # into the new range, which makes copyPaste fail with
+        # "can't perform a paste that partially intersects a merge".
+        unmerge_cells_in_area(
+            spreadsheet_id,
+            sheet_name,
+            insert_index,
+            insert_index + total_rows,
+        )
+
+        copy_requests = []
         for block_index in range(total_blocks):
             destination_start = insert_index + (block_index * block_height)
-            requests.append(
+            copy_requests.append(
                 {
                     "copyPaste": {
                         "source": {
@@ -608,13 +685,14 @@ def insert_template_block_rows(
                 }
             )
 
-    execute_google_request_with_retry(
-        service.spreadsheets().batchUpdate(
-            spreadsheetId=spreadsheet_id,
-            body={"requests": requests},
-        ),
-        operation_name="sheets.insert_template_block_rows",
-    )
+        execute_google_request_with_retry(
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={"requests": copy_requests},
+            ),
+            operation_name="sheets.copy_template_block_rows",
+        )
+
     return {
         "sheetId": sheet_id,
         "insertedRows": total_rows,
@@ -755,6 +833,104 @@ def _parse_a1_rect(a1_range):
     }
 
 
+def auto_resize_rows_for_ranges(spreadsheet_id_or_url, ranges):
+    spreadsheet_id = extract_spreadsheet_id(spreadsheet_id_or_url)
+    cleaned_ranges = [str(item or "").strip() for item in (ranges or []) if str(item or "").strip()]
+    if not cleaned_ranges:
+        return {"updatedRanges": []}
+
+    spreadsheet = get_spreadsheet(spreadsheet_id, include_grid_data=False)
+    name_to_id = {}
+    for sheet in spreadsheet.get("sheets", []):
+        props = sheet.get("properties", {}) or {}
+        name_to_id[str(props.get("title") or "")] = props.get("sheetId")
+
+    sheet_segments = {}
+    updated_ranges = []
+    for range_name in cleaned_ranges:
+        try:
+            rect = _parse_a1_rect(range_name)
+        except ValueError:
+            continue
+        sheet_id = name_to_id.get(rect["sheet_name"])
+        if sheet_id is None:
+            continue
+        updated_ranges.append(range_name)
+        segments = sheet_segments.setdefault(sheet_id, [])
+        segments.append((rect["start_row_index"], rect["end_row_index"]))
+
+    requests = []
+    for sheet_id, segments in sheet_segments.items():
+        merged_segments = []
+        for start_index, end_index in sorted(segments):
+            if not merged_segments:
+                merged_segments.append([start_index, end_index])
+                continue
+            last_start, last_end = merged_segments[-1]
+            if start_index <= last_end:
+                merged_segments[-1][1] = max(last_end, end_index)
+                continue
+            merged_segments.append([start_index, end_index])
+        for start_index, end_index in merged_segments:
+            requests.append(
+                {
+                    "autoResizeDimensions": {
+                        "dimensions": {
+                            "sheetId": sheet_id,
+                            "dimension": "ROWS",
+                            "startIndex": start_index,
+                            "endIndex": end_index,
+                        }
+                    }
+                }
+            )
+    if requests:
+        service = get_google_sheets_service()
+        execute_google_request_with_retry(
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={"requests": requests},
+            ),
+            operation_name="sheets.auto_resize_rows",
+        )
+    return {"updatedRanges": updated_ranges}
+
+
+def _filter_auto_resize_ranges(ranges, excluded_rows_by_sheet=None):
+    cleaned_ranges = [str(item or "").strip() for item in (ranges or []) if str(item or "").strip()]
+    if not cleaned_ranges:
+        return []
+    excluded = {}
+    for sheet_name, rows in (excluded_rows_by_sheet or {}).items():
+        key = str(sheet_name or "").strip()
+        if not key:
+            continue
+        normalized_rows = set()
+        for row in rows or []:
+            try:
+                row_number = int(row or 0)
+            except Exception:
+                continue
+            if row_number > 0:
+                normalized_rows.add(row_number)
+        if normalized_rows:
+            excluded[key] = normalized_rows
+    if not excluded:
+        return cleaned_ranges
+
+    filtered = []
+    for range_name in cleaned_ranges:
+        try:
+            sheet_name, row_idx, _col_idx = _parse_a1_cell(range_name)
+        except ValueError:
+            filtered.append(range_name)
+            continue
+        if (row_idx + 1) in excluded.get(sheet_name, set()):
+            continue
+        filtered.append(range_name)
+    return filtered
+
+
 def set_native_checkboxes(spreadsheet_id_or_url, checkbox_cells):
     """Set native Google Sheets checkboxes on the given cells.
 
@@ -875,7 +1051,9 @@ def set_sheet_ranges_bold(spreadsheet_id_or_url, ranges, *, bold):
 def batch_write_sheet_updates(
     spreadsheet_id_or_url,
     updates,
-    value_input_option="USER_ENTERED",
+    value_input_option="RAW",
+    auto_resize_rows=True,
+    auto_resize_excluded_rows=None,
 ):
     spreadsheet_id = extract_spreadsheet_id(spreadsheet_id_or_url)
     rows = []
@@ -886,8 +1064,7 @@ def batch_write_sheet_updates(
         if not range_name:
             continue
         value = update.get("value", "")
-        if value is None:
-            value = ""
+        value = _escape_sheet_value(value, value_input_option=value_input_option)
         rows.append(
             {
                 "range": range_name,
@@ -899,7 +1076,7 @@ def batch_write_sheet_updates(
         return {"totalUpdatedCells": 0, "totalUpdatedRows": 0, "responses": []}
 
     service = get_google_sheets_service()
-    return execute_google_request_with_retry(
+    response = execute_google_request_with_retry(
         service.spreadsheets()
         .values()
         .batchUpdate(
@@ -911,3 +1088,14 @@ def batch_write_sheet_updates(
         ),
         operation_name="sheets.batch_write_updates",
     )
+    if auto_resize_rows:
+        resize_ranges = _filter_auto_resize_ranges(
+            [row.get("range") for row in rows],
+            excluded_rows_by_sheet=auto_resize_excluded_rows,
+        )
+        if resize_ranges:
+            auto_resize_rows_for_ranges(
+                spreadsheet_id,
+                resize_ranges,
+            )
+    return response

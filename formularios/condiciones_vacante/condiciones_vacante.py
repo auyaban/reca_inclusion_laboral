@@ -3,10 +3,11 @@ import json
 import time
 import re
 
-from google_sheets_client import read_sheet_values
+from google_sheets_client import get_template_id, read_sheet_values
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
     build_sheet_updates,
+    _get_local_app_cache_dir,
     _normalize_text,
     _sanitize_filename,
 )
@@ -28,9 +29,15 @@ FORM_CACHE = {}
 SECTION_1_CACHE = {}
 _DISABILITY_DICT = None
 
-OFFICIAL_DICTIONARY_SPREADSHEET_ID = "1pMGkp7TKiCeNvRAE1Cu9zVmlSVYSAI9Kuq9YRbhckW8"
 OFFICIAL_DICTIONARY_SHEET = "caracterizacion"
 OFFICIAL_DICTIONARY_RANGE = f"'{OFFICIAL_DICTIONARY_SHEET}'!A52:B73"
+
+
+def _get_official_dictionary_spreadsheet_id():
+    return get_template_id(
+        "google_sheets_official_dictionary_spreadsheet_id",
+        "GOOGLE_SHEETS_OFFICIAL_DICTIONARY_SPREADSHEET_ID",
+    )
 
 
 SECTION_1 = {
@@ -302,16 +309,7 @@ def ws_write(ws, cell, value):
 
 
 def _get_cache_dir():
-    base = os.getenv("LOCALAPPDATA")
-    if not base:
-        userprofile = os.getenv("USERPROFILE")
-        if userprofile:
-            base = os.path.join(userprofile, "AppData", "Local")
-    if not base:
-        base = os.getcwd()
-    cache_dir = os.path.join(base, "RECA", "cache")
-    os.makedirs(cache_dir, exist_ok=True)
-    return cache_dir
+    return _get_local_app_cache_dir()
 
 
 def _get_cache_path():
@@ -964,8 +962,8 @@ def _fix_text(text):
         "Çü": "ó",
         "Ç%": "É",
         "Çs": "Ú",
-        "Æ’?": "",
-        "Æ’??": "",
+        "Æ'?": "",
+        "Æ'??": "",
         "ƒÅ'": "",
     }
     for bad, good in replacements.items():
@@ -990,7 +988,7 @@ def _looks_like_disability_heading(text):
 
 
 def _load_disability_descriptions_from_sheet():
-    rows = read_sheet_values(OFFICIAL_DICTIONARY_SPREADSHEET_ID, OFFICIAL_DICTIONARY_RANGE)
+    rows = read_sheet_values(_get_official_dictionary_spreadsheet_id(), OFFICIAL_DICTIONARY_RANGE)
     entries = {}
     for row in rows or []:
         if not row:
@@ -1425,5 +1423,6 @@ def register_form():
         "id": "condiciones_vacante",
         "name": FORM_NAME,
         "module": __name__,
+        "hub_description": "Documenta condiciones del cargo, apoyos y requisitos de la vacante.",
+        "singleton_window": True,
     }
-

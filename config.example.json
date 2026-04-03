@@ -1,0 +1,14 @@
+{
+  "google_drive_folder_id": "your-google-drive-folder-id",
+  "google_sheets_evaluacion_accesibilidad_template_id": "your-evaluacion-template-id",
+  "google_sheets_master_template_id": "your-master-template-id",
+  "google_sheets_seguimientos_template_id": "your-seguimientos-template-id",
+  "google_sheets_official_dictionary_spreadsheet_id": "your-dictionary-sheet-id",
+  "seguimientos_shared_root": "G:\\TuUnidadCompartida\\Carpeta\\SEGUIMIENTOS",
+  "fix_drive_permissions_shared_drive_id": "your-shared-drive-id",
+  "fix_drive_permissions_target_folder_name": "2026",
+  "fix_drive_permissions_service_account_email": "service-account@example.iam.gserviceaccount.com",
+  "fix_drive_permissions_allowed_emails": [
+    "admin@example.com"
+  ]
+}

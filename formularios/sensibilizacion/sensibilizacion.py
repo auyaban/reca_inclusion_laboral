@@ -4,6 +4,7 @@ import time
 
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
+    _get_local_app_cache_dir,
     _normalize_text,
     _sanitize_filename,
     build_sheet_updates,
@@ -128,20 +129,17 @@ EXCEL_MAPPING = {
 
 
 def register_form():
-    return {"id": FORM_ID, "name": FORM_NAME, "module": __name__}
+    return {
+        "id": FORM_ID,
+        "name": FORM_NAME,
+        "module": __name__,
+        "hub_description": "Documenta la jornada de sensibilización, asistentes y observaciones finales.",
+        "singleton_window": True,
+    }
 
 
 def _get_cache_dir():
-    base = os.getenv("LOCALAPPDATA")
-    if not base:
-        userprofile = os.getenv("USERPROFILE")
-        if userprofile:
-            base = os.path.join(userprofile, "AppData", "Local")
-    if not base:
-        base = os.getcwd()
-    cache_dir = os.path.join(base, "RECA", "cache")
-    os.makedirs(cache_dir, exist_ok=True)
-    return cache_dir
+    return _get_local_app_cache_dir()
 
 
 def _get_cache_path():

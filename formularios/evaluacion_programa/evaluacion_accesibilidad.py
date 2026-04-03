@@ -11,8 +11,10 @@ from . import seccion_5
 from . import seccion_6_7
 from . import seccion_8
 from formularios.common import (
+    _get_local_app_cache_dir,
     _normalize_text,
     _sanitize_filename,
+    _merge_company_row_with_cache,
     _supabase_get,
 )
 from formularios.finalize_validation import (
@@ -154,16 +156,7 @@ SECTION_1_CACHE = {}
 
 
 def _get_cache_dir():
-    base = os.getenv("LOCALAPPDATA")
-    if not base:
-        userprofile = os.getenv("USERPROFILE")
-        if userprofile:
-            base = os.path.join(userprofile, "AppData", "Local")
-    if not base:
-        base = os.getcwd()
-    cache_dir = os.path.join(base, "RECA", "cache")
-    os.makedirs(cache_dir, exist_ok=True)
-    return cache_dir
+    return _get_local_app_cache_dir()
 
 
 def _get_cache_path():
@@ -1652,7 +1645,11 @@ def get_empresa_by_nit(nit, env_path=".env"):
         }
         data = _supabase_get("empresas", params, env_path=env_path)
         if data:
-            return _map_company_row(data[0])
+            return _merge_company_row_with_cache(
+                _map_company_row(data[0]),
+                field_map=SECTION_1_SUPABASE_MAP,
+                nit=nit,
+            )
 
     # 2) Fallback por coincidencia normalizada (con/sin guion/simbolos).
     normalized_target = _normalize_nit(nit)
@@ -1668,9 +1665,17 @@ def get_empresa_by_nit(nit, env_path=".env"):
         return None
     exact = [row for row in rows if _normalize_nit(row.get("nit_empresa")) == normalized_target]
     if len(exact) == 1:
-        return _map_company_row(exact[0])
+        return _merge_company_row_with_cache(
+            _map_company_row(exact[0]),
+            field_map=SECTION_1_SUPABASE_MAP,
+            nit=nit,
+        )
     if len(rows) == 1:
-        return _map_company_row(rows[0])
+        return _merge_company_row_with_cache(
+            _map_company_row(rows[0]),
+            field_map=SECTION_1_SUPABASE_MAP,
+            nit=nit,
+        )
     return None
 
 
@@ -1686,7 +1691,11 @@ def get_empresa_by_nombre(nombre, env_path=".env"):
     }
     data = _supabase_get("empresas", params, env_path=env_path)
     if len(data) == 1:
-        return _map_company_row(data[0])
+        return _merge_company_row_with_cache(
+            _map_company_row(data[0]),
+            field_map=SECTION_1_SUPABASE_MAP,
+            nombre=nombre,
+        )
 
     def _normalize_name(value):
         return re.sub(r"\s+", " ", str(value or "")).strip().lower()
@@ -1703,11 +1712,19 @@ def get_empresa_by_nombre(nombre, env_path=".env"):
         return None
     exact = [row for row in candidates if _normalize_name(row.get("nombre_empresa")) == target]
     if len(exact) == 1:
-        return _map_company_row(exact[0])
+        return _merge_company_row_with_cache(
+            _map_company_row(exact[0]),
+            field_map=SECTION_1_SUPABASE_MAP,
+            nombre=nombre,
+        )
     if len(exact) > 1:
         raise ValueError("Hay más de una empresa con ese nombre. Usa el NIT.")
     if len(candidates) == 1:
-        return _map_company_row(candidates[0])
+        return _merge_company_row_with_cache(
+            _map_company_row(candidates[0]),
+            field_map=SECTION_1_SUPABASE_MAP,
+            nombre=nombre,
+        )
     raise ValueError("Hay más de una empresa con ese nombre. Usa el NIT.")
 
 
@@ -1890,5 +1907,6 @@ def register_form():
         "id": "evaluacion_accesibilidad",
         "name": FORM_NAME,
         "module": __name__,
+        "hub_description": "Evalúa accesibilidad física, comunicativa y organizacional de la empresa.",
+        "singleton_window": True,
     }
-

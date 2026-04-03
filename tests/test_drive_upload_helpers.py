@@ -150,7 +150,11 @@ class DriveUploadHelperTests(unittest.TestCase):
             new_sheet_name="Nueva",
         )
         clear_mock.assert_called_once_with("existing-id")
-        batch_write_mock.assert_called_once_with("existing-id", sheet_writes)
+        batch_write_mock.assert_called_once_with(
+            "existing-id",
+            sheet_writes,
+            auto_resize_excluded_rows=None,
+        )
         self.assertEqual(set(hide_mock.call_args.args[1]), {"Nueva"})
         read_mock.assert_not_called()
         clear_ranges_mock.assert_not_called()
@@ -210,7 +214,11 @@ class DriveUploadHelperTests(unittest.TestCase):
             "existing-id",
             new_sheet_name=expected_title,
         )
-        batch_write_mock.assert_called_once_with("existing-id", rewritten_write)
+        batch_write_mock.assert_called_once_with(
+            "existing-id",
+            rewritten_write,
+            auto_resize_excluded_rows={},
+        )
         clear_ranges_mock.assert_called_once_with("existing-id", [f"'{expected_title}'!A1:B5"])
         checkboxes_mock.assert_called_once_with(
             "existing-id",
@@ -228,7 +236,7 @@ class DriveUploadHelperTests(unittest.TestCase):
         insert_block_rows_mock.assert_not_called()
         self.assertEqual(set(hide_mock.call_args.args[1]), {expected_title})
 
-    def test_publish_sheet_from_template_reuses_partial_sheet_without_duplication(self) -> None:
+    def test_publish_sheet_from_template_reuses_only_when_target_ranges_are_empty(self) -> None:
         sheet_writes = [{"range": "'5. CONTRATACION'!A1", "value": "demo"}]
 
         with self._publish_common_patches():
@@ -257,8 +265,58 @@ class DriveUploadHelperTests(unittest.TestCase):
 
         self.assertEqual(result["file_id"], "existing-id")
         copy_mock.assert_not_called()
-        batch_write_mock.assert_called_once_with("existing-id", sheet_writes)
+        batch_write_mock.assert_called_once_with(
+            "existing-id",
+            sheet_writes,
+            auto_resize_excluded_rows=None,
+        )
         self.assertEqual(set(hide_mock.call_args.args[1]), {"5. CONTRATACION"})
+
+    def test_publish_sheet_from_template_copies_dated_sheet_when_any_target_range_is_occupied(self) -> None:
+        expected_title = "5. CONTRATACION - 2026-04-03"
+        sheet_writes = [{"range": "'5. CONTRATACION'!A1", "value": "demo"}]
+
+        with self._publish_common_patches():
+            with (
+                mock.patch.object(drive_upload, "_find_existing_spreadsheet", return_value="existing-id"),
+                mock.patch("google_sheets_client.get_sheet_titles", return_value=["5. CONTRATACION"]),
+                mock.patch(
+                    "google_sheets_client.batch_read_sheet_values",
+                    return_value={"'5. CONTRATACION'!A1": [["Dato existente"]]},
+                ),
+                mock.patch.object(drive_upload, "_build_dated_sheet_title", return_value=expected_title),
+                mock.patch(
+                    "google_sheets_client.copy_sheet_to_spreadsheet",
+                    return_value={"sheetId": 999, "title": expected_title},
+                ) as copy_mock,
+                mock.patch("google_sheets_client.clear_protected_ranges"),
+                mock.patch("google_sheets_client.batch_write_sheet_updates") as batch_write_mock,
+                mock.patch("google_sheets_client.hide_sheets") as hide_mock,
+                mock.patch("google_sheets_client.clear_sheet_ranges"),
+                mock.patch("google_sheets_client.insert_template_rows"),
+                mock.patch("google_sheets_client.insert_template_block_rows"),
+                mock.patch("google_sheets_client.set_native_checkboxes"),
+                mock.patch("google_sheets_client.unmerge_cells_in_area"),
+            ):
+                result = drive_upload.publish_sheet_from_template(
+                    template_id="template-id",
+                    sheet_writes=sheet_writes,
+                    base_name="Caso",
+                )
+
+        self.assertEqual(result["file_id"], "existing-id")
+        copy_mock.assert_called_once_with(
+            "template-id",
+            "5. CONTRATACION",
+            "existing-id",
+            new_sheet_name=expected_title,
+        )
+        batch_write_mock.assert_called_once_with(
+            "existing-id",
+            [{"range": f"'{expected_title}'!A1", "value": "demo"}],
+            auto_resize_excluded_rows={},
+        )
+        self.assertEqual(set(hide_mock.call_args.args[1]), {expected_title})
 
     def test_get_or_create_folder_returns_confirmed_folder_after_ambiguous_create_error(self) -> None:
         service = _FakeDriveService()
@@ -330,7 +388,11 @@ class DriveUploadHelperTests(unittest.TestCase):
             fake_service.files_resource.copy_calls[0]["body"]["appProperties"]["kind"],
             "google_sheet_publish",
         )
-        batch_write_mock.assert_called_once_with("sheet-123", [{"range": "'Nueva'!A1", "value": "demo"}])
+        batch_write_mock.assert_called_once_with(
+            "sheet-123",
+            [{"range": "'Nueva'!A1", "value": "demo"}],
+            auto_resize_excluded_rows=None,
+        )
         self.assertEqual(set(hide_mock.call_args.args[1]), {"Nueva"})
 
     def test_upload_excel_to_drive_uses_confirmed_resource_after_ambiguous_error(self) -> None:

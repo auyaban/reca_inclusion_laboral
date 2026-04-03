@@ -19,13 +19,12 @@ class RuntimeEnvResolutionTests(unittest.TestCase):
 
             with patch.object(
                 drive_upload,
-                "_load_runtime_env",
-                return_value={"GOOGLE_SERVICE_ACCOUNT_FILE": creds_path.name},
+                "_load_env_file",
+                return_value=({"GOOGLE_SERVICE_ACCOUNT_FILE": creds_path.name}, os.fspath(Path(tmpdir) / ".env")),
             ):
                 with patch.dict(os.environ, {}, clear=True):
                     with patch.object(drive_upload, "_get_bundle_dir", return_value=tmpdir):
-                        with patch.object(drive_upload, "_load_config", return_value={}):
-                            resolved = drive_upload._get_credentials_path()
+                        resolved = drive_upload._get_credentials_path()
 
         self.assertEqual(resolved, os.fspath(creds_path))
 
@@ -42,6 +41,22 @@ class RuntimeEnvResolutionTests(unittest.TestCase):
                     spreadsheet_id = google_sheets_client.get_default_spreadsheet_id()
 
         self.assertEqual(spreadsheet_id, "demoSheetId-123")
+
+    def test_google_sheets_credentials_path_accepts_relative_path_next_to_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            creds_path = Path(tmpdir) / "service-account.json"
+            creds_path.write_text("{}", encoding="utf-8")
+
+            with patch.object(
+                google_sheets_client,
+                "_load_env_file",
+                return_value=({"GOOGLE_SERVICE_ACCOUNT_FILE": creds_path.name}, os.fspath(Path(tmpdir) / ".env")),
+            ):
+                with patch.dict(os.environ, {}, clear=True):
+                    with patch.object(google_sheets_client, "_get_bundle_dir", return_value="C:\\bundle"):
+                        resolved = google_sheets_client._get_credentials_path()
+
+        self.assertEqual(resolved, os.fspath(creds_path))
 
     def test_seguimientos_template_id_uses_master_template_id(self) -> None:
         with patch.object(seguimientos, "get_master_template_id", return_value="masterSheetId-789"):

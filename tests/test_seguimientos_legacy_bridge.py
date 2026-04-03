@@ -135,6 +135,11 @@ class SeguimientosLegacyBridgeTests(unittest.TestCase):
             patch.object(seguimientos, "get_seguimientos_template_id", return_value="template-id"),
             patch.object(seguimientos.uuid, "uuid4", return_value=type("Uuid", (), {"hex": "req-native-123"})()),
             patch.object(seguimientos, "_build_base_payload_from_user_row", return_value={"nombre_vinculado": "Persona Demo"}),
+            patch.object(
+                seguimientos,
+                "get_spreadsheet",
+                return_value={"sheets": [{"properties": {"title": seguimientos.SHEET_BASE}}]},
+            ),
             patch.object(seguimientos, "clear_protected_ranges"),
             patch.object(seguimientos, "batch_write_sheet_updates") as batch_write_mock,
             patch.object(seguimientos, "_set_sheet_visibility") as visibility_mock,

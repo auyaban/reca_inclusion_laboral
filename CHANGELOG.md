@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.0.0 - 2026-04-03
+
+Esta version consolida una actualizacion amplia de estabilidad, seguridad operativa y experiencia de uso en los flujos principales de Inclusion Laboral.
+
+### Cambios principales
+
+- Se reforzo el inicio de sesion y la resolucion de perfil con autologin, fallbacks mas seguros y validaciones adicionales para reducir bloqueos al entrar a la app.
+- Se endurecio el manejo de configuracion, secretos, cache y actualizaciones para evitar dependencias fragiles en entornos instalados y hacer mas segura la ruta de upgrade.
+- Se reorganizo la retroalimentacion visual en formularios para mostrar errores y mensajes operativos mas claros antes de guardar o finalizar.
+- `Seguimientos`, `Google Sheets` y `Drive` recibieron ajustes de resiliencia, compatibilidad y protecciones para reducir fallos intermitentes durante publicacion y sincronizacion.
+- Se agregaron pruebas de seguridad, contrato de mensajes, runtime y UX para cubrir los cambios nuevos y prevenir regresiones en release.
+
+### Como afecta a los usuarios
+
+- El ingreso a la aplicacion y la continuidad de sesion son mas estables en equipos ya instalados.
+- La publicacion de formatos y el proceso de actualizacion tienen mas validaciones antes de ejecutar cambios sobre recursos remotos.
+- Los mensajes visibles durante errores o validaciones bloqueantes son mas claros y ayudan a corregir el problema sin perder contexto.
+
 ## 1.2.7 - 2026-03-30
 
 Esta version endurece el flujo de `Seguimientos` frente a fallas temporales de red y deja mas seguro el proceso de actualizacion.

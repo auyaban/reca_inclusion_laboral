@@ -104,59 +104,47 @@ function Get-EnvMap {
     return $values
 }
 
-$configPath = Join-Path $root "config.json"
-$config = $null
-if (Test-Path $configPath) {
-    try {
-        $config = Get-Content $configPath -Raw | ConvertFrom-Json
-    } catch {
-        throw "config.json invÃ¡lido: $($_.Exception.Message)"
-    }
-}
-
-function Get-ConfigValue {
+function Resolve-EnvPath {
     param(
-        $Config,
-        [string]$Key
+        [Parameter(Mandatory = $true)][string]$Root,
+        [string]$EnvName = ".env"
     )
 
-    if ($null -eq $Config) {
-        return ""
+    $candidates = @()
+    $roamingAppData = [Environment]::GetFolderPath("ApplicationData")
+    if (-not [string]::IsNullOrWhiteSpace($roamingAppData)) {
+        $candidates += Join-Path (Join-Path $roamingAppData "RECA Inclusion Laboral") $EnvName
     }
-    $property = $Config.PSObject.Properties[$Key]
-    if ($null -eq $property) {
-        return ""
+    $candidates += Join-Path $Root $EnvName
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            return $candidate
+        }
     }
-    return [string]$property.Value
+
+    return ""
 }
 
-$envPath = Join-Path $root ".env"
+$envPath = Resolve-EnvPath -Root $root
 if (!(Test-Path $envPath)) {
-    throw ".env no encontrado"
+    throw ".env no encontrado. Colocalo en %APPDATA%\\RECA Inclusion Laboral\\.env o junto a build.ps1."
 }
 $envValues = Get-EnvMap (Get-Content $envPath)
 $supabaseUrl = [string]($envValues["SUPABASE_URL"])
 $supabaseKey = [string]($envValues["SUPABASE_KEY"])
-$repoOwner = [string]($envValues["GITHUB_REPO_OWNER"])
-$repoName = [string]($envValues["GITHUB_REPO_NAME"])
 $installerAsset = [string]($envValues["INSTALLER_ASSET_NAME"])
 if (-not $installerAsset) { $installerAsset = "RECA_INCLUSION_LABORAL_Setup.exe" }
 
 $googleServiceAccount = [string]($envValues["GOOGLE_SERVICE_ACCOUNT_FILE"])
 if (-not $googleServiceAccount) {
-    $googleServiceAccount = Get-ConfigValue $config "google_service_account_file"
+    $googleServiceAccount = [string]($envValues["GOOGLE_DRIVE_SA_JSON"])
 }
 if (-not $googleServiceAccount) {
-    $googleServiceAccount = Get-ConfigValue $config "google_sheets_sa_json"
-}
-if (-not $googleServiceAccount) {
-    $googleServiceAccount = Get-ConfigValue $config "google_drive_sa_json"
-}
-if (-not $googleServiceAccount) {
-    throw "Falta GOOGLE_SERVICE_ACCOUNT_FILE o config.json con google_service_account_file/google_sheets_sa_json/google_drive_sa_json."
+    $googleServiceAccount = "service-account.json"
 }
 if (-not [System.IO.Path]::IsPathRooted($googleServiceAccount)) {
-    $googleServiceAccount = Join-Path $root $googleServiceAccount
+    $googleServiceAccount = Join-Path (Split-Path -Parent $envPath) $googleServiceAccount
 }
 $googleServiceAccountPath = (Resolve-Path $googleServiceAccount).Path
 $googleServiceAccountFileName = [System.IO.Path]::GetFileName($googleServiceAccountPath)
@@ -164,8 +152,6 @@ $googleServiceAccountFileName = [System.IO.Path]::GetFileName($googleServiceAcco
 $installerConfig = @"
 #define SupabaseUrl "$supabaseUrl"
 #define SupabaseKey "$supabaseKey"
-#define GithubRepoOwner "$repoOwner"
-#define GithubRepoName "$repoName"
 #define InstallerAssetName "$installerAsset"
 #define GoogleServiceAccountFileName "$googleServiceAccountFileName"
 "@
@@ -179,8 +165,6 @@ $pyiArgs = @(
     "--add-data", "templates;templates",
     "--add-data", "Diccionario.txt;.",
     "--add-data", "VERSION;.",
-    "--add-data", "config.json;.",
-    "--add-data", "$googleServiceAccountPath;.",
     "--hidden-import", "win32com",
     "--hidden-import", "win32com.client",
     "--hidden-import", "pythoncom",

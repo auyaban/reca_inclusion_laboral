@@ -9,14 +9,13 @@ Preparar `.env`
 - Debe incluir:
   - `SUPABASE_URL=...`
   - `SUPABASE_KEY=...`
-  - `GITHUB_REPO_OWNER=...`
-  - `GITHUB_REPO_NAME=...`
   - `GOOGLE_SERVICE_ACCOUNT_FILE=...`
   - `INSTALLER_ASSET_NAME=RECA_INCLUSION_LABORAL_Setup.exe` (opcional)
 
 Notas
-- `GOOGLE_SERVICE_ACCOUNT_FILE` puede ser ruta absoluta o relativa al proyecto.
-- El instalador escribe `.env` en `%APPDATA%\RECA Inclusion Laboral\.env`; la app ya lo resuelve desde ahÃ­ al ejecutarse.
+- `GOOGLE_SERVICE_ACCOUNT_FILE` puede ser ruta absoluta o relativa al directorio del `.env`.
+- La ubicacion recomendada es `%APPDATA%\RECA Inclusion Laboral\.env`.
+- Coloca `service-account.json` en `%APPDATA%\RECA Inclusion Laboral\` para no empaquetar secretos en el release.
 
 Build local
 1) `powershell -ExecutionPolicy Bypass -File build.ps1`

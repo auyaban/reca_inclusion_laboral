@@ -58,12 +58,32 @@ class ContratacionIncluyenteUnifiedTests(unittest.TestCase):
             "PROCESO CONTRATACION INCLUYENTE GRUPAL - 2 A 4 VINCULADOS",
         )
         self.assertEqual(
-            mapping[f"'{contratacion.SHEET_NAME}'!C23"],
+            mapping[f"'{contratacion.SHEET_NAME}'!C20"],
             "Vinculado 1",
         )
         self.assertEqual(
-            mapping[f"'{contratacion.SHEET_NAME}'!C75"],
+            mapping[f"'{contratacion.SHEET_NAME}'!C72"],
             "Vinculado 2",
+        )
+
+    def test_auto_resize_excluded_rows_cover_each_vinculado_block(self) -> None:
+        excluded = contratacion._build_auto_resize_excluded_rows(num_vinculados=3)
+
+        self.assertEqual(
+            excluded,
+            {
+                contratacion.SHEET_NAME: [
+                    17,
+                    66,
+                    67,
+                    69,
+                    118,
+                    119,
+                    121,
+                    170,
+                    171,
+                ]
+            },
         )
 
 

@@ -3,6 +3,7 @@ import re
 import time
 import unicodedata
 import json
+import stat
 import sys
 import threading
 import uuid
@@ -13,6 +14,19 @@ import urllib.parse
 import urllib.request
 import urllib.error
 from logging_utils import log_supabase_event
+
+APPDATA_DIR_NAME = "RECA Inclusion Laboral"
+LOCAL_APP_DIR_NAME = "RECA"
+DEFAULT_SERVICE_ACCOUNT_FILE_NAME = "service-account.json"
+FORBIDDEN_CONFIG_KEYS = frozenset(
+    {
+        "google_drive_sa_json",
+        "google_service_account_file",
+        "google_sheets_sa_json",
+        "google_drive_sa_key",
+        "google_service_account_json",
+    }
+)
 
 _SUPABASE_SESSION_LOCK = threading.Lock()
 _SUPABASE_SESSION = {
@@ -29,6 +43,149 @@ def _log_supabase(message, level="INFO"):
         pass
 
 
+def _get_project_root():
+    try:
+        return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    except Exception:
+        return os.getcwd()
+
+
+def _get_roaming_app_dir(create=False):
+    appdata = str(os.getenv("APPDATA") or "").strip()
+    if not appdata:
+        return ""
+    path = os.path.join(appdata, APPDATA_DIR_NAME)
+    if create:
+        return _ensure_private_dir(path)
+    return path
+
+
+def _get_local_app_dir(create=False):
+    local_app_data = str(os.getenv("LOCALAPPDATA") or "").strip()
+    if not local_app_data:
+        return ""
+    path = os.path.join(local_app_data, LOCAL_APP_DIR_NAME)
+    if create:
+        return _ensure_private_dir(path)
+    return path
+
+
+def _apply_private_dir_permissions(path):
+    target = str(path or "").strip()
+    if not target:
+        return
+    try:
+        os.chmod(target, stat.S_IRWXU)
+    except Exception:
+        pass
+
+
+def _ensure_private_dir(path):
+    target = str(path or "").strip()
+    if not target:
+        return ""
+    os.makedirs(target, exist_ok=True)
+    _apply_private_dir_permissions(target)
+    return target
+
+
+def _get_local_app_cache_dir():
+    local_root = _get_local_app_dir(create=True)
+    if local_root:
+        return _ensure_private_dir(os.path.join(local_root, "cache"))
+    return _ensure_private_dir(os.path.join(os.getcwd(), ".cache"))
+
+
+def _resolve_config_candidates(config_path="config.json"):
+    if os.path.isabs(config_path):
+        return [config_path]
+    candidates = []
+    roaming_dir = _get_roaming_app_dir(create=False)
+    if roaming_dir:
+        candidates.append(os.path.join(roaming_dir, config_path))
+    try:
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        candidates.append(os.path.join(exe_dir, config_path))
+    except Exception:
+        pass
+    project_root = _get_project_root()
+    candidates.append(os.path.join(project_root, config_path))
+    candidates.append(os.path.abspath(config_path))
+    uniq = []
+    seen = set()
+    for path in candidates:
+        key = os.path.normcase(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(path)
+    return uniq
+
+
+def _load_json_config(config_path="config.json", forbidden_keys=None, include_source=False):
+    chosen = None
+    for candidate in _resolve_config_candidates(config_path):
+        if os.path.exists(candidate):
+            chosen = candidate
+            break
+    payload = {}
+    if chosen:
+        try:
+            with open(chosen, "r", encoding="utf-8") as handle:
+                payload = json.load(handle) or {}
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    blocked = {str(key or "").strip() for key in (forbidden_keys or ()) if str(key or "").strip()}
+    if blocked:
+        payload = {key: value for key, value in payload.items() if str(key or "").strip() not in blocked}
+    if include_source:
+        return payload, chosen
+    return payload
+
+
+def _resolve_existing_path(raw_path, base_dirs=None):
+    text = str(raw_path or "").strip()
+    if not text:
+        return ""
+    if os.path.isabs(text):
+        return os.path.normpath(text) if os.path.exists(text) else ""
+    for base_dir in base_dirs or ():
+        base = str(base_dir or "").strip()
+        if not base:
+            continue
+        candidate = os.path.normpath(os.path.join(base, text))
+        if os.path.exists(candidate):
+            return candidate
+    candidate = os.path.normpath(os.path.abspath(text))
+    if os.path.exists(candidate):
+        return candidate
+    return ""
+
+
+def _load_env_file(env_path=".env", include_source=False):
+    chosen = None
+    for candidate in _resolve_env_candidates(env_path):
+        if os.path.exists(candidate):
+            chosen = candidate
+            break
+    if not chosen:
+        return ({}, None) if include_source else {}
+    env = {}
+    with open(chosen, "r", encoding="utf-8") as handle:
+        for raw in handle:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            clean_key = key.strip().lstrip("\ufeff")
+            env[clean_key] = value.strip().strip('"').strip("'")
+    if include_source:
+        return env, chosen
+    return env
+
+
 def _resolve_env_candidates(env_path=".env"):
     if os.path.isabs(env_path):
         return [env_path]
@@ -40,15 +197,11 @@ def _resolve_env_candidates(env_path=".env"):
     except Exception:
         pass
     # 2) roaming appdata fallback
-    appdata = os.getenv("APPDATA")
-    if appdata:
-        candidates.append(os.path.join(appdata, "RECA Inclusion Laboral", env_path))
+    appdata_dir = _get_roaming_app_dir(create=False)
+    if appdata_dir:
+        candidates.append(os.path.join(appdata_dir, env_path))
     # 3) project root (when running from source)
-    try:
-        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-        candidates.append(os.path.join(project_root, env_path))
-    except Exception:
-        pass
+    candidates.append(os.path.join(_get_project_root(), env_path))
     # 4) current working directory (last resort)
     candidates.append(os.path.abspath(env_path))
     # preserve order and uniqueness
@@ -61,26 +214,6 @@ def _resolve_env_candidates(env_path=".env"):
         seen.add(key)
         uniq.append(path)
     return uniq
-
-
-def _load_env_file(env_path=".env"):
-    chosen = None
-    for candidate in _resolve_env_candidates(env_path):
-        if os.path.exists(candidate):
-            chosen = candidate
-            break
-    if not chosen:
-        return {}
-    env = {}
-    with open(chosen, "r", encoding="utf-8") as handle:
-        for raw in handle:
-            line = raw.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            clean_key = key.strip().lstrip("\ufeff")
-            env[clean_key] = value.strip().strip('"').strip("'")
-    return env
 
 
 def _load_supabase_credentials(env_path=".env"):
@@ -182,6 +315,83 @@ def _extract_error_message(exc):
     return str(exc)
 
 
+def _redact_email(email):
+    user, sep, domain = str(email or "").strip().partition("@")
+    if not sep:
+        return _redact_generic_text(user, preserve=2)
+    masked_user = f"{user[:2]}***" if user else "***"
+    masked_domain = domain if domain else "redacted.local"
+    return f"{masked_user}@{masked_domain}"
+
+
+def _redact_nit(value):
+    digits = re.sub(r"\D+", "", str(value or ""))
+    if not digits:
+        return "***"
+    if len(digits) <= 4:
+        return "*" * len(digits)
+    return f"{digits[:2]}***{digits[-2:]}"
+
+
+def _redact_generic_text(value, preserve=2):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    visible = max(0, int(preserve or 0))
+    if len(text) <= visible:
+        return "*" * len(text)
+    return f"{text[:visible]}***"
+
+
+def _redact_name(value):
+    parts = [segment for segment in re.split(r"\s+", str(value or "").strip()) if segment]
+    if not parts:
+        return ""
+    return " ".join(_redact_generic_text(segment, preserve=1) for segment in parts)
+
+
+def _sanitize_log_value(key, value):
+    key_text = str(key or "").strip().lower()
+    if isinstance(value, dict):
+        return {sub_key: _sanitize_log_value(sub_key, sub_value) for sub_key, sub_value in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_log_value(key, item) for item in value[:50]]
+    if isinstance(value, tuple):
+        return [_sanitize_log_value(key, item) for item in value[:50]]
+    if value is None:
+        return None
+    if any(token in key_text for token in ("email", "correo")):
+        return _redact_email(value)
+    if "nit" in key_text:
+        return _redact_nit(value)
+    if any(token in key_text for token in ("nombre", "contacto", "profesional", "asesor")):
+        return _redact_name(value)
+    if any(token in key_text for token in ("login", "usuario", "user")):
+        return _redact_generic_text(value, preserve=2)
+    return value
+
+
+def _sanitize_log_payload(payload):
+    return _sanitize_log_value("", payload)
+
+
+def _safe_json_for_log(payload):
+    try:
+        return json.dumps(_sanitize_log_payload(payload), ensure_ascii=False, sort_keys=True)
+    except Exception:
+        return str(_sanitize_log_payload(payload))
+
+
+def _extract_public_error_detail(exc):
+    detail = str(_extract_error_message(exc) or "").strip()
+    if not detail:
+        return ""
+    detail = re.sub(r"\s+", " ", detail)
+    if len(detail) > 240:
+        detail = f"{detail[:237]}..."
+    return detail
+
+
 def _decode_jwt_payload(token):
     raw = str(token or "").strip()
     if not raw:
@@ -200,13 +410,11 @@ def _decode_jwt_payload(token):
 
 
 def _get_cache_scope(token):
+    # El payload JWT se usa solo como hint local para cache; no es autoritativo.
     payload = _decode_jwt_payload(token)
     uid = str(payload.get("sub") or "").strip()
-    role = str(payload.get("role") or "").strip()
     if uid:
-        return f"{role or 'authenticated'}:{uid}"
-    if role:
-        return role
+        return f"user:{uid}"
     return "anon"
 
 
@@ -257,7 +465,7 @@ def _supabase_get_access_token(env_path=".env"):
 
 def _supabase_auth_password_login(email, password, env_path=".env"):
     email_value = str(email or "").strip()
-    _log_supabase(f"AUTH password_login start email={email_value!r}")
+    _log_supabase(f"AUTH password_login start email={_redact_email(email_value)!r}")
     supabase_url, supabase_key = _load_supabase_credentials(env_path)
     url = f"{supabase_url.rstrip('/')}/auth/v1/token?grant_type=password"
     payload = {"email": email_value, "password": str(password or "")}
@@ -273,18 +481,18 @@ def _supabase_auth_password_login(email, password, env_path=".env"):
         code = int(getattr(exc, "code", 0) or 0)
         if code in {400, 401}:
             _log_supabase(
-                f"AUTH password_login invalid_credentials email={email_value!r}",
+                f"AUTH password_login invalid_credentials email={_redact_email(email_value)!r}",
                 level="ERROR",
             )
             raise RuntimeError("Usuario y contraseña incorrectos.") from exc
         _log_supabase(
-            f"AUTH password_login http_error email={email_value!r} error={exc}",
+            f"AUTH password_login http_error email={_redact_email(email_value)!r} error={_extract_public_error_detail(exc)}",
             level="ERROR",
         )
         raise RuntimeError(_format_supabase_error("No se pudo autenticar con Supabase", exc)) from exc
     except Exception as exc:
         _log_supabase(
-            f"AUTH password_login error email={email_value!r} error={exc}",
+            f"AUTH password_login error email={_redact_email(email_value)!r} error={_extract_public_error_detail(exc)}",
             level="ERROR",
         )
         raise RuntimeError(_format_supabase_error("No se pudo autenticar con Supabase", exc)) from exc
@@ -292,7 +500,7 @@ def _supabase_auth_password_login(email, password, env_path=".env"):
     access_token = (data.get("access_token") or "").strip()
     if not access_token:
         _log_supabase(
-            f"AUTH password_login missing_token email={email_value!r}",
+            f"AUTH password_login missing_token email={_redact_email(email_value)!r}",
             level="ERROR",
         )
         raise RuntimeError("No se recibió access token de Supabase Auth.")
@@ -302,7 +510,7 @@ def _supabase_auth_password_login(email, password, env_path=".env"):
         expires_at=data.get("expires_at"),
         expires_in=data.get("expires_in"),
     )
-    _log_supabase(f"AUTH password_login success email={email_value!r}")
+    _log_supabase(f"AUTH password_login success email={_redact_email(email_value)!r}")
     return data
 
 
@@ -378,7 +586,7 @@ def _supabase_rpc(function_name, params=None, env_path=".env", use_session=True)
 
 def _supabase_get(table, params, env_path=".env"):
     _log_supabase(
-        f"GET start table={table} params={json.dumps(params or {}, ensure_ascii=False, sort_keys=True)}"
+        f"GET start table={table} params={_safe_json_for_log(params or {})}"
     )
     supabase_url, supabase_key = _load_supabase_credentials(env_path)
     query = urllib.parse.urlencode(params)
@@ -467,15 +675,11 @@ def _supabase_get_paged(table, params=None, env_path=".env", page_size=1000, max
 
 
 def _format_supabase_error(prefix, exc):
-    detail = ""
+    detail = _extract_public_error_detail(exc)
     if isinstance(exc, urllib.error.HTTPError):
-        body = _read_http_error_body(exc)
-        detail = body.strip()
         code = getattr(exc, "code", None)
         if code:
             prefix = f"{prefix} (HTTP {code})"
-    elif exc:
-        detail = str(exc)
     return f"{prefix}: {detail}" if detail else prefix
 
 
@@ -501,13 +705,62 @@ _OFFLINE_DB_READY = False
 
 
 def _get_cache_dir():
-    local_app_data = os.getenv("LOCALAPPDATA")
-    if local_app_data:
-        base = os.path.join(local_app_data, "RECA", "cache")
+    return _get_local_app_cache_dir()
+
+
+def _summarize_failed_queue_error(exc):
+    return _extract_public_error_detail(exc)
+
+
+def _truncate_failed_queue_value(value, *, max_string=200, max_items=50, depth=0):
+    if depth > 4:
+        return "..."
+    if isinstance(value, dict):
+        trimmed = {}
+        for key, item in list(value.items())[:max_items]:
+            trimmed[key] = _truncate_failed_queue_value(
+                item,
+                max_string=max_string,
+                max_items=max_items,
+                depth=depth + 1,
+            )
+        return trimmed
+    if isinstance(value, list):
+        return [
+            _truncate_failed_queue_value(item, max_string=max_string, max_items=max_items, depth=depth + 1)
+            for item in value[:max_items]
+        ]
+    if isinstance(value, tuple):
+        return [
+            _truncate_failed_queue_value(item, max_string=max_string, max_items=max_items, depth=depth + 1)
+            for item in value[:max_items]
+        ]
+    if isinstance(value, str) and len(value) > max_string:
+        return f"{value[:max_string]}..."
+    return value
+
+
+def _build_failed_queue_summary(job, exc):
+    rows = job.get("rows")
+    filters = job.get("filters")
+    values = job.get("values")
+    summary = {
+        "table": str(job.get("table") or "").strip(),
+        "operation": str(job.get("op") or "").strip(),
+        "attempts": int(job.get("attempts") or 0),
+        "row_count": len(rows) if isinstance(rows, list) else (1 if rows else 0),
+        "filter_keys": sorted((filters or {}).keys()) if isinstance(filters, dict) else [],
+        "value_keys": sorted((values or {}).keys()) if isinstance(values, dict) else [],
+        "on_conflict": str(job.get("on_conflict") or "").strip(),
+    }
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            summary["error_code"] = int(getattr(exc, "code", 0) or 0)
+        except Exception:
+            summary["error_code"] = None
     else:
-        base = os.path.join(os.getcwd(), ".cache")
-    os.makedirs(base, exist_ok=True)
-    return base
+        summary["error_code"] = None
+    return summary
 
 
 def _get_supabase_queue_path():
@@ -658,6 +911,131 @@ def _clear_supabase_get_cache():
             conn.commit()
         finally:
             conn.close()
+
+
+def _is_blank_company_value(value):
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    return False
+
+
+def _normalize_company_nit(value):
+    return re.sub(r"[^0-9A-Za-z]+", "", str(value or "")).lower()
+
+
+def _count_company_values(row, field_map=None):
+    if not isinstance(row, dict):
+        return 0
+    keys = {"nit_empresa", "nombre_empresa"}
+    if isinstance(field_map, dict):
+        keys.update(str(key) for key in field_map.keys())
+        keys.update(str(value) for value in field_map.values())
+    return sum(1 for key in keys if not _is_blank_company_value(row.get(key)))
+
+
+def _find_cached_company_row(nit="", nombre="", field_map=None):
+    nit_raw = str(nit or "").strip()
+    nombre_raw = " ".join(str(nombre or "").split())
+    nit_norm = _normalize_company_nit(nit_raw)
+    nombre_norm = _normalize_text(nombre_raw)
+    if not nit_norm and not nombre_norm:
+        return None
+
+    like_terms = []
+    if nit_raw:
+        like_terms.append(f"%{nit_raw}%")
+    compact_nit = re.sub(r"[^0-9A-Za-z]+", "", nit_raw)
+    if compact_nit and compact_nit != nit_raw:
+        like_terms.append(f"%{compact_nit}%")
+    if nombre_raw:
+        like_terms.append(f"%{nombre_raw}%")
+
+    _ensure_offline_db()
+    rows = []
+    with _OFFLINE_DB_LOCK:
+        conn = _offline_connect()
+        try:
+            sql = [
+                "SELECT payload_json, updated_at",
+                "FROM supabase_get_cache",
+                "WHERE table_name = ?",
+            ]
+            params = ["empresas"]
+            if like_terms:
+                sql.append("AND (" + " OR ".join(["payload_json LIKE ?"] * len(like_terms)) + ")")
+                params.extend(like_terms)
+            sql.append("ORDER BY updated_at DESC LIMIT 30")
+            rows = conn.execute(" ".join(sql), params).fetchall()
+        finally:
+            conn.close()
+
+    best_row = None
+    best_score = -1.0
+    best_updated_at = -1.0
+    for payload_json, updated_at in rows:
+        try:
+            payload = json.loads(payload_json)
+        except Exception:
+            continue
+        items = payload if isinstance(payload, list) else [payload]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            row_nit = _normalize_company_nit(item.get("nit_empresa"))
+            row_name = _normalize_text(item.get("nombre_empresa"))
+            score = 0.0
+            if nit_norm:
+                if row_nit == nit_norm:
+                    score += 10.0
+                elif row_nit and nit_norm in row_nit:
+                    score += 4.0
+            if nombre_norm:
+                if row_name == nombre_norm:
+                    score += 6.0
+                elif row_name and nombre_norm in row_name:
+                    score += 2.0
+            if score <= 0.0:
+                continue
+            score += _count_company_values(item, field_map=field_map) / 100.0
+            updated_at_value = float(updated_at or 0.0)
+            if score > best_score or (score == best_score and updated_at_value > best_updated_at):
+                best_row = item
+                best_score = score
+                best_updated_at = updated_at_value
+    return dict(best_row) if isinstance(best_row, dict) else None
+
+
+def _merge_company_row_with_cache(row, *, field_map=None, nit="", nombre=""):
+    base = dict(row) if isinstance(row, dict) else {}
+    if not isinstance(field_map, dict):
+        field_map = {}
+    cached = _find_cached_company_row(
+        nit=nit or base.get("nit_empresa"),
+        nombre=nombre or base.get("nombre_empresa"),
+        field_map=field_map,
+    )
+    if not isinstance(cached, dict):
+        return base if isinstance(row, dict) else row
+
+    merged = dict(base) if base else dict(cached)
+    for key in ("nit_empresa", "nombre_empresa"):
+        if _is_blank_company_value(merged.get(key)) and not _is_blank_company_value(cached.get(key)):
+            merged[key] = cached.get(key)
+
+    for field_id, source_key in field_map.items():
+        if _is_blank_company_value(merged.get(field_id)):
+            for candidate in (cached.get(field_id), cached.get(source_key)):
+                if not _is_blank_company_value(candidate):
+                    merged[field_id] = candidate
+                    break
+        if _is_blank_company_value(merged.get(source_key)):
+            for candidate in (cached.get(source_key), cached.get(field_id)):
+                if not _is_blank_company_value(candidate):
+                    merged[source_key] = candidate
+                    break
+    return merged
 
 
 def _atomic_write_json(path, payload):
@@ -827,7 +1205,8 @@ def _supabase_write_worker_loop():
             with _WRITE_QUEUE_LOCK:
                 if not _is_transient_supabase_exception(exc):
                     _log_supabase(
-                        f"QUEUE failed_non_retryable op={job.get('op')} table={job.get('table')} error={exc}",
+                        f"QUEUE failed_non_retryable op={job.get('op')} table={job.get('table')} "
+                        f"error={_summarize_failed_queue_error(exc)}",
                         level="ERROR",
                     )
                     _FAILED_WRITE_QUEUE.append(
@@ -837,17 +1216,12 @@ def _supabase_write_worker_loop():
                             "table": job.get("table"),
                             "attempts": int(job.get("attempts") or 0),
                             "failed_at": time.time(),
-                            "error": str(exc),
-                            "payload": {
-                                "rows": job.get("rows"),
-                                "filters": job.get("filters"),
-                                "values": job.get("values"),
-                                "on_conflict": job.get("on_conflict"),
-                            },
+                            "error": _summarize_failed_queue_error(exc),
+                            "summary": _build_failed_queue_summary(job, exc),
                         }
                     )
-                    if len(_FAILED_WRITE_QUEUE) > 2000:
-                        _FAILED_WRITE_QUEUE[:] = _FAILED_WRITE_QUEUE[-2000:]
+                    if len(_FAILED_WRITE_QUEUE) > 200:
+                        _FAILED_WRITE_QUEUE[:] = _FAILED_WRITE_QUEUE[-200:]
                     _persist_failed_write_queue_locked()
                     _WRITE_QUEUE[:] = [item for item in _WRITE_QUEUE if item.get("id") != job.get("id")]
                     _persist_write_queue_locked()
@@ -1124,7 +1498,7 @@ def _supabase_upsert(table, rows, env_path=".env", on_conflict=None):
 
 def _supabase_patch(table, filters, values, env_path=".env"):
     _log_supabase(
-        f"PATCH start table={table} filters={json.dumps(filters or {}, ensure_ascii=False, sort_keys=True)}"
+        f"PATCH start table={table} filters={_safe_json_for_log(filters or {})}"
     )
     supabase_url, supabase_key = _load_supabase_credentials(env_path)
     if not values:

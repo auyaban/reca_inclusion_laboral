@@ -125,7 +125,9 @@ class GoogleSheetsProtectionTests(unittest.TestCase):
         self.assertEqual(result["file_id"], "sheet-copy-id")
         clear_protected_ranges.assert_called_once_with("sheet-copy-id")
         clear_sheet_ranges.assert_not_called()
-        batch_write_sheet_updates.assert_called_once_with("sheet-copy-id", [])
+        batch_write_sheet_updates.assert_called_once()
+        self.assertEqual(batch_write_sheet_updates.call_args.args[:2], ("sheet-copy-id", []))
+        self.assertIsNone(batch_write_sheet_updates.call_args.kwargs.get("auto_resize_excluded_rows"))
         set_sheet_ranges_bold.assert_called_once_with(
             "sheet-copy-id",
             ["'Hoja'!A1", "'Hoja'!B2:B3"],
@@ -239,26 +241,76 @@ class GoogleSheetsProtectionTests(unittest.TestCase):
                     seguimientos,
                     "_build_base_sheet_updates",
                     return_value=[{"range": "A1", "value": "demo"}],
-                ):
+                ) as build_base_sheet_updates:
                     with patch.object(seguimientos, "clear_protected_ranges") as clear_protected_ranges:
                         with patch.object(seguimientos, "batch_write_sheet_updates") as batch_write_sheet_updates:
                             with patch.object(seguimientos, "_set_sheet_visibility") as set_sheet_visibility:
-                                record = seguimientos._create_native_case_record(
-                                    service,
-                                    "folder-id",
-                                    "Caso Demo",
-                                    "123",
-                                    {"nombre_usuario": "Persona Demo"},
-                                    3,
-                                )
+                                with patch.object(
+                                    seguimientos,
+                                    "get_spreadsheet",
+                                    return_value={
+                                        "sheets": [
+                                            {"properties": {"title": seguimientos.SHEET_BASE}}
+                                        ]
+                                    },
+                                ):
+                                    record = seguimientos._create_native_case_record(
+                                        service,
+                                        "folder-id",
+                                        "Caso Demo",
+                                        "123",
+                                        {"nombre_usuario": "Persona Demo"},
+                                        3,
+                                    )
 
         self.assertEqual(record["file_id"], "seguimiento-copy-id")
-        clear_protected_ranges.assert_called_once_with("seguimiento-copy-id")
-        batch_write_sheet_updates.assert_called_once_with(
-            "seguimiento-copy-id",
-            [{"range": "A1", "value": "demo"}],
+        build_base_sheet_updates.assert_called_once_with(
+            {"campo": "valor"},
+            base_sheet_name=seguimientos.SHEET_BASE,
         )
+        clear_protected_ranges.assert_called_once_with("seguimiento-copy-id")
+        batch_write_sheet_updates.assert_called_once()
+        written_updates = batch_write_sheet_updates.call_args.args[1]
+        self.assertIn({"range": "A1", "value": "demo"}, written_updates)
+        self.assertIn({"range": "'SEGUIMIENTO PROCESO IL 1'!O12", "value": ""}, written_updates)
+        self.assertIn({"range": "'SEGUIMIENTO PROCESO IL 6'!N50", "value": ""}, written_updates)
         set_sheet_visibility.assert_called_once_with("seguimiento-copy-id", 3)
+
+    def test_set_sheet_visibility_hides_non_seguimiento_tabs(self) -> None:
+        spreadsheet = {
+            "sheets": [
+                {"properties": {"sheetId": 1, "title": seguimientos.SHEET_BASE}},
+                {"properties": {"sheetId": 2, "title": "Caracterización"}},
+                {"properties": {"sheetId": 3, "title": "SEGUIMIENTO PROCESO IL 1"}},
+                {"properties": {"sheetId": 4, "title": "SEGUIMIENTO PROCESO IL 6"}},
+                {"properties": {"sheetId": 5, "title": seguimientos.SHEET_FINAL}},
+            ]
+        }
+        service = Mock()
+        request = object()
+        service.spreadsheets.return_value.batchUpdate.return_value = request
+
+        with patch.object(seguimientos, "get_google_sheets_service", return_value=service):
+            with patch.object(seguimientos, "get_spreadsheet", return_value=spreadsheet):
+                with patch.object(seguimientos, "execute_google_request_with_retry", return_value={}) as execute_mock:
+                    seguimientos._set_sheet_visibility("spreadsheet-demo", 3)
+
+        service.spreadsheets.return_value.batchUpdate.assert_called_once()
+        body = service.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]
+        requests = body["requests"]
+        hidden_by_id = {
+            item["updateSheetProperties"]["properties"]["sheetId"]: item["updateSheetProperties"]["properties"]["hidden"]
+            for item in requests
+        }
+        self.assertFalse(hidden_by_id[1])
+        self.assertTrue(hidden_by_id[2])
+        self.assertFalse(hidden_by_id[3])
+        self.assertFalse(hidden_by_id[4])
+        self.assertFalse(hidden_by_id[5])
+        execute_mock.assert_called_once_with(
+            request,
+            operation_name="seguimientos.set_sheet_visibility",
+        )
 
 
 if __name__ == "__main__":

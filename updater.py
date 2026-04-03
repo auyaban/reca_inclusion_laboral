@@ -70,8 +70,8 @@ def _log_update(message: str) -> None:
 
 def _repo_config():
     env = _load_env_file(".env")
-    owner = (env.get("GITHUB_REPO_OWNER") or DEFAULT_REPO_OWNER).strip()
-    name = (env.get("GITHUB_REPO_NAME") or DEFAULT_REPO_NAME).strip()
+    owner = DEFAULT_REPO_OWNER
+    name = DEFAULT_REPO_NAME
     token = (env.get("GITHUB_TOKEN") or "").strip()
     installer_asset = (
         env.get("GITHUB_INSTALLER_ASSET")
@@ -85,6 +85,10 @@ def _repo_config():
         f"installer_asset={installer_asset}, hash_asset={hash_asset}"
     )
     return owner, name, token, installer_asset, hash_asset
+
+
+def _escape_powershell_single_quoted(value: str) -> str:
+    return str(value or "").replace("`", "``").replace("'", "''")
 
 
 def _http_get_json(url: str, timeout: int = 20, token: str = "") -> dict:
@@ -129,9 +133,11 @@ def _latest_release_via_powershell_redirect(owner: str, repo: str, timeout: int 
     """
     Fallback usando la pila de red de Windows sobre github.com en vez de api.github.com.
     """
+    owner_ps = _escape_powershell_single_quoted(owner)
+    repo_ps = _escape_powershell_single_quoted(repo)
     script = (
         "$ErrorActionPreference='Stop';"
-        f"$u='https://github.com/{owner}/{repo}/releases/latest';"
+        f"$u='https://github.com/{owner_ps}/{repo_ps}/releases/latest';"
         "$r=Invoke-WebRequest -Uri $u -Headers @{ 'User-Agent'='reca-inclusion-laboral-updater' } -Method Get -UseBasicParsing;"
         "$final='';"
         "if ($r -and $r.BaseResponse -and $r.BaseResponse.ResponseUri) { $final=$r.BaseResponse.ResponseUri.AbsoluteUri };"
@@ -204,25 +210,31 @@ def _latest_release_via_powershell(owner: str, repo: str, token: str = "", timeo
     Fallback para entornos corporativos donde urllib falla por proxy/TLS,
     usando stack de red de Windows via PowerShell.
     """
-    token_escaped = token.replace("'", "''")
+    owner_ps = _escape_powershell_single_quoted(owner)
+    repo_ps = _escape_powershell_single_quoted(repo)
     script = (
         "$ErrorActionPreference='Stop';"
-        f"$u='https://api.github.com/repos/{owner}/{repo}/releases/latest';"
+        f"$u='https://api.github.com/repos/{owner_ps}/{repo_ps}/releases/latest';"
         "$h=@{ 'User-Agent'='reca-inclusion-laboral-updater'; 'Accept'='application/vnd.github+json' };"
         + (
-            f"$h['Authorization']='Bearer {token_escaped}';"
+            "$h['Authorization']='Bearer ' + $env:RECA_GITHUB_TOKEN;"
             if token
             else ""
         )
         + "$r=Invoke-RestMethod -Uri $u -Headers $h -Method Get;"
         "if ($r -and $r.tag_name) { [Console]::Out.Write(($r.tag_name.ToString())) }"
     )
+    env = None
+    if token:
+        env = os.environ.copy()
+        env["RECA_GITHUB_TOKEN"] = token
     completed = subprocess.run(
         ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output=True,
         text=True,
         timeout=timeout,
         check=False,
+        env=env,
     )
     _log_update(
         f"Fallback PowerShell API completed: returncode={completed.returncode}, "
@@ -383,8 +395,8 @@ def _download_file(url: str, destination: Path, progress_callback=None) -> None:
     if progress_callback:
         progress_callback("Descargando instalador (fallback Windows)...", 50)
 
-    url_ps = url.replace("'", "''")
-    out_ps = str(destination).replace("'", "''")
+    url_ps = _escape_powershell_single_quoted(url)
+    out_ps = _escape_powershell_single_quoted(str(destination))
     script = (
         "$ErrorActionPreference='Stop';"
         "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;"

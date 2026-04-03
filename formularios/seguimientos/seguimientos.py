@@ -4,6 +4,7 @@ import shutil
 import io
 import tempfile
 import uuid
+from functools import lru_cache
 from pathlib import Path
 
 from openpyxl import load_workbook
@@ -12,6 +13,7 @@ from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 from formularios.common import (
     _get_desktop_dir,
     _load_env_file,
+    _merge_company_row_with_cache,
     _normalize_cedula,
     sanitize_logo_error_cells,
     _sanitize_filename,
@@ -36,14 +38,20 @@ from version_info import resource_path
 
 FORM_ID = "seguimientos"
 FORM_NAME = "Seguimientos"
-DEFAULT_SHARED_ROOT = r"G:\Unidades compartidas\RECA BDs\SEGUIMIENTOS"
+DEFAULT_SHARED_ROOT = ""
 SEGUIMIENTOS_FOLDER_NAME = "SEGUIMIENTOS"
-DEFAULT_SEGUIMIENTOS_TEMPLATE_ID = "1y1yM87QRzzSqPYA-Iuv700qt_DRNmwiEDxwU9wX3fi8"
+DEFAULT_SEGUIMIENTOS_TEMPLATE_ID = ""
 GOOGLE_SHEETS_MIME = "application/vnd.google-apps.spreadsheet"
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
-SHEET_BASE = "9.  SEGUIMIENTO AL PROCESO DE INCLUSION LABORAL"
-LEGACY_SHEET_BASE = "9.  SEGUIMIENTO AL PROCESO DE I"
+SHEET_BASE = "9. SEGUIMIENTO AL PROCESO DE INCLUSIÓN LABORAL"
+LEGACY_SHEET_BASE = "9.  SEGUIMIENTO AL PROCESO DE INCLUSION LABORAL"
+LEGACY_SHEET_BASE_SHORT = "9.  SEGUIMIENTO AL PROCESO DE I"
+BASE_SHEET_CANDIDATES = (
+    SHEET_BASE,
+    LEGACY_SHEET_BASE,
+    LEGACY_SHEET_BASE_SHORT,
+)
 SHEET_PREFIX = "SEGUIMIENTO PROCESO IL "
 SHEET_FINAL = "PONDERADO FINAL"
 SHEET_META = "_META_IL"
@@ -137,6 +145,8 @@ def register_form():
         "name": FORM_NAME,
         "module": __name__,
         "supports_drafts": False,
+        "hub_description": "Abre y actualiza casos con hoja base y seguimientos periódicos.",
+        "singleton_window": True,
     }
 
 
@@ -175,7 +185,7 @@ def get_linked_company_for_user(user_row, env_path=".env"):
 
 
 def _get_base_sheet_name_from_workbook(wb):
-    for candidate in (SHEET_BASE, LEGACY_SHEET_BASE):
+    for candidate in BASE_SHEET_CANDIDATES:
         if candidate in wb.sheetnames:
             return candidate
     raise ValueError("No existe la hoja base de seguimientos en el archivo.")
@@ -628,7 +638,6 @@ def _build_base_payload_from_user_row(user_row):
         "certificado_porcentaje": _get_str(user_row.get("certificado_porcentaje")),
         "discapacidad": discapacidad,
         "tipo_contrato": _get_str(user_row.get("tipo_contrato")),
-        "fecha_firma_contrato": _get_str(user_row.get("fecha_firma_contrato")),
     }
     payload.update(get_linked_company_for_user(user_row))
     return payload
@@ -729,6 +738,92 @@ def _build_followup_sheet_updates(index, payload):
     return updates
 
 
+def _build_empty_followup_payload(index):
+    return {
+        "modalidad": "",
+        "seguimiento_numero": "",
+        "item_observaciones": ["" for _ in range(19)],
+        "item_autoevaluacion": ["" for _ in range(19)],
+        "item_eval_empresa": ["" for _ in range(19)],
+        "tipo_apoyo": "",
+        "empresa_eval": ["" for _ in range(8)],
+        "empresa_observacion": ["" for _ in range(8)],
+        "situacion_encontrada": "",
+        "estrategias_ajustes": "",
+        "asistentes": [{"nombre": "", "cargo": ""} for _ in range(4)],
+    }
+
+
+def _apply_empty_followup_fields(payload, index):
+    payload = dict(payload or {})
+    payload.update(_build_empty_followup_payload(index))
+    return payload
+
+
+def _clear_followup_sheet_worksheet(ws, index):
+    empty_payload = _build_empty_followup_payload(index)
+    ws["E8"].value = empty_payload["modalidad"]
+    ws["P8"].value = empty_payload["seguimiento_numero"]
+    for pos, row in enumerate(range(12, 31)):
+        ws[f"G{row}"].value = empty_payload["item_observaciones"][pos]
+        ws[f"O{row}"].value = empty_payload["item_autoevaluacion"][pos]
+        ws[f"R{row}"].value = empty_payload["item_eval_empresa"][pos]
+    ws["J31"].value = empty_payload["tipo_apoyo"]
+    for pos, row in enumerate(range(34, 42)):
+        ws[f"J{row}"].value = empty_payload["empresa_eval"][pos]
+        ws[f"L{row}"].value = empty_payload["empresa_observacion"][pos]
+    ws["A43"].value = empty_payload["situacion_encontrada"]
+    ws["A45"].value = empty_payload["estrategias_ajustes"]
+    for pos, row in enumerate(range(47, 51)):
+        ws[f"D{row}"].value = empty_payload["asistentes"][pos]["nombre"]
+        ws[f"N{row}"].value = empty_payload["asistentes"][pos]["cargo"]
+
+
+@lru_cache(maxsize=6)
+def _get_followup_template_defaults(index):
+    workbook = _load_workbook_safe(_find_template_path(), data_only=False)
+    try:
+        ws = _ensure_sheet_exists(workbook, _get_followup_sheet_name(index))
+        return {
+            "modalidad": _cell_value(ws, "E8"),
+            "item_observaciones": [_cell_value(ws, f"G{r}") for r in range(12, 31)],
+            "item_autoevaluacion": [_cell_value(ws, f"O{r}") for r in range(12, 31)],
+            "item_eval_empresa": [_cell_value(ws, f"R{r}") for r in range(12, 31)],
+            "tipo_apoyo": _cell_value(ws, "J31"),
+            "empresa_eval": [_cell_value(ws, f"J{r}") for r in range(34, 42)],
+            "empresa_observacion": [_cell_value(ws, f"L{r}") for r in range(34, 42)],
+            "situacion_encontrada": _cell_value(ws, "A43"),
+            "estrategias_ajustes": _cell_value(ws, "A45"),
+            "asistentes": [
+                {"nombre": _cell_value(ws, f"D{r}"), "cargo": _cell_value(ws, f"N{r}")}
+                for r in range(47, 51)
+            ],
+        }
+    finally:
+        workbook.close()
+
+
+def _is_template_seeded_followup_payload(payload, index):
+    defaults = _get_followup_template_defaults(index)
+    payload = payload or {}
+    fields = (
+        "modalidad",
+        "item_observaciones",
+        "item_autoevaluacion",
+        "item_eval_empresa",
+        "tipo_apoyo",
+        "empresa_eval",
+        "empresa_observacion",
+        "situacion_encontrada",
+        "estrategias_ajustes",
+        "asistentes",
+    )
+    for field in fields:
+        if payload.get(field) != defaults.get(field):
+            return False
+    return True
+
+
 def _ensure_meta_sheet(wb, cedula, nombre_usuario, is_compensar, max_seguimientos):
     if SHEET_META in wb.sheetnames:
         ws = wb[SHEET_META]
@@ -759,13 +854,16 @@ def _read_meta(wb):
 
 
 def _apply_visibility(wb, max_seguimientos):
-    limit = 6 if int(max_seguimientos or 0) >= 6 else 3
-    for i in range(1, 7):
-        name = f"{SHEET_PREFIX}{i}"
-        if name not in wb.sheetnames:
+    relevant_titles = {
+        SHEET_FINAL,
+        *BASE_SHEET_CANDIDATES,
+        *(f"{SHEET_PREFIX}{i}" for i in range(1, 7)),
+    }
+    for name in wb.sheetnames:
+        if name == SHEET_META:
+            wb[name].sheet_state = "hidden"
             continue
-        ws = wb[name]
-        ws.sheet_state = "visible" if i <= limit else "hidden"
+        wb[name].sheet_state = "visible" if name in relevant_titles else "hidden"
 
 
 def _infer_max_seguimientos_from_workbook(wb):
@@ -856,6 +954,8 @@ def ensure_case_workbook(cedula, user_row, is_compensar):
     wb = _load_workbook_safe(output_path)
     _fill_sheet_base(wb, user_row)
     _sync_ponderado_from_payload(wb, _build_base_payload_from_user_row(user_row), overwrite=False)
+    for idx in range(1, 7):
+        _clear_followup_sheet_worksheet(_ensure_sheet_exists(wb, _get_followup_sheet_name(idx)), idx)
     _ensure_meta_sheet(
         wb,
         normalized,
@@ -877,22 +977,28 @@ def _set_sheet_visibility(spreadsheet_id, max_seguimientos):
     except Exception:
         return
     requests = []
-    limit = 6 if int(max_seguimientos or 0) >= 6 else 3
+    try:
+        base_sheet_name = _get_base_sheet_name_from_spreadsheet(spreadsheet)
+    except Exception:
+        base_sheet_name = SHEET_BASE
+    relevant_titles = {
+        base_sheet_name,
+        SHEET_FINAL,
+        *(f"{SHEET_PREFIX}{i}" for i in range(1, 7)),
+    }
     for sheet in spreadsheet.get("sheets", []):
         props = sheet.get("properties", {}) or {}
         title = str(props.get("title") or "")
-        if not title.startswith(SHEET_PREFIX):
-            continue
         try:
-            idx = int(title.replace(SHEET_PREFIX, "").strip())
+            hidden = bool(title not in relevant_titles)
         except Exception:
-            continue
+            hidden = False
         requests.append(
             {
                 "updateSheetProperties": {
                     "properties": {
                         "sheetId": props.get("sheetId"),
-                        "hidden": bool(idx > limit),
+                        "hidden": hidden,
                     },
                     "fields": "hidden",
                 }
@@ -965,7 +1071,11 @@ def _create_native_case_record(service, folder_id, folder_name, cedula, user_row
     if seed_path:
         base_payload = _merge_fill_empty(get_base_payload(seed_path), base_payload)
     clear_protected_ranges(record["file_id"])
-    updates = _build_base_sheet_updates(base_payload, base_sheet_name=SHEET_BASE)
+    spreadsheet = get_spreadsheet(record["file_id"], include_grid_data=False)
+    base_sheet_name = _get_base_sheet_name_from_spreadsheet(spreadsheet)
+    updates = _build_base_sheet_updates(base_payload, base_sheet_name=base_sheet_name)
+    for idx in range(1, 7):
+        updates.extend(_build_followup_sheet_updates(idx, _build_empty_followup_payload(idx)))
     if seed_path:
         for idx in range(1, max_seguimientos + 1):
             updates.extend(_build_followup_sheet_updates(idx, get_followup_payload(seed_path, idx)))
@@ -1076,7 +1186,7 @@ def sync_case_record_from_local(record, local_path):
 def _get_base_sheet_name_from_spreadsheet(spreadsheet):
     for sheet in spreadsheet.get("sheets", []):
         title = str(((sheet.get("properties") or {}).get("title")) or "")
-        if title in (SHEET_BASE, LEGACY_SHEET_BASE):
+        if title in BASE_SHEET_CANDIDATES:
             return title
     raise ValueError("No existe la hoja base de seguimientos en el spreadsheet.")
 
@@ -1376,7 +1486,15 @@ def get_empresa_by_nit(nit, env_path=".env"):
         "limit": 1,
     }
     data = _supabase_get("empresas", params, env_path=env_path)
-    return _map_company_row(data[0]) if data else None
+    return (
+        _merge_company_row_with_cache(
+            _map_company_row(data[0]),
+            field_map=SECTION_1_SUPABASE_MAP,
+            nit=nit,
+        )
+        if data
+        else None
+    )
 
 
 def get_empresa_by_nombre(nombre, env_path=".env"):
@@ -1394,7 +1512,11 @@ def get_empresa_by_nombre(nombre, env_path=".env"):
         return None
     if len(data) > 1:
         raise ValueError("Hay más de una empresa con ese nombre. Usa el NIT.")
-    return _map_company_row(data[0])
+    return _merge_company_row_with_cache(
+        _map_company_row(data[0]),
+        field_map=SECTION_1_SUPABASE_MAP,
+        nombre=nombre,
+    )
 
 
 def get_empresas_by_nombre_prefix(prefix, env_path=".env", limit=50):
@@ -1712,6 +1834,8 @@ def get_followup_payload(case_ref, index):
                 for i in range(4)
             ],
         }
+        if _is_template_seeded_followup_payload(payload, index):
+            payload = _apply_empty_followup_fields(payload, index)
         return _normalize_empty_followup_payload(payload, index, base_payload=base_payload)
     wb = _load_workbook_safe(case_ref, data_only=False)
     ws = _ensure_sheet_exists(wb, _get_followup_sheet_name(index))
@@ -1736,6 +1860,8 @@ def get_followup_payload(case_ref, index):
             for r in range(47, 51)
         ],
     }
+    if _is_template_seeded_followup_payload(payload, index):
+        payload = _apply_empty_followup_fields(payload, index)
     return _normalize_empty_followup_payload(payload, index, base_payload=base_payload)
 
 

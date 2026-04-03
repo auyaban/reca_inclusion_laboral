@@ -1,4 +1,4 @@
-import threading
+﻿import threading
 import errno
 import re
 import os
@@ -9,6 +9,7 @@ import ctypes
 import unicodedata
 import shutil
 import uuid
+import tempfile
 import base64
 import hashlib
 import hmac
@@ -22,7 +23,7 @@ from zoneinfo import ZoneInfo
 from datetime import date, datetime, timedelta
 import tkinter as tk
 from tkinter import ttk, messagebox
-from tkcalendar import DateEntry
+from tkcalendar import DateEntry, Calendar
 
 from formularios.presentacion_programa import presentacion_programa
 from formularios.evaluacion_programa import evaluacion_accesibilidad
@@ -68,11 +69,15 @@ from formularios.common import (
     _clear_supabase_session,
     _get_desktop_dir,
     _load_env_file,
+    _extract_public_error_detail,
+    _get_local_app_cache_dir,
     _normalize_decimal_value,
     _next_available_file_path,
     probe_supabase_service,
 )
-from formularios.finalize_validation import format_issues_for_message
+from formularios.finalize_validation import ValidationIssue, format_issues_for_message
+from formularios import ui_feedback
+from formularios.user_messages import map_exception_to_user_message
 from version_info import get_version
 from updater import (
     get_latest_release_assets,
@@ -105,9 +110,19 @@ except Exception:
 
 
 APP_NAME = "RECA Inclusion Laboral"
-COLOR_PURPLE = "#7C3D96"
-COLOR_TEAL = "#07B499"
-COLOR_LIGHT_BG = "#F7F5FA"
+COLOR_PRIMARY = "#4B2E67"
+COLOR_ACCENT = "#07B499"
+COLOR_SUCCESS = "#0A7D2E"
+COLOR_WARNING = "#B35300"
+COLOR_DANGER = "#B00020"
+COLOR_SURFACE = "#FFFFFF"
+COLOR_FIELD_ERROR_BG = "#FDE2E2"
+COLOR_TEXT_PRIMARY = "#23182F"
+COLOR_TEXT_SECONDARY = "#5B5563"
+COLOR_BORDER = "#D8D0E0"
+COLOR_PURPLE = COLOR_PRIMARY
+COLOR_TEAL = COLOR_ACCENT
+COLOR_LIGHT_BG = COLOR_SURFACE
 COLOR_GROUP_EMPRESA = "#E6F4EA"
 COLOR_GROUP_COMPENSAR = "#FFF3E0"
 COLOR_GROUP_RECA = "#F3E5F5"
@@ -128,6 +143,9 @@ TEXT_WIDE = 120
 SCROLLBAR_WIDTH = 18
 PASSWORD_HASH_ALGO = "pbkdf2_sha256"
 PASSWORD_HASH_ITERATIONS = 260000
+MAX_PASSWORD_LENGTH = 1024
+OFFLINE_AUTH_STORE_VERSION = 2
+OFFLINE_AUTH_TTL_DAYS = 30
 DEFAULT_EMPRESA_ESTADOS = [
     "Activa",
     "Inactiva",
@@ -135,8 +153,14 @@ DEFAULT_EMPRESA_ESTADOS = [
     "Cerrada",
     "No viable",
 ]
-_MOJIBAKE_PATTERNS = ("Ã", "Â", "â€", "ï¿½", "\ufffd", "Ð", "Ñ")
+_MOJIBAKE_PATTERNS = ("Ãƒ", "Ã‚", "Ã¢â‚¬", "Ã¯Â¿Â½", "\ufffd", "Ã", "Ã‘", "ðŸ")
 _ENCODING_CHECK_DONE = False
+_TOAST_DURATIONS = {
+    "success": 3500,
+    "info": 4000,
+    "warning": 6000,
+    "error": 9000,
+}
 DRAFTS_FILE_NAME = "form_drafts_il.json"
 COMPLETED_FORMS_FILE_NAME = "completed_forms_il.json"
 OFFLINE_AUTH_FILE_NAME = "offline_auth_users.json"
@@ -144,8 +168,7 @@ LOGIN_CREDENTIALS_FILE_NAME = "login_credentials.json"
 DRIVE_UPLOAD_QUEUE_FILE_NAME = "drive_upload_queue.json"
 DRIVE_UPLOAD_FAILED_FILE_NAME = "drive_upload_failed.json"
 COMPLETED_FORMS_RETENTION_DAYS = 30
-TEST_FILL_LOGIN = "testaaron"
-TEST_FILL_TEXT = "Pendiente"
+TEST_FILL_DEFAULT_TEXT = "Pendiente"
 COMPLETED_FORM_ID_ALIASES = {
     "condiciones_vacante_labs": "condiciones_vacante",
     "seleccion_incluyente_labs": "seleccion_incluyente",
@@ -164,12 +187,12 @@ Se reitera la importancia de contar con la retroalimentación vía correo electr
 Se dialoga de la nueva ley 2466 del 2025, en donde se orienta ante totalidad de colaboradores la vinculación de 2 personas con discapacidad, se informa beneficios tangibles y no tangibles bajo la ley 361 art. 31 deducción en la renta por vinculación de personas con discapacidad y el apoyo que está entregando la secretaria de desarrollo.
 
 El Decreto 0223 de 2026 es explícito al indicar en el numeral 1 de su artículo 2.2.6.3.3.33. que:
-“Los aprendices no integran la base de trabajadores de carácter permanente de la empresa, para efectos del cálculo de la cuota de empleo para personas en situación de discapacidad, prevista en el numeral 17 del artículo 57 del Código Sustantivo del Trabajo.”
+"Los aprendices no integran la base de trabajadores de carácter permanente de la empresa, para efectos del cálculo de la cuota de empleo para personas en situación de discapacidad, prevista en el numeral 17 del artículo 57 del Código Sustantivo del Trabajo."
 
 En consecuencia y a la luz de esta nueva norma, contratar aprendices con discapacidad no sirve para aumentar el número de personas con discapacidad computables dentro de la cuota de empleo exigida, por lo cual la cuota se calculará ahora sobre la base de trabajadores permanentes, y el decreto 0223 excluye a los aprendices de esa base.
 
 Sin embargo, el Decreto genera un incentivo distinto en el numeral 2 del mismo artículo, donde establece que:
-“La cuota de aprendices se reducirá en un 50% si las personas contratadas tienen una discapacidad comprobada no inferior al 25%”, en cumplimiento del parágrafo del artículo 31 de la Ley 361 de 1997.
+"La cuota de aprendices se reducirá en un 50% si las personas contratadas tienen una discapacidad comprobada no inferior al 25%", en cumplimiento del parágrafo del artículo 31 de la Ley 361 de 1997.
 
 Es decir, que sí es posible contratar aprendices con discapacidad, pero el efecto jurídico directo es sobre la cuota de aprendices (Ley 789 de 2002), no sobre la cuota de empleo para personas con discapacidad (Ley 2466 de 2025 art. 57 num. 17 CST).
 """.strip()
@@ -584,13 +607,7 @@ def _desktop_log_path():
 
 
 def _get_local_cache_dir():
-    local_app_data = os.getenv("LOCALAPPDATA")
-    if local_app_data:
-        base = os.path.join(local_app_data, "RECA", "cache")
-    else:
-        base = os.path.join(os.getcwd(), ".cache")
-    os.makedirs(base, exist_ok=True)
-    return base
+    return _get_local_app_cache_dir()
 
 
 def _get_drafts_path():
@@ -1431,7 +1448,13 @@ def _dpapi_decrypt_text(cipher_b64):
 
 
 def _load_saved_login_credentials():
-    payload = {"remember": True, "username": "", "password": "", "resolved_email": ""}
+    payload = {
+        "remember": True,
+        "auto_login": False,
+        "username": "",
+        "password": "",
+        "resolved_email": "",
+    }
     path = _get_login_credentials_path()
     if not os.path.exists(path):
         return payload
@@ -1443,16 +1466,18 @@ def _load_saved_login_credentials():
     if not isinstance(raw, dict):
         return payload
     remember = bool(raw.get("remember", True))
+    auto_login = bool(raw.get("auto_login", False))
     username = str(raw.get("username") or "").strip()
     password = _dpapi_decrypt_text(raw.get("password_enc"))
     payload["remember"] = remember
+    payload["auto_login"] = bool(remember and auto_login)
     payload["username"] = username
     payload["password"] = password if remember else ""
     payload["resolved_email"] = str(raw.get("resolved_email") or "").strip()
     return payload
 
 
-def _save_login_credentials(username, password, resolved_email=""):
+def _save_login_credentials(username, password, resolved_email="", auto_login=False):
     user = str(username or "").strip()
     pwd = str(password or "")
     cipher = _dpapi_encrypt_text(pwd)
@@ -1461,6 +1486,7 @@ def _save_login_credentials(username, password, resolved_email=""):
     payload = {
         "version": 1,
         "remember": True,
+        "auto_login": bool(auto_login),
         "username": user,
         "password_enc": cipher,
         "resolved_email": str(resolved_email or "").strip(),
@@ -1485,18 +1511,18 @@ def _clear_login_credentials():
 def _load_offline_auth_store():
     path = _get_offline_auth_path()
     if not os.path.exists(path):
-        return {"version": 1, "users": {}}
+        return {"version": OFFLINE_AUTH_STORE_VERSION, "users": {}}
     try:
         with open(path, "r", encoding="utf-8") as handle:
             data = json.load(handle) or {}
     except Exception:
-        return {"version": 1, "users": {}}
+        return {"version": OFFLINE_AUTH_STORE_VERSION, "users": {}}
     if not isinstance(data, dict):
-        return {"version": 1, "users": {}}
+        return {"version": OFFLINE_AUTH_STORE_VERSION, "users": {}}
     users = data.get("users")
     if not isinstance(users, dict):
         data["users"] = {}
-    data.setdefault("version", 1)
+    data["version"] = max(int(data.get("version") or 0), OFFLINE_AUTH_STORE_VERSION)
     return data
 
 
@@ -1579,6 +1605,421 @@ def _form_supports_drafts(form_meta_or_id):
     if value is None:
         return True
     return bool(value)
+
+
+def _log_user_error(context, exc):
+    _log_capture(f"[UI] context={context} err={_extract_public_error_detail(exc)}")
+    return map_exception_to_user_message(context, exc)
+
+
+def _button_style_for_kind(kind):
+    key = str(kind or "").strip().lower()
+    if key == "primary":
+        return "Primary.TButton"
+    if key == "danger":
+        return "DangerOutline.TButton"
+    return "Secondary.TButton"
+
+
+def _safe_widget_state(widget):
+    try:
+        return str(widget.cget("state") or "")
+    except Exception:
+        return ""
+
+
+def _safe_widget_text(widget):
+    try:
+        return str(widget.cget("text") or "")
+    except Exception:
+        return None
+
+
+def _capture_widget_snapshots(widgets):
+    seen = set()
+    snapshots = []
+    for widget in list(widgets or []):
+        if widget is None:
+            continue
+        widget_id = id(widget)
+        if widget_id in seen:
+            continue
+        seen.add(widget_id)
+        snapshots.append(
+            {
+                "widget": widget,
+                "state": _safe_widget_state(widget),
+                "text": _safe_widget_text(widget),
+            }
+        )
+    return snapshots
+
+
+def _restore_widget_snapshots(snapshots):
+    for snapshot in list(snapshots or []):
+        widget = snapshot.get("widget")
+        if widget is None:
+            continue
+        text = snapshot.get("text")
+        state = snapshot.get("state")
+        try:
+            if text is not None:
+                widget.configure(text=text)
+        except Exception:
+            pass
+        try:
+            if state:
+                widget.configure(state=state)
+        except Exception:
+            pass
+
+
+def _disable_widget(widget):
+    if widget is None:
+        return
+    try:
+        widget.configure(state="disabled")
+    except Exception:
+        return
+
+
+def _set_window_busy_cursor(window, waiting):
+    if window is None:
+        return
+    cursor = "watch" if waiting else ""
+    targets = [window]
+    try:
+        master = window.master
+        if master is not None:
+            targets.append(master)
+    except Exception:
+        pass
+    for target in targets:
+        try:
+            target.configure(cursor=cursor)
+        except Exception:
+            continue
+    try:
+        window.update_idletasks()
+    except Exception:
+        pass
+
+
+def _run_async_ui_task(
+    window,
+    *,
+    busy_attr,
+    widgets=None,
+    loading_button=None,
+    loading_button_text=None,
+    status_label=None,
+    loading_text="",
+    loading_state="loading",
+    worker=None,
+    on_success=None,
+    on_error=None,
+):
+    if not callable(worker) or window is None:
+        return False
+    if bool(getattr(window, busy_attr, False)):
+        return False
+    setattr(window, busy_attr, True)
+    tracked_widgets = list(widgets or [])
+    if loading_button is not None:
+        tracked_widgets.append(loading_button)
+    snapshots = _capture_widget_snapshots(tracked_widgets)
+    for widget in tracked_widgets:
+        _disable_widget(widget)
+    if loading_button is not None and loading_button_text:
+        try:
+            loading_button.configure(text=loading_button_text)
+        except Exception:
+            pass
+    _set_window_busy_cursor(window, True)
+    if status_label is not None and loading_text:
+        ui_feedback.set_semantic_label(status_label, loading_text, state=loading_state)
+
+    result = {"value": None, "error": None}
+
+    def _worker():
+        try:
+            result["value"] = worker()
+        except Exception as exc:
+            result["error"] = exc
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+
+    def _finish():
+        if thread.is_alive():
+            try:
+                window.after(120, _finish)
+            except Exception:
+                pass
+            return
+        _restore_widget_snapshots(snapshots)
+        _set_window_busy_cursor(window, False)
+        setattr(window, busy_attr, False)
+        error = result.get("error")
+        if error is not None:
+            if callable(on_error):
+                on_error(error)
+            return
+        if callable(on_success):
+            on_success(result.get("value"))
+
+    try:
+        window.after(120, _finish)
+    except Exception:
+        _restore_widget_snapshots(snapshots)
+        _set_window_busy_cursor(window, False)
+        setattr(window, busy_attr, False)
+    return True
+
+
+def _show_inline_feedback(window, text, *, state="error"):
+    message = str(text or "").strip()
+    if hasattr(window, "section_feedback_banner"):
+        ui_feedback.set_banner(window, message, state=state)
+        return True
+    label = getattr(window, "status_label", None)
+    if label is not None:
+        ui_feedback.set_semantic_label(label, message, state=state)
+        return True
+    label = getattr(window, "status_label_widget", None)
+    var = getattr(window, "status_var", None)
+    if label is not None and var is not None:
+        try:
+            var.set(message)
+        except Exception:
+            pass
+        try:
+            label.config(fg=ui_feedback.state_color(state))
+        except Exception:
+            pass
+        return True
+    label = getattr(window, "login_status", None)
+    if label is not None:
+        ui_feedback.set_semantic_label(label, message, state=state)
+        return True
+    return False
+
+
+def _clear_inline_feedback(window):
+    if hasattr(window, "section_feedback_banner"):
+        ui_feedback.clear_banner(window)
+    label = getattr(window, "status_label", None)
+    if label is not None:
+        ui_feedback.set_semantic_label(label, "", state="info")
+
+
+def _collect_field_widgets(value, mapping, current_field_id=None):
+    if value is None:
+        return
+    if isinstance(value, tk.Widget):
+        if current_field_id:
+            mapping.setdefault(str(current_field_id), []).append(value)
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            next_field_id = current_field_id or (str(key or "").strip() if str(key or "").strip() else None)
+            _collect_field_widgets(item, mapping, next_field_id)
+        return
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            _collect_field_widgets(item, mapping, current_field_id)
+
+
+def _section_widget_sources(window, section_id):
+    sources = []
+    section_key = str(section_id or "").strip()
+    if section_key == "section_1":
+        sources.append(getattr(window, "fields", None))
+    attr_name = f"{section_key}_fields"
+    sources.append(getattr(window, attr_name, None))
+    if section_key == "section_2":
+        sources.append(getattr(window, "oferente_blocks", None))
+        sources.append(getattr(window, "vinculado_blocks", None))
+    return [item for item in sources if item is not None]
+
+
+def _register_section_feedback_fields(window, section_id):
+    mapping = {}
+    for source in _section_widget_sources(window, section_id):
+        _collect_field_widgets(source, mapping)
+    for field_id, widgets in mapping.items():
+        for widget in list(widgets or []):
+            ui_feedback.register_field(window, field_id, widget)
+    return mapping
+
+
+def _show_validation_issues_inline(window, issues, *, title="Revisa los campos marcados antes de continuar."):
+    issue_list = [issue for issue in list(issues or []) if isinstance(issue, ValidationIssue)]
+    if not issue_list:
+        return False
+    current_section = str(issue_list[0].section_id or "").strip()
+    ui_feedback.clear_field_errors(window)
+    section_widgets = _register_section_feedback_fields(window, current_section)
+    section_issues = [issue for issue in issue_list if str(issue.section_id or "").strip() == current_section]
+    for issue in section_issues:
+        field_id = str(issue.field_id or "").strip()
+        if not field_id:
+            continue
+        widgets = list(section_widgets.get(field_id) or [])
+        for widget in widgets:
+            ui_feedback.register_field(window, field_id, widget)
+        ui_feedback.set_field_error(window, field_id, issue.message or "Campo obligatorio sin diligenciar.")
+    summary = format_issues_for_message(section_issues or issue_list, title=title, limit=4)
+    _show_inline_feedback(window, summary, state="error")
+    if section_issues:
+        preferred_fields = [str(issue.field_id or "").strip() for issue in section_issues if str(issue.field_id or "").strip()]
+        ui_feedback.focus_first_invalid_field(window, preferred_fields)
+    return True
+
+
+def _update_wizard_progress(window, section_id=None):
+    label = getattr(window, "header_progress_label", None)
+    if label is None:
+        return
+    form_meta = getattr(window, "_form_meta", None) or _resolve_form_meta(getattr(window, "_form_id", ""))
+    sections = list(form_meta.get("wizard_sections") or [])
+    if not sections:
+        sections = _discover_wizard_sections(window)
+    total = int(form_meta.get("wizard_steps") or len(sections) or 0)
+    current = str(section_id or getattr(window, "_current_section", "") or "section_1").strip()
+    if not total:
+        try:
+            label.config(text="")
+        except Exception:
+            pass
+        return
+    if current in sections:
+        index = sections.index(current) + 1
+    else:
+        index = min(max(1, len(sections) or 1), total)
+    try:
+        label.config(text=f"Sección {index} de {total}")
+    except Exception:
+        pass
+
+
+def _natural_section_sort_key(section_id):
+    tokens = re.split(r"(\d+)", str(section_id or ""))
+    key = []
+    for token in tokens:
+        if not token:
+            continue
+        if token.isdigit():
+            key.append((0, int(token)))
+        else:
+            key.append((1, token))
+    return key
+
+
+def _discover_wizard_sections(window):
+    sections = []
+    for name in dir(window):
+        if not str(name).startswith("_show_section_"):
+            continue
+        candidate = str(name).replace("_show_", "", 1)
+        if candidate not in sections:
+            sections.append(candidate)
+    return sorted(sections, key=_natural_section_sort_key)
+
+
+def _init_wizard_header(window, *, title, subtitle):
+    header = tk.Frame(window, bg=COLOR_LIGHT_BG)
+    header.pack(fill="x", padx=FORM_PADX, pady=(24, 8))
+    window.header_title = tk.Label(
+        header,
+        text=title,
+        font=FONT_TITLE,
+        fg=COLOR_PRIMARY,
+        bg=COLOR_LIGHT_BG,
+    )
+    window.header_title.pack(anchor="w")
+    window.header_subtitle = tk.Label(
+        header,
+        text=subtitle,
+        font=FONT_SUBTITLE,
+        fg="#333333",
+        bg=COLOR_LIGHT_BG,
+    )
+    window.header_subtitle.pack(anchor="w", pady=(4, 0))
+    window.header_progress_label = tk.Label(
+        header,
+        text="",
+        font=("Arial", 9, "bold"),
+        fg="#4f5b66",
+        bg=COLOR_LIGHT_BG,
+    )
+    window.header_progress_label.pack(anchor="w", pady=(6, 0))
+    _update_wizard_progress(window, getattr(window, "_current_section", "section_1"))
+
+
+def _init_wizard_section_container(window):
+    window.section_container = tk.Frame(window, bg=COLOR_LIGHT_BG)
+    window.section_container.pack(fill="both", expand=True, padx=FORM_PADX, pady=8)
+    banner = tk.Label(
+        window.section_container,
+        text="",
+        font=("Arial", 9),
+        fg=COLOR_DANGER,
+        bg=COLOR_LIGHT_BG,
+        justify="left",
+        anchor="w",
+        wraplength=920,
+    )
+    banner.pack(fill="x", pady=(0, 8))
+    window.section_feedback_banner = banner
+    ui_feedback.register_banner_label(window, banner)
+
+
+def _ensure_wizard_runtime_widgets(window):
+    header_title = getattr(window, "header_title", None)
+    if header_title is not None and not getattr(window, "header_progress_label", None):
+        header = getattr(header_title, "master", None)
+        if header is not None:
+            progress = tk.Label(
+                header,
+                text="",
+                font=("Arial", 9, "bold"),
+                fg="#4f5b66",
+                bg=COLOR_LIGHT_BG,
+            )
+            progress.pack(anchor="w", pady=(6, 0))
+            window.header_progress_label = progress
+    container = getattr(window, "section_container", None)
+    banner = getattr(window, "section_feedback_banner", None)
+    banner_exists = False
+    try:
+        banner_exists = bool(banner is not None and banner.winfo_exists())
+    except Exception:
+        banner_exists = False
+    if container is not None and not banner_exists:
+        first_child = None
+        try:
+            children = list(container.winfo_children())
+            first_child = children[0] if children else None
+        except Exception:
+            first_child = None
+        banner = tk.Label(
+            container,
+            text="",
+            font=("Arial", 9),
+            fg=COLOR_DANGER,
+            bg=COLOR_LIGHT_BG,
+            justify="left",
+            anchor="w",
+            wraplength=920,
+        )
+        if first_child is not None:
+            banner.pack(fill="x", pady=(0, 8), before=first_child)
+        else:
+            banner.pack(fill="x", pady=(0, 8))
+        window.section_feedback_banner = banner
+        ui_feedback.register_banner_label(window, banner)
+    _update_wizard_progress(window, getattr(window, "_current_section", "section_1"))
 
 
 def _iter_widget_paths(root):
@@ -1676,7 +2117,13 @@ def _set_widget_value_from_snapshot(widget, value):
 
 
 def _login_allows_test_fill(login):
-    return str(login or "").strip().lower() == TEST_FILL_LOGIN
+    enabled = str(os.getenv("RECA_ENABLE_TEST_FILL") or "").strip().lower()
+    if enabled not in {"1", "true", "yes", "on"}:
+        return False
+    allowed_login = _normalize_login_value(os.getenv("RECA_TEST_FILL_LOGIN") or "")
+    if not allowed_login:
+        return False
+    return _normalize_login_value(login) == allowed_login
 
 
 def _pick_test_combobox_value(values):
@@ -1700,7 +2147,7 @@ def _get_test_fill_entry_value(kind="", max_len=None):
         return "1"
     if normalized_kind == "birthdate":
         return "01/01/2000"
-    return TEST_FILL_TEXT
+    return TEST_FILL_DEFAULT_TEXT
 
 
 def _window_allows_test_fill(window):
@@ -1742,7 +2189,7 @@ def _fill_widget_for_test(widget):
     try:
         if isinstance(widget, tk.Text):
             widget.delete("1.0", tk.END)
-            widget.insert("1.0", TEST_FILL_TEXT)
+            widget.insert("1.0", TEST_FILL_DEFAULT_TEXT)
             _emit_test_fill_events(widget)
             return True
         if isinstance(widget, ttk.Combobox):
@@ -1753,7 +2200,7 @@ def _fill_widget_for_test(widget):
             if combo_value:
                 widget.set(combo_value)
             elif state != "readonly":
-                widget.set(TEST_FILL_TEXT)
+                widget.set(TEST_FILL_DEFAULT_TEXT)
             else:
                 return False
             _emit_test_fill_events(widget)
@@ -2173,10 +2620,10 @@ def _guard_form_finalization(window, *, loading=None):
     try:
         issues = list(module.validate_before_finalize(cache_snapshot) or [])
     except Exception as exc:
-        messagebox.showerror(
-            "Datos incompletos",
-            f"No se pudo validar el formulario antes de finalizar.\n\nDetalle: {exc}",
-            parent=window,
+        _show_inline_feedback(
+            window,
+            _log_user_error("finalization", exc),
+            state="error",
         )
         try:
             if loading is not None:
@@ -2191,11 +2638,6 @@ def _guard_form_finalization(window, *, loading=None):
             loading.close()
     except Exception:
         pass
-    messagebox.showerror(
-        "Datos incompletos",
-        format_issues_for_message(issues),
-        parent=window,
-    )
     first_issue = issues[0]
     show_fn = getattr(window, f"_show_{first_issue.section_id}", None)
     if callable(show_fn):
@@ -2203,6 +2645,12 @@ def _guard_form_finalization(window, *, loading=None):
             show_fn()
         except Exception:
             pass
+    _show_validation_issues_inline(window, issues)
+    messagebox.showerror(
+        "Finalización",
+        format_issues_for_message(issues),
+        parent=window,
+    )
     return True
 
 
@@ -2289,6 +2737,7 @@ def _detect_mojibake_issues(project_root):
     include_roots = [
         os.path.join(project_root, "app.py"),
         os.path.join(project_root, "formularios"),
+        os.path.join(project_root, "tests"),
     ]
     for target in include_roots:
         if os.path.isfile(target):
@@ -2490,6 +2939,8 @@ def _bind_birthdate_entry(
 
 def _hash_password(password, iterations=PASSWORD_HASH_ITERATIONS):
     pwd = str(password or "")
+    if len(pwd) > MAX_PASSWORD_LENGTH:
+        raise ValueError("La contraseña supera la longitud máxima permitida.")
     salt = secrets.token_bytes(16)
     digest = hashlib.pbkdf2_hmac("sha256", pwd.encode("utf-8"), salt, iterations)
     salt_b64 = base64.urlsafe_b64encode(salt).decode("ascii").rstrip("=")
@@ -2574,6 +3025,8 @@ def _get_usage_exempt_logins():
 
 def _password_candidates(password):
     raw = str(password or "")
+    if len(raw) > MAX_PASSWORD_LENGTH:
+        return []
     options = [raw]
     trimmed = raw.strip()
     if trimmed != raw:
@@ -2608,21 +3061,20 @@ def _is_profile_permission_exception(exc):
     ) and ("http 401" in text or "http 403" in text or "permission denied" in text)
 
 
-def _build_degraded_profesional_profile(username, email=""):
-    username_norm = _normalize_login_value(username)
-    display_name = str(username or "").strip()
-    if not display_name and email:
-        display_name = str(email).split("@", 1)[0].strip()
-    if not display_name:
-        display_name = username_norm or "Usuario"
-    return {
-        "id": None,
-        "usuario_login": username_norm,
-        "nombre_profesional": display_name,
-        "programa": "",
-        "auth_password_temp": False,
-        "_profile_fallback": True,
-    }
+def _offline_auth_entry_is_expired(entry):
+    if not isinstance(entry, dict):
+        return True
+    try:
+        cached_at = float(entry.get("cached_at") or 0)
+    except Exception:
+        cached_at = 0.0
+    try:
+        ttl_days = int(entry.get("ttl_days") or OFFLINE_AUTH_TTL_DAYS)
+    except Exception:
+        ttl_days = OFFLINE_AUTH_TTL_DAYS
+    if cached_at <= 0:
+        return True
+    return (time.time() - cached_at) > max(1, ttl_days) * 86400
 
 
 def _is_connectivity_exception(exc):
@@ -2780,6 +3232,56 @@ def _open_url_prefer_chrome(url):
     webbrowser.open(target)
 
 
+def _is_path_within_root(path, root):
+    try:
+        normalized_path = os.path.normcase(os.path.abspath(str(path or "").strip()))
+        normalized_root = os.path.normcase(os.path.abspath(str(root or "").strip()))
+        if not normalized_path or not normalized_root:
+            return False
+        return os.path.commonpath([normalized_path, normalized_root]) == normalized_root
+    except Exception:
+        return False
+
+
+def _default_safe_open_roots():
+    local_app_root = str(os.getenv("LOCALAPPDATA") or "").strip()
+    roots = [
+        _get_desktop_dir(),
+        _get_local_cache_dir(),
+        os.path.join(local_app_root, "RECA") if local_app_root else "",
+        os.path.join(tempfile.gettempdir(), "reca_seguimientos_drive"),
+        seguimientos._get_shared_root(),
+        os.getcwd(),
+    ]
+    unique = []
+    seen = set()
+    for path in roots:
+        candidate = str(path or "").strip()
+        if not candidate:
+            continue
+        key = os.path.normcase(os.path.abspath(candidate))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
+
+
+def _open_local_file_safely(path, allowed_roots=None):
+    target = os.path.abspath(str(path or "").strip())
+    if not target:
+        raise RuntimeError("No se indicó un archivo para abrir.")
+    if not os.path.exists(target):
+        raise RuntimeError("No se encontró el archivo solicitado.")
+    extension = os.path.splitext(target)[1].lower()
+    if extension not in {".xlsx", ".xlsm", ".xls", ".pdf"}:
+        raise RuntimeError("El tipo de archivo no está permitido para apertura directa.")
+    roots = list(allowed_roots or ()) + _default_safe_open_roots()
+    if not any(_is_path_within_root(target, root) for root in roots):
+        raise RuntimeError("La ruta solicitada no está permitida para apertura directa.")
+    os.startfile(target)
+
+
 def _finish_with_loading(loading, message, open_target=None, open_prompt=None):
     loading.set_status("Listo")
     loading.set_progress(100)
@@ -2797,7 +3299,10 @@ def _finish_with_loading(loading, message, open_target=None, open_prompt=None):
                 if str(open_target).startswith("http"):
                     _open_url_prefer_chrome(open_target)
                 else:
-                    os.startfile(open_target)
+                    _open_local_file_safely(
+                        open_target,
+                        allowed_roots=[os.path.dirname(os.path.abspath(str(open_target)))],
+                    )
             except Exception as exc:
                 messagebox.showerror(
                     "Error",
@@ -3085,21 +3590,187 @@ def _build_wizard_actions(
         if not spec:
             continue
         text, command = spec[0], spec[1]
-        ttk.Button(actions, text=text, command=command).pack(
+        kind = spec[2] if len(spec) > 2 else "secondary"
+        ttk.Button(actions, text=text, command=command, style=_button_style_for_kind(kind)).pack(
             side="left",
             padx=(8, 0) if idx else 0,
         )
 
     if callable(primary_command):
-        ttk.Button(actions, text=primary_text, command=primary_command).pack(side="right")
+        ttk.Button(
+            actions,
+            text=primary_text,
+            command=primary_command,
+            style=_button_style_for_kind("primary"),
+        ).pack(side="right")
 
     for spec in list(right_buttons or []):
         if not spec:
             continue
         text, command = spec[0], spec[1]
-        ttk.Button(actions, text=text, command=command).pack(side="right", padx=(0, 8))
+        kind = spec[2] if len(spec) > 2 else "secondary"
+        ttk.Button(
+            actions,
+            text=text,
+            command=command,
+            style=_button_style_for_kind(kind),
+        ).pack(side="right", padx=(0, 8))
 
     return actions
+
+
+def _build_inline_error_label(parent, *, bg=COLOR_LIGHT_BG, wraplength=420):
+    return tk.Label(
+        parent,
+        text="",
+        font=("Arial", 9),
+        fg=COLOR_DANGER,
+        bg=bg,
+        justify="left",
+        anchor="w",
+        wraplength=wraplength,
+    )
+
+
+def _section1_search_value(window, field_id):
+    widget = (getattr(window, "fields", {}) or {}).get(field_id)
+    return ui_feedback.get_widget_value(widget)
+
+
+def _section1_validate_search(window, mode):
+    ui_feedback.clear_field_error(window, "nit_empresa")
+    ui_feedback.clear_field_error(window, "nombre_busqueda")
+    _clear_inline_feedback(window)
+    if mode == "nit":
+        nit = _section1_search_value(window, "nit_empresa")
+        if nit:
+            return nit, ""
+        ui_feedback.set_field_error(window, "nit_empresa", "Ingresa un NIT para buscar.")
+        ui_feedback.focus_first_invalid_field(window, ["nit_empresa"])
+        _show_inline_feedback(window, "Ingresa un NIT para buscar la empresa.", state="error")
+        return "", ""
+    if mode == "nombre":
+        nombre = _section1_search_value(window, "nombre_busqueda")
+        if nombre:
+            return "", nombre
+        ui_feedback.set_field_error(window, "nombre_busqueda", "Ingresa el nombre de la empresa.")
+        ui_feedback.focus_first_invalid_field(window, ["nombre_busqueda"])
+        _show_inline_feedback(window, "Ingresa el nombre de la empresa para buscar.", state="error")
+        return "", ""
+    _show_inline_feedback(window, "Tipo de búsqueda no válido.", state="error")
+    return "", ""
+
+
+def _apply_section1_company_result(window, *, lookup, company, mode):
+    section_map = getattr(lookup, "SECTION_1_SUPABASE_MAP", presentacion_programa.SECTION_1_SUPABASE_MAP)
+    if not company:
+        window.company_data = None
+        ui_feedback.set_semantic_label(
+            window.status_label,
+            "No se encontró empresa para ese nombre." if mode == "nombre" else "No se encontró empresa para ese NIT.",
+            state="warning",
+        )
+        try:
+            window.continue_btn.config(state="disabled")
+        except Exception:
+            pass
+        for key in section_map.keys():
+            window._set_readonly_value(key, "")
+        return
+
+    if mode == "nombre":
+        nit_value = company.get("nit_empresa")
+        entry = window.fields.get("nit_empresa")
+        if nit_value and entry:
+            entry.delete(0, tk.END)
+            entry.insert(0, nit_value)
+            entry._ui_placeholder_active = False
+
+    window.company_data = company
+    ui_feedback.set_semantic_label(window.status_label, "Empresa encontrada.", state="success")
+    try:
+        window.continue_btn.config(state="normal")
+    except Exception:
+        pass
+    for key in section_map.keys():
+        window._set_readonly_value(key, company.get(key))
+
+
+def _run_section1_company_search(window, *, mode, lookup, button=None):
+    nit, nombre = _section1_validate_search(window, mode)
+    if mode == "nit" and not nit:
+        return
+    if mode == "nombre" and not nombre:
+        return
+
+    def _worker():
+        if mode == "nombre":
+            return lookup.get_empresa_by_nombre(nombre)
+        return lookup.get_empresa_by_nit(nit)
+
+    def _on_success(company):
+        _apply_section1_company_result(window, lookup=lookup, company=company, mode=mode)
+
+    def _on_error(exc):
+        message = _log_user_error("company_search", exc)
+        window.company_data = None
+        try:
+            window.continue_btn.config(state="disabled")
+        except Exception:
+            pass
+        ui_feedback.set_semantic_label(window.status_label, message, state="error")
+        _show_inline_feedback(window, message, state="error")
+
+    _run_async_ui_task(
+        window,
+        busy_attr="_company_lookup_busy",
+        widgets=[
+            window.fields.get("nit_empresa"),
+            window.fields.get("nombre_busqueda"),
+            getattr(window, "search_nit_btn", None),
+            getattr(window, "search_name_btn", None),
+        ],
+        loading_button=button,
+        loading_button_text="Buscando...",
+        status_label=getattr(window, "status_label", None),
+        loading_text="Buscando empresa...",
+        loading_state="loading",
+        worker=_worker,
+        on_success=_on_success,
+        on_error=_on_error,
+    )
+
+
+def _confirm_section1_and_continue(window, *, confirm_fn, next_step, extra_inputs=None):
+    ui_feedback.clear_field_errors(window)
+    _clear_inline_feedback(window)
+    if not getattr(window, "company_data", None):
+        _show_inline_feedback(window, "Busca una empresa antes de continuar.", state="error")
+        ui_feedback.focus_first_invalid_field(window, ["nit_empresa", "nombre_busqueda"])
+        return
+
+    fecha_visita = _get_required_fecha_visita(window)
+    modalidad = _get_required_modalidad(window)
+    if not fecha_visita or not modalidad:
+        _show_inline_feedback(window, "Completa los campos obligatorios para continuar.", state="error")
+        ui_feedback.focus_first_invalid_field(window, ["fecha_visita", "modalidad"])
+        return
+
+    user_inputs = {
+        "fecha_visita": fecha_visita,
+        "modalidad": modalidad,
+        "nit_empresa": _section1_search_value(window, "nit_empresa"),
+    }
+    extra = extra_inputs() if callable(extra_inputs) else (extra_inputs or {})
+    if isinstance(extra, dict):
+        user_inputs.update(extra)
+    try:
+        confirm_fn(window.company_data, user_inputs)
+    except Exception as exc:
+        _show_inline_feedback(window, _log_user_error("section_confirm", exc), state="error")
+        return
+    _clear_inline_feedback(window)
+    next_step()
 
 
 def _confirm_labs_experimental_warning(parent):
@@ -3283,14 +3954,19 @@ def _section1_build_search(self, parent, include_tipo_visita=False):
 
     self.fields["nit_empresa"] = tk.Entry(frame, width=search_w)
     self.fields["nit_empresa"].grid(row=current_row, column=1, sticky="w")
+    ui_feedback.bind_placeholder(self.fields["nit_empresa"], "Ej: 900123456-7")
 
-    search_nit_btn = ttk.Button(
+    self.search_nit_btn = ttk.Button(
         frame,
         text="Buscar por NIT",
+        style="Secondary.TButton",
         command=lambda: self._search_company("nit"),
     )
-    search_nit_btn.grid(row=current_row, column=2, padx=12)
-    current_row += 1
+    self.search_nit_btn.grid(row=current_row, column=2, padx=12)
+    nit_error = _build_inline_error_label(frame)
+    nit_error.grid(row=current_row + 1, column=1, columnspan=2, sticky="w", pady=(4, 0))
+    ui_feedback.register_field(self, "nit_empresa", self.fields["nit_empresa"], error_label=nit_error)
+    current_row += 2
 
     tk.Label(
         frame,
@@ -3301,6 +3977,7 @@ def _section1_build_search(self, parent, include_tipo_visita=False):
 
     self.fields["nombre_busqueda"] = ttk.Combobox(frame, width=search_w)
     self.fields["nombre_busqueda"].grid(row=current_row, column=1, sticky="w")
+    ui_feedback.bind_placeholder(self.fields["nombre_busqueda"], "Escribe al menos 2 letras")
     self.fields["nombre_busqueda"].bind(
         "<KeyRelease>",
         lambda _event: _section1_update_nombre_suggestions(self, open_dropdown=True),
@@ -3327,21 +4004,28 @@ def _section1_build_search(self, parent, include_tipo_visita=False):
         lambda _event: self.after(150, lambda: _hide_empresa_autocomplete_popup(self)),
     )
 
-    search_name_btn = ttk.Button(
+    self.search_name_btn = ttk.Button(
         frame,
         text="Buscar por nombre",
+        style="Secondary.TButton",
         command=lambda: self._search_company("nombre"),
     )
-    search_name_btn.grid(row=current_row, column=2, padx=12)
+    self.search_name_btn.grid(row=current_row, column=2, padx=12)
+    name_error = _build_inline_error_label(frame)
+    name_error.grid(row=current_row + 1, column=1, columnspan=2, sticky="w", pady=(4, 0))
+    ui_feedback.register_field(self, "nombre_busqueda", self.fields["nombre_busqueda"], error_label=name_error)
 
     self.status_label = tk.Label(
         frame,
         text="",
         font=FONT_SUBTITLE,
-        fg=COLOR_TEAL,
+        fg=COLOR_ACCENT,
         bg=COLOR_LIGHT_BG,
+        anchor="w",
+        justify="left",
+        wraplength=920,
     )
-    self.status_label.grid(row=current_row + 1, column=0, columnspan=3, sticky="w", pady=(6, 0))
+    self.status_label.grid(row=current_row + 2, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
 
 def _section1_build_groups(self, parent, groups, labels, modalidad_options=None, modalidad_aliases=None):
@@ -3374,6 +4058,9 @@ def _section1_build_groups(self, parent, groups, labels, modalidad_options=None,
     )
     self.fields["fecha_visita"].delete(0, tk.END)
     self.fields["fecha_visita"].grid(row=0, column=1, sticky="w", padx=(0, 24))
+    fecha_error = _build_inline_error_label(top_inputs, wraplength=220)
+    fecha_error.grid(row=1, column=1, sticky="w", pady=(4, 0), padx=(0, 24))
+    ui_feedback.register_field(self, "fecha_visita", self.fields["fecha_visita"], error_label=fecha_error)
 
     tk.Label(
         top_inputs,
@@ -3390,6 +4077,9 @@ def _section1_build_groups(self, parent, groups, labels, modalidad_options=None,
     self.fields["modalidad"].grid(row=0, column=3, sticky="w")
     if isinstance(modalidad_aliases, dict) and modalidad_aliases:
         self.fields["modalidad"]._snapshot_value_aliases = dict(modalidad_aliases)
+    modalidad_error = _build_inline_error_label(top_inputs, wraplength=220)
+    modalidad_error.grid(row=1, column=3, sticky="w", pady=(4, 0))
+    ui_feedback.register_field(self, "modalidad", self.fields["modalidad"], error_label=modalidad_error)
 
     for title, color, field_ids in groups:
         group_label = tk.Label(
@@ -3422,6 +4112,7 @@ def _section1_build_groups(self, parent, groups, labels, modalidad_options=None,
             entry = tk.Entry(group_frame, state="readonly", width=readonly_w)
             entry.grid(row=row, column=1, sticky="w", padx=6, pady=ROW_PADY)
             self.fields[field_id] = entry
+            ui_feedback.register_field(self, field_id, entry)
 
 
 def _section1_build_actions(self, parent):
@@ -3430,14 +4121,73 @@ def _section1_build_actions(self, parent):
     self.continue_btn = ttk.Button(
         actions,
         text="Continuar",
+        style="Primary.TButton",
         command=self._confirm_and_continue,
         state="disabled",
     )
     self.continue_btn.pack(side="right")
 
 
+def _bind_tooltip(widget, text_provider, *, delay_ms=500):
+    """Muestra un tooltip al hacer hover sobre widget.
+    text_provider puede ser str o callable() -> str (se evalúa en el momento del show).
+    """
+    _state = {"after_id": None, "window": None}
+
+    def _show():
+        _state["after_id"] = None
+        try:
+            text = text_provider() if callable(text_provider) else str(text_provider)
+            if not text:
+                return
+            win = tk.Toplevel(widget)
+            win.wm_overrideredirect(True)
+            win.wm_attributes("-topmost", True)
+            x = widget.winfo_rootx() + widget.winfo_width() // 2
+            y = widget.winfo_rooty() + widget.winfo_height() + 4
+            win.wm_geometry(f"+{x}+{y}")
+            tk.Label(
+                win,
+                text=text,
+                bg="#2D2D2D",
+                fg="white",
+                font=("Arial", 8),
+                padx=8,
+                pady=4,
+                wraplength=260,
+            ).pack()
+            _state["window"] = win
+        except Exception:
+            pass
+
+    def _schedule(_event=None):
+        _cancel()
+        try:
+            _state["after_id"] = widget.after(delay_ms, _show)
+        except Exception:
+            pass
+
+    def _cancel(_event=None):
+        if _state["after_id"] is not None:
+            try:
+                widget.after_cancel(_state["after_id"])
+            except Exception:
+                pass
+            _state["after_id"] = None
+        if _state["window"] is not None:
+            try:
+                _state["window"].destroy()
+            except Exception:
+                pass
+            _state["window"] = None
+
+    widget.bind("<Enter>", _schedule, add="+")
+    widget.bind("<Leave>", _cancel, add="+")
+    widget.bind("<Button>", _cancel, add="+")
+
+
 def _create_vscroll(parent, command):
-    return tk.Scrollbar(parent, orient="vertical", command=command, width=SCROLLBAR_WIDTH)
+    return ttk.Scrollbar(parent, orient="vertical", command=command, style="Vertical.TScrollbar")
 
 
 def _build_scrollable_section_shell(parent, owner=None):
@@ -3479,15 +4229,11 @@ def _build_scrollable_content(parent, owner=None):
 def _get_required_modalidad(window):
     fields = getattr(window, "fields", {}) or {}
     widget = fields.get("modalidad")
-    modalidad = widget.get().strip() if widget else ""
+    modalidad = ui_feedback.get_widget_value(widget) if widget else ""
     if modalidad:
+        ui_feedback.clear_field_error(window, "modalidad")
         return modalidad
-    messagebox.showerror("Campo obligatorio", "Debes seleccionar una modalidad para continuar.")
-    try:
-        if widget:
-            widget.focus_set()
-    except Exception:
-        pass
+    ui_feedback.set_field_error(window, "modalidad", "Selecciona la modalidad de la visita.")
     return None
 
 
@@ -3496,13 +4242,9 @@ def _get_required_fecha_visita(window):
     widget = fields.get("fecha_visita")
     fecha_visita = widget.get().strip() if widget else ""
     if fecha_visita:
+        ui_feedback.clear_field_error(window, "fecha_visita")
         return fecha_visita
-    messagebox.showerror("Campo obligatorio", "Debes seleccionar una fecha de visita para continuar.")
-    try:
-        if widget:
-            widget.focus_set()
-    except Exception:
-        pass
+    ui_feedback.set_field_error(window, "fecha_visita", "Selecciona la fecha de la visita.")
     return None
 
 
@@ -3672,20 +4414,31 @@ def _refresh_section_dictation_button(window):
         window._section_dictation_after_id = None
 
 
+def _dictation_button_tooltip(window):
+    helper = _resolve_section_dictation_helper(window)
+    if helper is None:
+        return ""
+    if getattr(helper, "_is_processing", False):
+        return "Procesando audio..."
+    if getattr(helper, "_is_recording", False):
+        return "Haz click para detener la grabación"
+    if helper._can_dictate():
+        return "Haz click para dictar en este campo de texto"
+    return "Dictar no disponible: audio inactivo o campo bloqueado"
+
+
 def _install_section_dictation_button(window, text_widgets):
     title = getattr(window, "header_title", None)
     if not title or not title.winfo_exists():
         return
     parent = title.master
-    button = tk.Button(
+    button = ttk.Button(
         parent,
-        text="🎤 Dictar",
-        font=("Segoe UI Emoji", 10, "bold"),
-        cursor="hand2",
-        padx=8,
-        pady=2,
+        text="Dictar",
+        style="Secondary.TButton",
         command=lambda w=window: _on_section_dictation_click(w),
     )
+    _bind_tooltip(button, lambda w=window: _dictation_button_tooltip(w))
     window._section_dictation_button = button
     window._section_dictation_widgets = list(text_widgets)
     if not getattr(window, "_section_dictation_bound", False):
@@ -4498,7 +5251,7 @@ def _format_followup_editor_open_error(exc):
     detail = str(exc).strip() or repr(exc)
     detail_lower = detail.lower()
     if _is_transient_drive_exception(exc) or "supabase no esta disponible" in detail_lower:
-        return "No se pudo abrir el editor del caso por una falla temporal de conexion."
+        return "No se pudo abrir el editor del caso por una falla temporal de conexión."
     return f"No se pudo abrir el editor del caso: {detail}"
 
 
@@ -4918,7 +5671,6 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             fg=COLOR_PURPLE,
             bg=COLOR_LIGHT_BG,
         ).grid(row=0, column=1, sticky="w")
-
         for idx, item in enumerate(presentacion_programa.SECTION_2["items"], start=1):
             row = tk.Frame(content, bg="white", bd=1, relief="solid")
             row.pack(fill="x", pady=6)
@@ -5047,7 +5799,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         try:
             presentacion_programa.confirm_section_3_item8(values)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_4()
 
@@ -5176,7 +5928,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         try:
             presentacion_programa.confirm_section_4(notes)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_5()
 
@@ -5192,7 +5944,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         try:
             presentacion_programa.confirm_section_5(asistentes)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         loading = LoadingDialog(self, title="Guardando")
         loading.set_status("Preparando acta...")
@@ -5345,6 +6097,9 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         )
         self.fields["fecha_visita"].delete(0, tk.END)
         self.fields["fecha_visita"].grid(row=0, column=1, sticky="w", padx=(0, 24))
+        fecha_error = _build_inline_error_label(top_inputs, wraplength=220)
+        fecha_error.grid(row=1, column=1, sticky="w", pady=(4, 0), padx=(0, 24))
+        ui_feedback.register_field(self, "fecha_visita", self.fields["fecha_visita"], error_label=fecha_error)
 
         tk.Label(
             top_inputs,
@@ -5359,6 +6114,9 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             width=ENTRY_W_MED,
         )
         self.fields["modalidad"].grid(row=0, column=3, sticky="w")
+        modalidad_error = _build_inline_error_label(top_inputs, wraplength=220)
+        modalidad_error.grid(row=1, column=3, sticky="w", pady=(4, 0))
+        ui_feedback.register_field(self, "modalidad", self.fields["modalidad"], error_label=modalidad_error)
 
         for title, color, field_ids in groups:
             group_label = tk.Label(
@@ -5391,6 +6149,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
                 entry = tk.Entry(group_frame, state="readonly", width=readonly_w)
                 entry.grid(row=row, column=1, sticky="w", padx=6, pady=4)
                 self.fields[field_id] = entry
+                ui_feedback.register_field(self, field_id, entry)
 
     def _build_actions(self, parent):
         _section1_build_actions(self, parent)
@@ -5423,80 +6182,17 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         entry.configure(state="readonly")
 
     def _search_company(self, mode="nit"):
-        nit = self.fields["nit_empresa"].get().strip()
-        nombre = self.fields.get("nombre_busqueda").get().strip() if self.fields.get("nombre_busqueda") else ""
-        if mode == "nit":
-            if not nit:
-                messagebox.showerror("Error", "Ingresa un NIT.")
-                return
-        elif mode == "nombre":
-            if not nombre:
-                messagebox.showerror("Error", "Ingresa el nombre de la empresa.")
-                return
-        else:
-            messagebox.showerror("Error", "Tipo de búsqueda no válido.")
-            return
-
         lookup = getattr(self, "_empresa_lookup", presentacion_programa)
-        try:
-            self.status_label.config(text="Buscando empresa...")
-            self.update_idletasks()
-            if mode == "nombre":
-                company = lookup.get_empresa_by_nombre(nombre)
-            else:
-                company = lookup.get_empresa_by_nit(nit)
-        except Exception as exc:
-            self.status_label.config(text="")
-            messagebox.showerror("Error", str(exc))
-            return
-
-        section_map = getattr(lookup, "SECTION_1_SUPABASE_MAP", presentacion_programa.SECTION_1_SUPABASE_MAP)
-        if not company:
-            self.company_data = None
-            msg = "No se encontró empresa para ese nombre." if mode == "nombre" else "No se encontró empresa para ese NIT."
-            self.status_label.config(text=msg)
-            self.continue_btn.config(state="disabled")
-            for key in section_map.keys():
-                self._set_readonly_value(key, "")
-            return
-
-        if mode == "nombre":
-            nit_value = company.get("nit_empresa")
-            if nit_value:
-                entry = self.fields.get("nit_empresa")
-                if entry:
-                    entry.delete(0, tk.END)
-                    entry.insert(0, nit_value)
-
-        self.company_data = company
-        self.status_label.config(text="Empresa encontrada.")
-        self.continue_btn.config(state="normal")
-        for key in section_map.keys():
-            self._set_readonly_value(key, company.get(key))
+        target_button = self.search_name_btn if mode == "nombre" else self.search_nit_btn
+        _run_section1_company_search(self, mode=mode, lookup=lookup, button=target_button)
 
     def _confirm_and_continue(self):
-        if not self.company_data:
-            messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
-            return
-
-        fecha_visita = _get_required_fecha_visita(self)
-        if not fecha_visita:
-            return
-        modalidad = _get_required_modalidad(self)
-        if not modalidad:
-            return
-        user_inputs = {
-            "fecha_visita": fecha_visita,
-            "modalidad": modalidad,
-            "nit_empresa": self.fields["nit_empresa"].get().strip(),
-            "tipo_visita": self.fields["tipo_visita"].get().strip(),
-        }
-        try:
-            presentacion_programa.confirm_section_1(self.company_data, user_inputs)
-        except Exception as exc:
-            messagebox.showerror("Error", str(exc))
-            return
-        self._show_section_2()
+        _confirm_section1_and_continue(
+            self,
+            confirm_fn=presentacion_programa.confirm_section_1,
+            next_step=self._show_section_2,
+            extra_inputs=lambda: {"tipo_visita": ui_feedback.get_widget_value(self.fields.get("tipo_visita"))},
+        )
 
 
 def _normalize_company_search_text(value):
@@ -5716,6 +6412,7 @@ class HubWindow(tk.Tk):
         self._drafts_btn = None
         self._completed_btn = None
         self._refresh_db_btn = None
+        self._refresh_db_status_label = None
         self._labs_btn = None
         self._sync_panel_btn = None
         self._net_status_label = None
@@ -5734,6 +6431,13 @@ class HubWindow(tk.Tk):
         self._service_probe_cache_time = 0.0
         self._login_built = False
         self._login_btn = None
+        self.auto_login_var = None
+        self._auto_login_cb = None
+        self._auto_login_attempted = False
+        self._auto_login_in_progress = False
+        self._auto_login_thread = None
+        self._open_form_windows = {}
+        self._form_action_buttons = {}
 
         _ensure_drive_upload_worker()
         self._configure_input_styles()
@@ -5741,6 +6445,11 @@ class HubWindow(tk.Tk):
         self.after(0, self._build_login)
 
     def _configure_input_styles(self):
+        try:
+            ttk.Style(self).theme_use("clam")
+        except Exception:
+            pass
+        self.option_add("*Label.foreground", COLOR_TEXT_PRIMARY)
         self.option_add("*Entry.background", "white")
         self.option_add("*Entry.readonlyBackground", "#EDEDED")
         self.option_add("*Text.background", "white")
@@ -5748,9 +6457,82 @@ class HubWindow(tk.Tk):
             for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
                 self.bind_class(widget_class, seq, lambda _e: "break")
         style = ttk.Style(self)
-        style.configure("TEntry", fieldbackground="white")
-        style.configure("TCombobox", fieldbackground="white", background="white")
+        style.configure("TLabel", foreground=COLOR_TEXT_PRIMARY, background=COLOR_LIGHT_BG)
+        style.configure(
+            "TButton",
+            padding=(12, 6),
+            font=("Arial", 10, "bold"),
+            foreground=COLOR_TEXT_PRIMARY,
+            background="white",
+            borderwidth=1,
+            relief="solid",
+        )
+        style.map(
+            "TButton",
+            background=[("active", "#F5F1F8"), ("disabled", "#EFEAF4")],
+            foreground=[("disabled", "#8A8394")],
+        )
+        style.configure("TEntry", fieldbackground="white", foreground=COLOR_TEXT_PRIMARY)
+        style.configure("TCombobox", fieldbackground="white", background="white", foreground=COLOR_TEXT_PRIMARY)
         style.map("TCombobox", fieldbackground=[("readonly", "white")])
+        style.configure(
+            "Primary.TButton",
+            foreground="white",
+            background=COLOR_PRIMARY,
+            borderwidth=1,
+            relief="flat",
+        )
+        style.map(
+            "Primary.TButton",
+            background=[("active", "#3C2452"), ("disabled", "#D9D2E3")],
+            foreground=[("disabled", "#F8F6FB")],
+        )
+        style.configure(
+            "Secondary.TButton",
+            foreground=COLOR_TEXT_PRIMARY,
+            background="white",
+            borderwidth=1,
+            relief="solid",
+        )
+        style.map(
+            "Secondary.TButton",
+            background=[("active", "#F5F1F8"), ("disabled", "#EDEDED")],
+            foreground=[("disabled", "#888888")],
+        )
+        style.configure(
+            "DangerOutline.TButton",
+            foreground=COLOR_DANGER,
+            background="white",
+            borderwidth=1,
+            relief="solid",
+        )
+        style.map(
+            "DangerOutline.TButton",
+            background=[("active", "#FFF4E5"), ("disabled", "#EDEDED")],
+            foreground=[("disabled", "#888888")],
+        )
+        style.configure("Error.TLabel", foreground=COLOR_DANGER, background=COLOR_LIGHT_BG)
+        style.configure("Success.TLabel", foreground=COLOR_SUCCESS, background=COLOR_LIGHT_BG)
+        style.configure("Hint.TLabel", foreground=COLOR_TEXT_SECONDARY, background=COLOR_LIGHT_BG)
+        style.configure("Invalid.TEntry", fieldbackground=COLOR_FIELD_ERROR_BG)
+        style.configure(
+            "Invalid.TCombobox",
+            fieldbackground=COLOR_FIELD_ERROR_BG,
+            background=COLOR_FIELD_ERROR_BG,
+        )
+        style.map("Invalid.TCombobox", fieldbackground=[("readonly", COLOR_FIELD_ERROR_BG)])
+        style.configure(
+            "Vertical.TScrollbar",
+            troughcolor="#F3E5F5",
+            background=COLOR_PRIMARY,
+            borderwidth=0,
+            arrowcolor="white",
+            arrowsize=12,
+        )
+        style.map(
+            "Vertical.TScrollbar",
+            background=[("active", "#3C2452"), ("pressed", "#3C2452")],
+        )
 
     def _build_startup_precheck_toast(self, parent):
         card = tk.Frame(parent, bg="white", bd=1, relief="solid", padx=8, pady=6)
@@ -5776,7 +6558,7 @@ class HubWindow(tk.Tk):
             card,
             textvariable=self._startup_precheck_status_var,
             font=("Arial", 9),
-            fg="#888888",
+            fg="#6B6B6B",
             bg="white",
             anchor="w",
         )
@@ -5786,7 +6568,7 @@ class HubWindow(tk.Tk):
         self._startup_precheck_completed = bool(ready)
         if self._login_btn is not None:
             try:
-                self._login_btn.config(state=("normal" if ready else "disabled"))
+                self._login_btn.config(state="normal")
             except tk.TclError:
                 pass
         if self.login_status is not None:
@@ -5795,6 +6577,8 @@ class HubWindow(tk.Tk):
                     self.login_status.config(text=status_text)
             except tk.TclError:
                 pass
+        if ready:
+            self._maybe_attempt_auto_login()
 
     def _apply_startup_precheck_results(self, result):
         self._service_probe_cache = dict(result or {})
@@ -5822,7 +6606,7 @@ class HubWindow(tk.Tk):
         self._set_login_ready_state(False, "Verificando servicios...")
         try:
             self._startup_precheck_status_var.set("Verificando servicios")
-            self._startup_precheck_status_label.config(fg="#888888")
+            self._startup_precheck_status_label.config(fg="#6B6B6B")
         except tk.TclError:
             pass
 
@@ -5913,10 +6697,24 @@ class HubWindow(tk.Tk):
             form,
             text="Recordarme",
             variable=self.remember_login_var,
+            command=self._update_auto_login_toggle_state,
             bg=COLOR_LIGHT_BG,
             activebackground=COLOR_LIGHT_BG,
         )
         remember_cb.grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+        self.auto_login_var = tk.BooleanVar(
+            value=bool(saved_login.get("remember", True) and saved_login.get("auto_login", False))
+        )
+        self._auto_login_cb = tk.Checkbutton(
+            form,
+            text="Ingresar automáticamente en este equipo",
+            variable=self.auto_login_var,
+            bg=COLOR_LIGHT_BG,
+            activebackground=COLOR_LIGHT_BG,
+        )
+        self._auto_login_cb.grid(row=3, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        self._update_auto_login_toggle_state()
 
         if saved_login.get("username"):
             self.login_user_entry.insert(0, str(saved_login.get("username")))
@@ -5935,10 +6733,12 @@ class HubWindow(tk.Tk):
         self._login_btn = ttk.Button(
             self.login_frame,
             text="Ingresar",
+            style="Primary.TButton",
             command=self._handle_login,
-            state="disabled",
         )
         self._login_btn.pack(anchor="w")
+        self.login_user_entry.bind("<Return>", lambda _event: self._handle_login())
+        self.login_pass_entry.bind("<Return>", lambda _event: self._handle_login())
 
         forgot_btn = ttk.Button(
             self.login_frame,
@@ -5946,7 +6746,98 @@ class HubWindow(tk.Tk):
             command=self._show_forgot_password_info,
         )
         forgot_btn.pack(anchor="w", pady=(8, 0))
+        self._maybe_attempt_auto_login(ignore_precheck=True)
         self._run_startup_precheck_async(log_enabled=True)
+
+    def _update_auto_login_toggle_state(self):
+        remember_enabled = True
+        try:
+            remember_enabled = bool(self.remember_login_var.get())
+        except Exception:
+            pass
+        if not remember_enabled and self.auto_login_var is not None:
+            try:
+                self.auto_login_var.set(False)
+            except Exception:
+                pass
+        if self._auto_login_cb is not None:
+            try:
+                self._auto_login_cb.config(state=("normal" if remember_enabled else "disabled"))
+            except tk.TclError:
+                pass
+
+    def _maybe_attempt_auto_login(self, ignore_precheck=False):
+        if self._auto_login_attempted or self._auto_login_in_progress:
+            return
+        if (not ignore_precheck and not self._startup_precheck_completed) or self.login_frame is None:
+            return
+        remember_enabled = False
+        auto_login_enabled = False
+        try:
+            remember_enabled = bool(self.remember_login_var.get())
+        except Exception:
+            pass
+        try:
+            auto_login_enabled = bool(self.auto_login_var.get()) if self.auto_login_var is not None else False
+        except Exception:
+            auto_login_enabled = False
+        if not remember_enabled or not auto_login_enabled:
+            return
+        username = self.login_user_entry.get().strip() if self.login_user_entry is not None else ""
+        password = self.login_pass_entry.get() if self.login_pass_entry is not None else ""
+        if not username or not password:
+            return
+        self._auto_login_attempted = True
+        self._auto_login_in_progress = True
+        if self.login_status is not None:
+            try:
+                self.login_status.config(text="Intentando ingresar automáticamente...")
+            except tk.TclError:
+                pass
+        self._start_auto_login_async(username_input=username, password=password)
+
+    def _start_auto_login_async(self, *, username_input, password):
+        username_input = str(username_input or "").strip()
+        username = _normalize_login_value(username_input)
+        saved_creds = _load_saved_login_credentials()
+        cached_email = (
+            saved_creds.get("resolved_email", "")
+            if _normalize_login_value(saved_creds.get("username", "")) == username
+            else ""
+        )
+
+        def _worker():
+            try:
+                auth_result = self._resolve_login_attempt(
+                    username,
+                    password,
+                    cached_email=cached_email,
+                )
+                callback = lambda: self._complete_login_with_auth_result(
+                    username_input=username_input,
+                    username=username,
+                    password=password,
+                    auth_result=auth_result,
+                    silent=True,
+                    auto_login=True,
+                )
+            except Exception as exc:
+                callback = lambda err=exc: self._handle_failed_login_attempt(
+                    message=(
+                        "No fue posible ingresar automáticamente. Verifica tu conexión o inicia sesión manualmente."
+                        if _is_connectivity_exception(err)
+                        else _log_user_error("login", err)
+                    ),
+                    silent=True,
+                    clear_saved=bool(_is_invalid_credentials_exception(err)),
+                )
+            try:
+                self.after(0, callback)
+            except Exception:
+                self._auto_login_in_progress = False
+
+        self._auto_login_thread = threading.Thread(target=_worker, daemon=True)
+        self._auto_login_thread.start()
 
     def _show_forgot_password_info(self):
         messagebox.showinfo(
@@ -5955,78 +6846,24 @@ class HubWindow(tk.Tk):
             "Correo: admonusaid@recacolombia.org",
         )
 
-    def _handle_login(self):
-        username_input = self.login_user_entry.get().strip()
-        username = _normalize_login_value(username_input)
-        password = self.login_pass_entry.get()
-        if not username or not password:
-            messagebox.showerror("Error", "Ingresa usuario y contraseña.")
-            return
-        used_offline = False
-        auth_exc = None
-        saved_creds = _load_saved_login_credentials()
-        cached_email = (
-            saved_creds.get("resolved_email", "")
-            if _normalize_login_value(saved_creds.get("username", "")) == username
-            else ""
-        )
-        try:
-            self.login_status.config(text="Validando credenciales...")
-            self.update_idletasks()
-            user_row = self._authenticate_user(username, password, cached_email=cached_email)
-        except Exception as exc:
-            auth_exc = exc
-            user_row = None
-            if not _is_connectivity_exception(exc):
-                self.login_status.config(text="")
-                messagebox.showerror("Error", str(exc))
-                return
-        if not user_row:
-            can_use_offline = bool(auth_exc)
-            if not can_use_offline:
-                try:
-                    can_use_offline = not _supabase_ping(timeout=3)
-                except Exception:
-                    can_use_offline = True
-            if can_use_offline:
-                user_row = self._authenticate_user_offline(username, password)
-                if user_row:
-                    used_offline = True
-                    self.login_status.config(text="Modo offline: sesión local")
-        if not user_row:
-            self.login_status.config(text="")
-            if auth_exc:
-                messagebox.showerror("Error", str(auth_exc))
-                return
-            messagebox.showerror("Error", "Usuario y contraseña incorrectos.")
-            return
-        if not used_offline and self._must_force_password_change(user_row, password):
-            changed = self._prompt_force_password_change(user_row, password)
-            if not changed:
-                self.login_status.config(text="")
-                messagebox.showwarning(
-                    "Cambio requerido",
-                    "Debes cambiar la contraseña para continuar.",
-                )
-                return
-            # Reload profile to keep local state aligned.
-            try:
-                refreshed = _supabase_rpc("get_my_profesional_profile", {})
-                if isinstance(refreshed, dict):
-                    user_row = refreshed
-            except Exception:
-                pass
+    def _finalize_login_success(self, *, user_row, username_input, username, password):
         self._cache_offline_user_auth(user_row, password)
         remember_enabled = True
+        auto_login_enabled = False
         try:
             remember_enabled = bool(self.remember_login_var.get())
         except Exception:
             pass
+        try:
+            auto_login_enabled = bool(self.auto_login_var.get()) if self.auto_login_var is not None else False
+        except Exception:
+            auto_login_enabled = False
         if remember_enabled:
             _save_login_credentials(
                 username_input or username,
                 password,
                 resolved_email=str((user_row or {}).get("_resolved_email") or ""),
+                auto_login=bool(remember_enabled and auto_login_enabled),
             )
         else:
             _clear_login_credentials()
@@ -6041,8 +6878,180 @@ class HubWindow(tk.Tk):
         if self.login_frame:
             self.login_frame.destroy()
             self.login_frame = None
+        self._auto_login_in_progress = False
         self._build_header()
         self._build_body()
+
+    def _handle_failed_login_attempt(self, *, message, silent=False, clear_saved=False):
+        self._auto_login_in_progress = False
+        if clear_saved:
+            _clear_login_credentials()
+            try:
+                if self.remember_login_var is not None:
+                    self.remember_login_var.set(False)
+            except Exception:
+                pass
+            try:
+                if self.auto_login_var is not None:
+                    self.auto_login_var.set(False)
+            except Exception:
+                pass
+            self._update_auto_login_toggle_state()
+        if self.login_status is not None:
+            try:
+                self.login_status.config(text=message if silent else "")
+            except tk.TclError:
+                pass
+        if silent:
+            return False
+        messagebox.showerror("Error", message)
+        return False
+
+    def _handle_login(self, silent=False, auto_login=False):
+        username_input = self.login_user_entry.get().strip()
+        username = _normalize_login_value(username_input)
+        password = self.login_pass_entry.get()
+        if not username or not password:
+            message = "Ingresa usuario y contraseña."
+            if auto_login:
+                message = "No fue posible ingresar automáticamente. Ingresa tus credenciales."
+            return self._handle_failed_login_attempt(message=message, silent=silent)
+        saved_creds = _load_saved_login_credentials()
+        cached_email = (
+            saved_creds.get("resolved_email", "")
+            if _normalize_login_value(saved_creds.get("username", "")) == username
+            else ""
+        )
+        try:
+            self.login_status.config(
+                text=(
+                    "Intentando ingresar automáticamente..."
+                    if auto_login
+                    else "Validando credenciales..."
+                )
+            )
+            self.update_idletasks()
+            auth_result = self._resolve_login_attempt(
+                username,
+                password,
+                cached_email=cached_email,
+            )
+        except Exception as exc:
+            if not _is_connectivity_exception(exc):
+                return self._handle_failed_login_attempt(
+                    message=_log_user_error("login", exc),
+                    silent=silent,
+                    clear_saved=bool(auto_login and _is_invalid_credentials_exception(exc)),
+                )
+            auth_result = {
+                "user_row": None,
+                "used_offline": False,
+                "auth_exc": exc,
+            }
+        return self._complete_login_with_auth_result(
+            username_input=username_input,
+            username=username,
+            password=password,
+            auth_result=auth_result,
+            silent=silent,
+            auto_login=auto_login,
+        )
+
+    def _resolve_login_attempt(self, username, password, *, cached_email=""):
+        used_offline = False
+        auth_exc = None
+        user_row = None
+        try:
+            user_row = self._authenticate_user(username, password, cached_email=cached_email)
+        except Exception as exc:
+            auth_exc = exc
+            if not _is_connectivity_exception(exc):
+                raise
+        if not user_row:
+            can_use_offline = bool(auth_exc and _is_connectivity_exception(auth_exc))
+            if not can_use_offline:
+                try:
+                    can_use_offline = not _supabase_ping(timeout=3)
+                except Exception:
+                    can_use_offline = True
+            if can_use_offline:
+                user_row = self._authenticate_user_offline(username, password)
+                if user_row:
+                    used_offline = True
+        return {
+            "user_row": user_row,
+            "used_offline": used_offline,
+            "auth_exc": auth_exc,
+        }
+
+    def _complete_login_with_auth_result(
+        self,
+        *,
+        username_input,
+        username,
+        password,
+        auth_result,
+        silent=False,
+        auto_login=False,
+    ):
+        user_row = (auth_result or {}).get("user_row")
+        used_offline = bool((auth_result or {}).get("used_offline"))
+        auth_exc = (auth_result or {}).get("auth_exc")
+        if used_offline and self.login_status is not None:
+            try:
+                self.login_status.config(text="Modo offline: sesión local")
+            except tk.TclError:
+                pass
+        if not user_row:
+            if auth_exc:
+                return self._handle_failed_login_attempt(
+                    message=(
+                        "No fue posible ingresar automáticamente. Verifica tu conexión o inicia sesión manualmente."
+                        if auto_login
+                        else _log_user_error("login", auth_exc)
+                    ),
+                    silent=silent,
+                )
+            return self._handle_failed_login_attempt(
+                message=(
+                    "No fue posible ingresar automáticamente. Vuelve a iniciar sesión."
+                    if auto_login
+                    else "Usuario y contraseña incorrectos."
+                ),
+                silent=silent,
+                clear_saved=bool(auto_login),
+            )
+        if not used_offline and self._must_force_password_change(user_row, password):
+            changed = self._prompt_force_password_change(user_row, password)
+            if not changed:
+                self._auto_login_in_progress = False
+                self.login_status.config(
+                    text=(
+                        "Debes iniciar sesión manualmente para cambiar la contraseña."
+                        if auto_login
+                        else ""
+                    )
+                )
+                if not silent:
+                    messagebox.showwarning(
+                        "Cambio requerido",
+                        "Debes cambiar la contraseña para continuar.",
+                    )
+                return False
+            # Reload profile to keep local state aligned.
+            try:
+                refreshed = _supabase_rpc("get_my_profesional_profile", {})
+                if isinstance(refreshed, dict):
+                    user_row = refreshed
+            except Exception:
+                pass
+        self._finalize_login_success(
+            user_row=user_row,
+            username_input=username_input,
+            username=username,
+            password=password,
+        )
+        return True
 
     def _authenticate_user(self, username, password, cached_email=""):
         username_norm = _normalize_login_value(username)
@@ -6097,12 +7106,11 @@ class HubWindow(tk.Tk):
         except Exception as exc:
             if _is_profile_permission_exception(exc):
                 _log_capture(
-                    f"[LOGIN] profile fallback user={username_norm!r} reason={exc}"
+                    f"[LOGIN] profile authorization denied user={username_norm!r} reason={exc}"
                 )
-                profile = _build_degraded_profesional_profile(username_norm, email=email)
-                profile["_auth_source"] = "jwt_profile_fallback"
-                profile["_resolved_email"] = email
-                return profile
+                raise RuntimeError(
+                    "No fue posible validar tu perfil con los permisos actuales."
+                ) from exc
             raise
         if isinstance(profile, dict) and profile.get("id"):
             profile["_auth_source"] = "jwt"
@@ -6120,6 +7128,13 @@ class HubWindow(tk.Tk):
             return None
         cached = users.get(username_norm)
         if not isinstance(cached, dict):
+            return None
+        if _offline_auth_entry_is_expired(cached):
+            try:
+                users.pop(username_norm, None)
+                _save_offline_auth_store(store)
+            except Exception:
+                pass
             return None
         pass_hash = (cached.get("usuario_pass_hash") or "").strip()
         if not pass_hash:
@@ -6145,10 +7160,13 @@ class HubWindow(tk.Tk):
         pass_hash = (user_row.get("usuario_pass_hash") or "").strip()
         if not pass_hash:
             # Compatibilidad con cuentas heredadas si el login fue exitoso.
+            if len(str(password or "").strip()) > MAX_PASSWORD_LENGTH:
+                return
             pass_hash = _hash_password(str(password or "").strip())
         if not pass_hash:
             return
         store = _load_offline_auth_store()
+        store["version"] = OFFLINE_AUTH_STORE_VERSION
         users = store.get("users")
         if not isinstance(users, dict):
             users = {}
@@ -6159,6 +7177,8 @@ class HubWindow(tk.Tk):
             "usuario_pass_hash": pass_hash,
             "nombre_profesional": user_row.get("nombre_profesional") or "",
             "programa": user_row.get("programa") or "",
+            "cached_at": time.time(),
+            "ttl_days": OFFLINE_AUTH_TTL_DAYS,
             "updated_at": datetime.now().isoformat(timespec="seconds"),
         }
         _save_offline_auth_store(store)
@@ -6169,6 +7189,8 @@ class HubWindow(tk.Tk):
 
     def _validate_new_password(self, new_password, current_password):
         pwd = str(new_password or "")
+        if len(pwd) > MAX_PASSWORD_LENGTH:
+            return False, "La nueva contraseña supera la longitud máxima permitida."
         if len(pwd) < 8:
             return False, "La nueva contraseña debe tener mínimo 8 caracteres."
         if pwd == str(current_password or ""):
@@ -6374,6 +7396,34 @@ class HubWindow(tk.Tk):
             pass
         self._form_event_ids.pop(form_id, None)
         self._form_event_payloads.pop(form_id, None)
+
+    def _set_form_card_state(self, form_id, *, active):
+        button = (self._form_action_buttons or {}).get(str(form_id or ""))
+        if button is None:
+            return
+        try:
+            button.config(
+                text=("En progreso..." if active else "Abrir"),
+                state=("disabled" if active else "normal"),
+            )
+        except tk.TclError:
+            return
+
+    def _register_open_form_window(self, form_id, window):
+        if not form_id or window is None:
+            return
+        self._open_form_windows[str(form_id)] = window
+        self._set_form_card_state(form_id, active=True)
+
+    def _release_form_window(self, form_id, window=None):
+        key = str(form_id or "")
+        if not key:
+            return
+        current = (self._open_form_windows or {}).get(key)
+        if window is not None and current is not None and current is not window:
+            return
+        self._open_form_windows.pop(key, None)
+        self._set_form_card_state(key, active=False)
 
     def _find_form_completion_record_by_source_item_key(self, source_item_key):
         source_key = str(source_item_key or "").strip()
@@ -6905,7 +7955,7 @@ class HubWindow(tk.Tk):
         ).pack(anchor="e", pady=(2, 0))
         self._net_status_label = tk.Label(
             right,
-            text="Estado: verificando...",
+            text="● Verificando...",
             justify="left",
             anchor="w",
             font=("Arial", 9, "bold"),
@@ -6996,8 +8046,19 @@ class HubWindow(tk.Tk):
                     ),
                     fg=color,
                 )
+                if total_failed:
+                    self._net_status_label.config(text="● Error de sincronización", fg=COLOR_DANGER)
+                elif total_pending:
+                    self._net_status_label.config(
+                        text=f"● {total_pending} por sincronizar",
+                        fg=COLOR_WARNING,
+                    )
+                elif self._is_online and supabase_state.get("ok") and drive_state.get("ok"):
+                    self._net_status_label.config(text="● Conectado", fg=COLOR_SUCCESS)
+                else:
+                    self._net_status_label.config(text="● Sin conexión", fg=COLOR_DANGER)
             if self._sync_panel_btn:
-                self._sync_panel_btn.config(text=f"Sincronización ({total_pending}/{total_failed})")
+                self._sync_panel_btn.config(text="Ver detalles")
             self._net_status_after_id = self.after(9000, self._start_network_status_monitor)
 
         _finish()
@@ -7013,32 +8074,54 @@ class HubWindow(tk.Tk):
         frame = tk.Frame(modal, bg=COLOR_LIGHT_BG, padx=12, pady=10)
         frame.pack(fill="both", expand=True)
 
-        internet_state = self._service_probe_cache.get("internet") or {}
-        supabase_state = self._service_probe_cache.get("supabase") or {}
-        drive_state = self._service_probe_cache.get("drive") or {}
-        status_txt = "Online" if self._is_online else "Offline"
-        status_color = "#0A7D2E" if self._is_online else "#B00020"
-        header = tk.Label(
+        tk.Label(
             frame,
-            text=(
-                f"Internet: {status_txt} | "
-                f"Supabase: {'OK' if supabase_state.get('ok') else 'Falla'} | "
-                f"Drive: {'OK' if drive_state.get('ok') else 'Falla'}"
-            ),
+            text="Estado de servicios",
             font=("Arial", 11, "bold"),
-            fg=status_color,
+            fg=COLOR_PURPLE,
             bg=COLOR_LIGHT_BG,
-        )
-        header.pack(anchor="w", pady=(0, 8))
+        ).pack(anchor="w", pady=(0, 6))
 
-        summary_lbl = tk.Label(
+        internet_status_lbl = tk.Label(
             frame,
             text="",
             font=("Arial", 9),
             fg="#333333",
             bg=COLOR_LIGHT_BG,
+            anchor="w",
+            justify="left",
         )
-        summary_lbl.pack(anchor="w", pady=(0, 8))
+        internet_status_lbl.pack(anchor="w")
+        supabase_status_lbl = tk.Label(
+            frame,
+            text="",
+            font=("Arial", 9),
+            fg="#333333",
+            bg=COLOR_LIGHT_BG,
+            anchor="w",
+            justify="left",
+        )
+        supabase_status_lbl.pack(anchor="w")
+        drive_status_lbl = tk.Label(
+            frame,
+            text="",
+            font=("Arial", 9),
+            fg="#333333",
+            bg=COLOR_LIGHT_BG,
+            anchor="w",
+            justify="left",
+        )
+        drive_status_lbl.pack(anchor="w")
+        queue_summary_lbl = tk.Label(
+            frame,
+            text="",
+            font=("Arial", 9),
+            fg="#555555",
+            bg=COLOR_LIGHT_BG,
+            anchor="w",
+            justify="left",
+        )
+        queue_summary_lbl.pack(anchor="w", pady=(2, 8))
 
         tk.Label(
             frame,
@@ -7125,13 +8208,23 @@ class HubWindow(tk.Tk):
             internet_state = self._service_probe_cache.get("internet") or {}
             supabase_state = self._service_probe_cache.get("supabase") or {}
             drive_state = self._service_probe_cache.get("drive") or {}
-            header.config(
-                text=(
-                    f"Internet: {'Online' if self._is_online else 'Offline'} | "
-                    f"Supabase: {'OK' if supabase_state.get('ok') else 'Falla'} | "
-                    f"Drive: {'OK' if drive_state.get('ok') else 'Falla'}"
+            ui_feedback.set_semantic_label(
+                internet_status_lbl,
+                (
+                    f"Internet: {'Online' if self._is_online else 'Offline'}"
+                    f" | Último estado: {internet_state.get('status_text') or '-'}"
                 ),
-                fg="#0A7D2E" if self._is_online else "#B00020",
+                state=("success" if self._is_online else "error"),
+            )
+            ui_feedback.set_semantic_label(
+                supabase_status_lbl,
+                f"Supabase: {'OK' if supabase_state.get('ok') else 'Falla'} | Detalle: {supabase_state.get('status_text') or '-'}",
+                state=("success" if supabase_state.get("ok") else "error"),
+            )
+            ui_feedback.set_semantic_label(
+                drive_status_lbl,
+                f"Drive: {'OK' if drive_state.get('ok') else 'Falla'} | Detalle: {drive_state.get('status_text') or '-'}",
+                state=("success" if drive_state.get("ok") else "error"),
             )
 
             supabase_pending_rows = _get_supabase_write_queue_snapshot(limit=500)
@@ -7187,14 +8280,11 @@ class HubWindow(tk.Tk):
                     )
                 )
 
-            summary_lbl.config(
+            queue_summary_lbl.config(
                 text=(
-                    f"Supabase pendientes/fallidos: {len(supabase_pending_rows)}/{len(supabase_failed_rows)} | "
-                    f"Drive pendientes/fallidos: {len(drive_pending_rows)}/{len(drive_failed_rows)} | "
-                    f"Último check: Internet {internet_state.get('status_text') or '-'} / "
-                    f"Supabase {supabase_state.get('status_text') or '-'} / "
-                    f"Drive {drive_state.get('status_text') or '-'}"
-                )
+                    f"Colas: Supabase {len(supabase_pending_rows)} pendientes y {len(supabase_failed_rows)} fallidos | "
+                    f"Drive {len(drive_pending_rows)} pendientes y {len(drive_failed_rows)} fallidos"
+                ),
             )
 
             if not pending_rows:
@@ -7842,6 +8932,8 @@ class HubWindow(tk.Tk):
     def _refresh_database_cache(self):
         if self._refresh_db_btn:
             self._refresh_db_btn.config(state="disabled", text="Actualizando...")
+        if self._refresh_db_status_label:
+            self._refresh_db_status_label.config(text="")
 
         def _worker():
             err = None
@@ -7856,7 +8948,9 @@ class HubWindow(tk.Tk):
                 if self._refresh_db_btn:
                     self._refresh_db_btn.config(state="normal", text="Actualizar Base de Datos")
                 if err:
-                    messagebox.showwarning("Base de Datos", f"No se pudo actualizar: {err}")
+                    message = _log_user_error("database_refresh", err)
+                    if self._refresh_db_status_label:
+                        self._refresh_db_status_label.config(text=message, fg=COLOR_DANGER)
                     return
                 self._companies_all = rows
                 self._empresa_names_cache = sorted(
@@ -7864,7 +8958,9 @@ class HubWindow(tk.Tk):
                     key=str.lower,
                 )
                 self._render_companies()
-                self.show_toast("Base de datos actualizada")
+                if self._refresh_db_status_label:
+                    self._refresh_db_status_label.config(text="Base de datos actualizada ✓", fg=COLOR_SUCCESS)
+                    self.after(3000, lambda: self._refresh_db_status_label.config(text=""))
 
             try:
                 self.after(0, _done)
@@ -8038,10 +9134,12 @@ class HubWindow(tk.Tk):
             draft_by_iid.pop(sel, None)
             self._refresh_drafts_badge()
 
-        ttk.Button(actions, text="Cerrar", command=modal.destroy).pack(side="right")
-        ttk.Button(actions, text="Eliminar", command=_delete_selected).pack(side="right", padx=(0, 8))
-        ttk.Button(actions, text="Abrir", command=_open_selected).pack(side="right", padx=(0, 8))
+        ttk.Button(actions, text="Cerrar", style="Secondary.TButton", command=modal.destroy).pack(side="left")
+        ttk.Button(actions, text="Eliminar", style="DangerOutline.TButton", command=_delete_selected).pack(side="right", padx=(0, 8))
+        ttk.Button(actions, text="Abrir", style="Primary.TButton", command=_open_selected).pack(side="right", padx=(0, 8))
         tree.bind("<Double-1>", lambda _e: _open_selected())
+        modal.bind("<Escape>", lambda _event: modal.destroy())
+        modal.bind("<Return>", lambda _event: _open_selected())
 
     def _open_completed_entry(self, completed_entry):
         if not isinstance(completed_entry, dict):
@@ -8077,7 +9175,7 @@ class HubWindow(tk.Tk):
     def _open_completed_window(self):
         completed = self._get_user_completed_forms()
         modal = tk.Toplevel(self)
-        modal.title("Terminados - Ultimos 30 dias")
+        modal.title("Terminados - Últimos 30 días")
         modal.configure(bg=COLOR_LIGHT_BG)
         modal.geometry("920x420")
         modal.transient(self)
@@ -8155,9 +9253,11 @@ class HubWindow(tk.Tk):
             modal.destroy()
             self._open_completed_entry(entry)
 
-        ttk.Button(actions, text="Cerrar", command=modal.destroy).pack(side="right")
-        ttk.Button(actions, text="Abrir", command=_open_selected).pack(side="right", padx=(0, 8))
+        ttk.Button(actions, text="Cerrar", style="Secondary.TButton", command=modal.destroy).pack(side="left")
+        ttk.Button(actions, text="Abrir", style="Primary.TButton", command=_open_selected).pack(side="right", padx=(0, 8))
         tree.bind("<Double-1>", lambda _e: _open_selected())
+        modal.bind("<Escape>", lambda _event: modal.destroy())
+        modal.bind("<Return>", lambda _event: _open_selected())
 
     def _build_body(self):
         self.body = tk.Frame(self, bg=COLOR_LIGHT_BG)
@@ -8173,7 +9273,7 @@ class HubWindow(tk.Tk):
         left.grid_columnconfigure(0, weight=1)
         right = tk.Frame(self.body, bg=COLOR_LIGHT_BG)
         right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
-        right.grid_rowconfigure(2, weight=1)
+        right.grid_rowconfigure(3, weight=1)
         right.grid_columnconfigure(0, weight=1)
 
         left_header = tk.Frame(left, bg=COLOR_LIGHT_BG)
@@ -8194,12 +9294,22 @@ class HubWindow(tk.Tk):
         self._refresh_db_btn = ttk.Button(
             left_header,
             text="Actualizar Base de Datos",
+            style="Secondary.TButton",
             command=self._refresh_database_cache,
         )
         self._refresh_db_btn.pack(side="right", padx=(0, 8))
+        self._refresh_db_status_label = tk.Label(
+            left_header,
+            text="",
+            font=("Arial", 9, "bold"),
+            fg=COLOR_SUCCESS,
+            bg=COLOR_LIGHT_BG,
+        )
+        self._refresh_db_status_label.pack(side="right", padx=(0, 8))
         self._completed_btn = ttk.Button(
             left_header,
             text="Terminados",
+            style="Secondary.TButton",
             command=self._open_completed_window,
         )
         self._completed_btn.pack(side="right", padx=(0, 8))
@@ -8271,6 +9381,7 @@ class HubWindow(tk.Tk):
                 card = tk.Frame(forms_content, bg="white", bd=1, relief="solid")
                 card.pack(fill="x", pady=6, padx=8)
                 card.grid_columnconfigure(0, weight=1)
+                description_text = str(form.get("hub_description") or "").strip()
                 title = tk.Label(
                     card,
                     text=form["name"],
@@ -8281,14 +9392,46 @@ class HubWindow(tk.Tk):
                     justify="left",
                     wraplength=460,
                 )
-                title.grid(row=0, column=0, sticky="ew", padx=(12, 8), pady=8)
+                title.grid(
+                    row=0,
+                    column=0,
+                    sticky="ew",
+                    padx=(12, 8),
+                    pady=((10, 2) if description_text else 8),
+                )
+                if description_text:
+                    description = tk.Label(
+                        card,
+                        text=description_text,
+                        font=("Arial", 9),
+                        bg="white",
+                        fg="#666666",
+                        anchor="w",
+                        justify="left",
+                        wraplength=460,
+                    )
+                    description.grid(row=1, column=0, sticky="ew", padx=(12, 8), pady=(0, 10))
                 action = ttk.Button(
                     card,
                     text="Abrir",
+                    style="Primary.TButton",
                     command=lambda f=form: self._open_form(f),
                 )
-                action.grid(row=0, column=1, sticky="e", padx=12, pady=8)
-                for _w in (card, title, action):
+                action.grid(
+                    row=0,
+                    column=1,
+                    rowspan=(2 if description_text else 1),
+                    sticky="e",
+                    padx=12,
+                    pady=8,
+                )
+                self._form_action_buttons[str(form.get("id") or "")] = action
+                if bool((self._open_form_windows or {}).get(str(form.get("id") or ""))):
+                    self._set_form_card_state(form.get("id"), active=True)
+                widgets_to_bind = [card, title, action]
+                if description_text:
+                    widgets_to_bind.append(description)
+                for _w in widgets_to_bind:
                     _w.bind("<MouseWheel>", _on_forms_wheel, add="+")
                     _w.bind("<Button-4>", _on_forms_wheel, add="+")
                     _w.bind("<Button-5>", _on_forms_wheel, add="+")
@@ -8300,9 +9443,16 @@ class HubWindow(tk.Tk):
             fg=COLOR_PURPLE,
             bg=COLOR_LIGHT_BG,
         ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+        tk.Label(
+            right,
+            text="Doble clic para editar la empresa seleccionada.",
+            font=("Arial", 9),
+            fg="#666666",
+            bg=COLOR_LIGHT_BG,
+        ).grid(row=1, column=0, sticky="w", pady=(0, 6))
 
         controls = tk.Frame(right, bg=COLOR_LIGHT_BG)
-        controls.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        controls.grid(row=2, column=0, sticky="ew", pady=(0, 8))
         controls.grid_columnconfigure(1, weight=1)
 
         tk.Label(
@@ -8332,7 +9482,7 @@ class HubWindow(tk.Tk):
         sort_combo.grid(row=0, column=3, sticky="e")
 
         box = tk.Frame(right, bg="white", bd=1, relief="solid")
-        box.grid(row=2, column=0, sticky="nsew")
+        box.grid(row=3, column=0, sticky="nsew")
 
         scrollbar = tk.Scrollbar(box, orient="vertical", width=SCROLLBAR_WIDTH)
         scrollbar.pack(side="right", fill="y")
@@ -8357,7 +9507,7 @@ class HubWindow(tk.Tk):
             self._companies_all = self._get_assigned_companies()
         except Exception as exc:
             self._companies_all = []
-            messagebox.showwarning("Empresas", f"Error cargando empresas: {exc}")
+            messagebox.showwarning("Empresas", _log_user_error("database_refresh", exc))
         self._empresa_names_cache = sorted(
             {(r.get("nombre_empresa") or "").strip() for r in self._companies_all if (r.get("nombre_empresa") or "").strip()},
             key=str.lower,
@@ -8375,6 +9525,7 @@ class HubWindow(tk.Tk):
         supports_drafts = _form_supports_drafts(form_meta)
         window._form_id = form_id
         window._form_name = form_name
+        window._form_meta = dict(form_meta or {})
         window._empresa_names_cache = getattr(self, "_empresa_names_cache", [])
         module = FORM_MODULE_MAP.get(form_id)
         if (
@@ -8402,6 +9553,14 @@ class HubWindow(tk.Tk):
                     return
                 window._usage_finish_logged = True
                 _log_capture(f"[USAGE] form_window_closed form={form_id}")
+                try:
+                    self.track_form_finished(form_id)
+                except Exception:
+                    pass
+                try:
+                    self._release_form_window(form_id, window)
+                except Exception:
+                    pass
 
             def _tracked_destroy(*args, **kwargs):
                 if not getattr(window, "_skip_close_guard", False):
@@ -8430,6 +9589,10 @@ class HubWindow(tk.Tk):
                     window._current_section = section
                     result = fn(*args, **kwargs)
                     try:
+                        _ensure_wizard_runtime_widgets(window)
+                    except Exception:
+                        pass
+                    try:
                         _attach_dictation_for_section(window, form_id, section)
                     except Exception as exc:
                         _log_capture(
@@ -8456,6 +9619,10 @@ class HubWindow(tk.Tk):
         except Exception:
             pass
         try:
+            _ensure_wizard_runtime_widgets(window)
+        except Exception:
+            pass
+        try:
             _attach_dictation_for_section(window, form_id, getattr(window, "_current_section", "section_1"))
         except Exception as exc:
             _log_capture(
@@ -8471,72 +9638,59 @@ class HubWindow(tk.Tk):
         _refresh_form_save_status(window)
 
     def _open_form(self, form_meta):
+        form_id = str(form_meta.get("id") or "")
+        if bool(form_meta.get("singleton_window")):
+            current = (self._open_form_windows or {}).get(form_id)
+            try:
+                if current is not None and current.winfo_exists():
+                    _focus_window(current)
+                    return current
+            except Exception:
+                self._open_form_windows.pop(form_id, None)
+
+        def _finalize_window(window):
+            if window is None:
+                return None
+            self._bind_form_runtime(window, form_meta)
+            if bool(form_meta.get("singleton_window")):
+                self._register_open_form_window(form_id, window)
+            _focus_window(window)
+            self.track_form_open(form_meta["id"], form_meta["name"])
+            return window
+
         if form_meta["id"] == "presentacion_programa":
             window = Section1Window(self)
-            self._bind_form_runtime(window, form_meta)
-            _focus_window(window)
-            self.track_form_open(form_meta["id"], form_meta["name"])
-            return window
+            return _finalize_window(window)
         if form_meta["id"] == "evaluacion_accesibilidad":
             window = EvaluacionAccesibilidadWindow(self)
-            self._bind_form_runtime(window, form_meta)
-            _focus_window(window)
-            self.track_form_open(form_meta["id"], form_meta["name"])
-            return window
+            return _finalize_window(window)
         if form_meta["id"] == "condiciones_vacante":
             window = CondicionesVacanteWindow(self)
-            self._bind_form_runtime(window, form_meta)
-            _focus_window(window)
-            self.track_form_open(form_meta["id"], form_meta["name"])
-            return window
+            return _finalize_window(window)
         if form_meta["id"] == "condiciones_vacante_labs":
             window = CondicionesVacanteLabsWindow(self)
-            self._bind_form_runtime(window, form_meta)
-            _focus_window(window)
-            self.track_form_open(form_meta["id"], form_meta["name"])
-            return window
+            return _finalize_window(window)
         if form_meta["id"] == "seleccion_incluyente":
             window = SeleccionIncluyenteWindow(self)
-            self._bind_form_runtime(window, form_meta)
-            _focus_window(window)
-            self.track_form_open(form_meta["id"], form_meta["name"])
-            return window
+            return _finalize_window(window)
         if form_meta["id"] == "seleccion_incluyente_labs":
             window = SeleccionIncluyenteLabsWindow(self)
-            self._bind_form_runtime(window, form_meta)
-            _focus_window(window)
-            self.track_form_open(form_meta["id"], form_meta["name"])
-            return window
+            return _finalize_window(window)
         if form_meta["id"] == "contratacion_incluyente":
             window = ContratacionIncluyenteWindow(self)
-            self._bind_form_runtime(window, form_meta)
-            _focus_window(window)
-            self.track_form_open(form_meta["id"], form_meta["name"])
-            return window
+            return _finalize_window(window)
         if form_meta["id"] == "induccion_organizacional":
             window = InduccionOrganizacionalWindow(self)
-            self._bind_form_runtime(window, form_meta)
-            _focus_window(window)
-            self.track_form_open(form_meta["id"], form_meta["name"])
-            return window
+            return _finalize_window(window)
         if form_meta["id"] == "induccion_operativa":
             window = InduccionOperativaWindow(self)
-            self._bind_form_runtime(window, form_meta)
-            _focus_window(window)
-            self.track_form_open(form_meta["id"], form_meta["name"])
-            return window
+            return _finalize_window(window)
         if form_meta["id"] == "sensibilizacion":
             window = SensibilizacionWindow(self)
-            self._bind_form_runtime(window, form_meta)
-            _focus_window(window)
-            self.track_form_open(form_meta["id"], form_meta["name"])
-            return window
+            return _finalize_window(window)
         if form_meta["id"] == "seguimientos":
             window = SeguimientosWindow(self)
-            self._bind_form_runtime(window, form_meta)
-            _focus_window(window)
-            self.track_form_open(form_meta["id"], form_meta["name"])
-            return window
+            return _finalize_window(window)
         messagebox.showinfo("Formulario", f"Abrir formulario: {form_meta['name']}")
         return None
 
@@ -8570,7 +9724,9 @@ class HubWindow(tk.Tk):
             self._toast_label.place_forget()
         self._toast_after_id = None
 
-    def show_toast(self, text, duration_ms=5000):
+    def show_toast(self, text, duration_ms=None, *, level="info"):
+        if duration_ms is None:
+            duration_ms = _TOAST_DURATIONS.get(str(level or "info").lower(), 4000)
         self._ensure_toast()
         if self._toast_after_id is not None:
             self.after_cancel(self._toast_after_id)
@@ -8581,8 +9737,8 @@ class HubWindow(tk.Tk):
         if duration_ms is not None:
             self._toast_after_id = self.after(duration_ms, self._hide_toast)
 
-    def _toast_async(self, text, duration_ms=5000):
-        self.after(0, lambda: self.show_toast(text, duration_ms))
+    def _toast_async(self, text, duration_ms=None, *, level="info"):
+        self.after(0, lambda: self.show_toast(text, duration_ms, level=level))
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -9727,7 +10883,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             evaluacion_accesibilidad.confirm_section_2_5(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_2_6()
 
@@ -9736,7 +10892,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             evaluacion_accesibilidad.confirm_section_2_6(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_3()
 
@@ -9845,7 +11001,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             evaluacion_accesibilidad.confirm_section_3(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_4()
 
@@ -9925,7 +11081,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             evaluacion_accesibilidad.confirm_section_4(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_5()
 
@@ -9978,13 +11134,14 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                 justify="left",
             ).grid(row=1, column=0, columnspan=3, sticky="w", padx=8)
 
-            tk.Label(
+            suggested_label = tk.Label(
                 row,
                 text="Ajustes sugeridos:",
                 font=("Arial", 9, "bold"),
                 bg="white",
-            ).grid(row=2, column=0, sticky="w", padx=8, pady=(6, 2))
-            tk.Label(
+            )
+            suggested_label.grid(row=2, column=0, sticky="w", padx=8, pady=(6, 2))
+            suggested_value = tk.Label(
                 row,
                 text=self._clean_text(item["ajustes"]),
                 font=("Arial", 9),
@@ -9992,7 +11149,8 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                 fg="#333333",
                 wraplength=760,
                 justify="left",
-            ).grid(row=3, column=0, columnspan=3, sticky="w", padx=8)
+            )
+            suggested_value.grid(row=3, column=0, columnspan=3, sticky="w", padx=8)
 
             tk.Label(
                 row,
@@ -10021,22 +11179,66 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
             self.section5_fields[item["id"]] = {
                 "lista": aplica_combo,
                 "nota": nota_entry,
+                "_suggested_label": suggested_label,
+                "_suggested_value": suggested_value,
             }
 
+            def _toggle_suggested_widgets(_event=None, *, combo=aplica_combo, lbl=suggested_label, value_lbl=suggested_value):
+                show_suggested = combo.get().strip() == "Aplica"
+                if show_suggested:
+                    lbl.grid()
+                    value_lbl.grid()
+                else:
+                    lbl.grid_remove()
+                    value_lbl.grid_remove()
+
+            aplica_combo.bind("<<ComboboxSelected>>", _toggle_suggested_widgets, add="+")
+            _toggle_suggested_widgets()
+
         self._prefill_section_fields("section_5", self.section5_fields)
+        for widgets in self.section5_fields.values():
+            combo = widgets.get("lista")
+            suggested_label = widgets.get("_suggested_label")
+            suggested_value = widgets.get("_suggested_value")
+            if not combo or not suggested_label or not suggested_value:
+                continue
+            show_suggested = combo.get().strip() == "Aplica"
+            if show_suggested:
+                suggested_label.grid()
+                suggested_value.grid()
+            else:
+                suggested_label.grid_remove()
+                suggested_value.grid_remove()
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda f=self.section5_fields: _autosave_section(evaluacion_accesibilidad, "section_5", lambda: self._collect_section_fields(f))
+        self._pending_autosave = lambda f=self.section5_fields: _autosave_section(
+            evaluacion_accesibilidad,
+            "section_5",
+            lambda: self._collect_evaluacion_section5_payload(f),
+        )
         ttk.Button(actions, text="Regresar", command=self._show_section_4).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_5).pack(side="right")
 
+    def _collect_evaluacion_section5_payload(self, fields=None):
+        payload = self._collect_section_fields(fields or self.section5_fields)
+        for item in evaluacion_accesibilidad.SECTION_5.get("items", []):
+            field_id = item.get("id")
+            if not field_id:
+                continue
+            payload[f"{field_id}_ajustes"] = (
+                item.get("ajustes", "")
+                if payload.get(field_id) == "Aplica"
+                else "No aplica"
+            )
+        return payload
+
     def _confirm_section_5(self):
-        payload = self._collect_section_fields(self.section5_fields)
+        payload = self._collect_evaluacion_section5_payload(self.section5_fields)
         try:
             evaluacion_accesibilidad.confirm_section_5(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_6()
 
@@ -10083,7 +11285,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             evaluacion_accesibilidad.confirm_section_6(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_7()
 
@@ -10140,7 +11342,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             evaluacion_accesibilidad.confirm_section_7(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_8()
 
@@ -10271,7 +11473,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             evaluacion_accesibilidad.confirm_section_8(asistentes)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         loading = LoadingDialog(self, title="Guardando")
         loading.set_status("Preparando exportación...")
@@ -10328,6 +11530,8 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         cache = evaluacion_accesibilidad.get_form_cache().get(section_id, {})
         for field_id, widgets in fields.items():
             for key, widget in widgets.items():
+                if str(key).startswith("_"):
+                    continue
                 if key == "accesible":
                     cache_key = f"{field_id}_accesible"
                 elif key == "observaciones":
@@ -10360,6 +11564,8 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         payload = {}
         for field_id, widgets in fields.items():
             for key, widget in widgets.items():
+                if str(key).startswith("_"):
+                    continue
                 if isinstance(widget, ttk.Combobox):
                     value = widget.get().strip()
                 elif isinstance(widget, tk.Text):
@@ -10398,7 +11604,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             evaluacion_accesibilidad.confirm_section_2_1(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_2_2()
 
@@ -10417,7 +11623,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             evaluacion_accesibilidad.confirm_section_2_2(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_2_3()
 
@@ -10426,7 +11632,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             evaluacion_accesibilidad.confirm_section_2_3(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_2_4()
 
@@ -10435,7 +11641,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             evaluacion_accesibilidad.confirm_section_2_4(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_2_5()
 
@@ -10494,77 +11700,20 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         entry.configure(state="readonly")
 
     def _search_company(self, mode="nit"):
-        nit = self.fields["nit_empresa"].get().strip()
-        nombre = self.fields.get("nombre_busqueda").get().strip() if self.fields.get("nombre_busqueda") else ""
-        if mode == "nit":
-            if not nit:
-                messagebox.showerror("Error", "Ingresa un NIT.")
-                return
-        elif mode == "nombre":
-            if not nombre:
-                messagebox.showerror("Error", "Ingresa el nombre de la empresa.")
-                return
-        else:
-            messagebox.showerror("Error", "Tipo de búsqueda no válido.")
-            return
-
-        try:
-            self.status_label.config(text="Buscando empresa...")
-            self.update_idletasks()
-            if mode == "nombre":
-                company = evaluacion_accesibilidad.get_empresa_by_nombre(nombre)
-            else:
-                company = evaluacion_accesibilidad.get_empresa_by_nit(nit)
-        except Exception as exc:
-            self.status_label.config(text="")
-            messagebox.showerror("Error", str(exc))
-            return
-
-        if not company:
-            self.company_data = None
-            msg = "No se encontró empresa para ese nombre." if mode == "nombre" else "No se encontró empresa para ese NIT."
-            self.status_label.config(text=msg)
-            self.continue_btn.config(state="disabled")
-            for key in evaluacion_accesibilidad.SECTION_1_SUPABASE_MAP.keys():
-                self._set_readonly_value(key, "")
-            return
-
-        if mode == "nombre":
-            nit_value = company.get("nit_empresa")
-            if nit_value:
-                entry = self.fields.get("nit_empresa")
-                if entry:
-                    entry.delete(0, tk.END)
-                    entry.insert(0, nit_value)
-
-        self.company_data = company
-        self.status_label.config(text="Empresa encontrada.")
-        self.continue_btn.config(state="normal")
-        for key in evaluacion_accesibilidad.SECTION_1_SUPABASE_MAP.keys():
-            self._set_readonly_value(key, company.get(key))
+        target_button = self.search_name_btn if mode == "nombre" else self.search_nit_btn
+        _run_section1_company_search(
+            self,
+            mode=mode,
+            lookup=evaluacion_accesibilidad,
+            button=target_button,
+        )
 
     def _confirm_and_continue(self):
-        if not self.company_data:
-            messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
-            return
-
-        fecha_visita = _get_required_fecha_visita(self)
-        if not fecha_visita:
-            return
-        modalidad = _get_required_modalidad(self)
-        if not modalidad:
-            return
-        user_inputs = {
-            "fecha_visita": fecha_visita,
-            "modalidad": modalidad,
-            "nit_empresa": self.fields["nit_empresa"].get().strip(),
-        }
-        try:
-            evaluacion_accesibilidad.confirm_section_1(self.company_data, user_inputs)
-        except Exception as exc:
-            messagebox.showerror("Error", str(exc))
-            return
-        self._show_section_2()
+        _confirm_section1_and_continue(
+            self,
+            confirm_fn=evaluacion_accesibilidad.confirm_section_1,
+            next_step=self._show_section_2,
+        )
 
 class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
     FORM_META_ID = "condiciones_vacante"
@@ -10703,77 +11852,20 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         entry.configure(state="readonly")
 
     def _search_company(self, mode="nit"):
-        nit = self.fields["nit_empresa"].get().strip()
-        nombre = self.fields.get("nombre_busqueda").get().strip() if self.fields.get("nombre_busqueda") else ""
-        if mode == "nit":
-            if not nit:
-                messagebox.showerror("Error", "Ingresa un NIT.")
-                return
-        elif mode == "nombre":
-            if not nombre:
-                messagebox.showerror("Error", "Ingresa el nombre de la empresa.")
-                return
-        else:
-            messagebox.showerror("Error", "Tipo de búsqueda no válido.")
-            return
-
-        try:
-            self.status_label.config(text="Buscando empresa...")
-            self.update_idletasks()
-            if mode == "nombre":
-                company = condiciones_vacante.get_empresa_by_nombre(nombre)
-            else:
-                company = condiciones_vacante.get_empresa_by_nit(nit)
-        except Exception as exc:
-            self.status_label.config(text="")
-            messagebox.showerror("Error", str(exc))
-            return
-
-        if not company:
-            self.company_data = None
-            msg = "No se encontró empresa para ese nombre." if mode == "nombre" else "No se encontró empresa para ese NIT."
-            self.status_label.config(text=msg)
-            self.continue_btn.config(state="disabled")
-            for key in condiciones_vacante.SECTION_1_SUPABASE_MAP.keys():
-                self._set_readonly_value(key, "")
-            return
-
-        if mode == "nombre":
-            nit_value = company.get("nit_empresa")
-            if nit_value:
-                entry = self.fields.get("nit_empresa")
-                if entry:
-                    entry.delete(0, tk.END)
-                    entry.insert(0, nit_value)
-
-        self.company_data = company
-        self.status_label.config(text="Empresa encontrada.")
-        self.continue_btn.config(state="normal")
-        for key in condiciones_vacante.SECTION_1_SUPABASE_MAP.keys():
-            self._set_readonly_value(key, company.get(key))
+        target_button = self.search_name_btn if mode == "nombre" else self.search_nit_btn
+        _run_section1_company_search(
+            self,
+            mode=mode,
+            lookup=condiciones_vacante,
+            button=target_button,
+        )
 
     def _confirm_and_continue(self):
-        if not self.company_data:
-            messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
-            return
-
-        fecha_visita = _get_required_fecha_visita(self)
-        if not fecha_visita:
-            return
-        modalidad = _get_required_modalidad(self)
-        if not modalidad:
-            return
-        user_inputs = {
-            "fecha_visita": fecha_visita,
-            "modalidad": modalidad,
-            "nit_empresa": self.fields["nit_empresa"].get().strip(),
-        }
-        try:
-            condiciones_vacante.confirm_section_1(self.company_data, user_inputs)
-        except Exception as exc:
-            messagebox.showerror("Error", str(exc))
-            return
-        self._show_section_2()
+        _confirm_section1_and_continue(
+            self,
+            confirm_fn=condiciones_vacante.confirm_section_1,
+            next_step=self._show_section_2,
+        )
 
     def _show_section_2(self):
         self._clear_section_container()
@@ -11096,7 +12188,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             condiciones_vacante.confirm_section_2(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_2_1()
 
@@ -11211,7 +12303,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             condiciones_vacante.confirm_section_2_1(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_3()
 
@@ -11331,7 +12423,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             condiciones_vacante.confirm_section_3(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_4()
 
@@ -11415,7 +12507,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             condiciones_vacante.confirm_section_4(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_5()
 
@@ -11544,7 +12636,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             condiciones_vacante.confirm_section_5(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_6()
 
@@ -11702,7 +12794,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             condiciones_vacante.confirm_section_6(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_7()
 
@@ -11758,7 +12850,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             condiciones_vacante.confirm_section_7(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_8()
 
@@ -11888,7 +12980,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             condiciones_vacante.confirm_section_8(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         loading = LoadingDialog(self, title="Guardando")
         loading.set_status("Preparando acta...")
@@ -12201,76 +13293,20 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         entry.configure(state="readonly")
 
     def _search_company(self, mode="nit"):
-        nit = self.fields["nit_empresa"].get().strip()
-        nombre = self.fields.get("nombre_busqueda").get().strip() if self.fields.get("nombre_busqueda") else ""
-        if mode == "nit":
-            if not nit:
-                messagebox.showerror("Error", "Ingresa un NIT.")
-                return
-        elif mode == "nombre":
-            if not nombre:
-                messagebox.showerror("Error", "Ingresa el nombre de la empresa.")
-                return
-        else:
-            messagebox.showerror("Error", "Tipo de búsqueda no válido.")
-            return
-
-        try:
-            self.status_label.config(text="Buscando empresa...")
-            self.update_idletasks()
-            if mode == "nombre":
-                company = self._seleccion_module.get_empresa_by_nombre(nombre)
-            else:
-                company = self._seleccion_module.get_empresa_by_nit(nit)
-        except Exception as exc:
-            self.status_label.config(text="")
-            messagebox.showerror("Error", str(exc))
-            return
-
-        if not company:
-            self.company_data = None
-            msg = "No se encontró empresa para ese nombre." if mode == "nombre" else "No se encontró empresa para ese NIT."
-            self.status_label.config(text=msg)
-            self.continue_btn.config(state="disabled")
-            for key in self._seleccion_module.SECTION_1_SUPABASE_MAP.keys():
-                self._set_readonly_value(key, "")
-            return
-
-        if mode == "nombre":
-            nit_value = company.get("nit_empresa")
-            if nit_value:
-                entry = self.fields.get("nit_empresa")
-                if entry:
-                    entry.delete(0, tk.END)
-                    entry.insert(0, nit_value)
-
-        self.company_data = company
-        self.status_label.config(text="Empresa encontrada.")
-        self.continue_btn.config(state="normal")
-        for key in self._seleccion_module.SECTION_1_SUPABASE_MAP.keys():
-            self._set_readonly_value(key, company.get(key))
+        target_button = self.search_name_btn if mode == "nombre" else self.search_nit_btn
+        _run_section1_company_search(
+            self,
+            mode=mode,
+            lookup=self._seleccion_module,
+            button=target_button,
+        )
 
     def _confirm_and_continue(self):
-        if not self.company_data:
-            messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
-            return
-        fecha_visita = _get_required_fecha_visita(self)
-        if not fecha_visita:
-            return
-        modalidad = _get_required_modalidad(self)
-        if not modalidad:
-            return
-        user_inputs = {
-            "fecha_visita": fecha_visita,
-            "modalidad": modalidad,
-            "nit_empresa": self.fields["nit_empresa"].get().strip(),
-        }
-        try:
-            self._seleccion_module.confirm_section_1(self.company_data, user_inputs)
-        except Exception as exc:
-            messagebox.showerror("Error", str(exc))
-            return
-        self._show_section_2()
+        _confirm_section1_and_continue(
+            self,
+            confirm_fn=self._seleccion_module.confirm_section_1,
+            next_step=self._show_section_2,
+        )
 
     def _label_for_field(self, field_id):
         return getattr(self, "_section1_labels", {}).get(field_id, field_id)
@@ -13150,7 +14186,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             self._seleccion_module.confirm_section_2(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_5()
 
@@ -13238,7 +14274,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             self._seleccion_module.confirm_section_5(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_6()
 
@@ -13337,7 +14373,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             self._seleccion_module.confirm_section_6(asistentes)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         loading = LoadingDialog(self, title="Guardando")
         loading.set_status("Preparando acta...")
@@ -14394,7 +15430,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             contratacion_incluyente.confirm_section_2(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_6()
 
@@ -14407,7 +15443,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             contratacion_incluyente.confirm_section_6(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_7()
 
@@ -14493,7 +15529,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             contratacion_incluyente.confirm_section_7(asistentes)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         loading = LoadingDialog(self, title="Guardando")
         loading.set_status("Preparando acta...")
@@ -14568,77 +15604,20 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         entry.configure(state="readonly")
 
     def _search_company(self, mode="nit"):
-        nit = self.fields["nit_empresa"].get().strip()
-        nombre = self.fields.get("nombre_busqueda").get().strip() if self.fields.get("nombre_busqueda") else ""
-        if mode == "nit":
-            if not nit:
-                messagebox.showerror("Error", "Ingresa un NIT.")
-                return
-        elif mode == "nombre":
-            if not nombre:
-                messagebox.showerror("Error", "Ingresa el nombre de la empresa.")
-                return
-        else:
-            messagebox.showerror("Error", "Tipo de búsqueda no válido.")
-            return
-
-        try:
-            self.status_label.config(text="Buscando empresa...")
-            self.update_idletasks()
-            if mode == "nombre":
-                company = contratacion_incluyente.get_empresa_by_nombre(nombre)
-            else:
-                company = contratacion_incluyente.get_empresa_by_nit(nit)
-        except Exception as exc:
-            self.status_label.config(text="")
-            messagebox.showerror("Error", str(exc))
-            return
-
-        if not company:
-            self.company_data = None
-            msg = "No se encontró empresa para ese nombre." if mode == "nombre" else "No se encontró empresa para ese NIT."
-            self.status_label.config(text=msg)
-            self.continue_btn.config(state="disabled")
-            for key in contratacion_incluyente.SECTION_1_SUPABASE_MAP.keys():
-                self._set_readonly_value(key, "")
-            return
-
-        if mode == "nombre":
-            nit_value = company.get("nit_empresa")
-            if nit_value:
-                entry = self.fields.get("nit_empresa")
-                if entry:
-                    entry.delete(0, tk.END)
-                    entry.insert(0, nit_value)
-
-        self.company_data = company
-        self.status_label.config(text="Empresa encontrada.")
-        self.continue_btn.config(state="normal")
-        for key in contratacion_incluyente.SECTION_1_SUPABASE_MAP.keys():
-            self._set_readonly_value(key, company.get(key))
+        target_button = self.search_name_btn if mode == "nombre" else self.search_nit_btn
+        _run_section1_company_search(
+            self,
+            mode=mode,
+            lookup=contratacion_incluyente,
+            button=target_button,
+        )
 
     def _confirm_and_continue(self):
-        if not self.company_data:
-            messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
-            return
-
-        fecha_visita = _get_required_fecha_visita(self)
-        if not fecha_visita:
-            return
-        modalidad = _get_required_modalidad(self)
-        if not modalidad:
-            return
-        user_inputs = {
-            "fecha_visita": fecha_visita,
-            "modalidad": modalidad,
-            "nit_empresa": self.fields["nit_empresa"].get().strip(),
-        }
-        try:
-            contratacion_incluyente.confirm_section_1(self.company_data, user_inputs)
-        except Exception as exc:
-            messagebox.showerror("Error", str(exc))
-            return
-        self._show_section_2()
+        _confirm_section1_and_continue(
+            self,
+            confirm_fn=contratacion_incluyente.confirm_section_1,
+            next_step=self._show_section_2,
+        )
 
 
 class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
@@ -15253,6 +16232,14 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
         entry.configure(state="readonly")
 
     def _search_company(self, mode="nit"):
+        target_button = self.search_name_btn if mode == "nombre" else self.search_nit_btn
+        _run_section1_company_search(
+            self,
+            mode=mode,
+            lookup=induccion_organizacional,
+            button=target_button,
+        )
+        return
         nit = self.fields["nit_empresa"].get().strip()
         nombre = (
             self.fields.get("nombre_busqueda").get().strip()
@@ -15280,7 +16267,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
                 company = induccion_organizacional.get_empresa_by_nit(nit)
         except Exception as exc:
             self.status_label.config(text="")
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
 
         if not company:
@@ -15337,27 +16324,11 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
             self.continue_btn.config(state="normal")
 
     def _confirm_and_continue(self):
-        if not self.company_data:
-            messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
-            return
-
-        fecha_visita = _get_required_fecha_visita(self)
-        if not fecha_visita:
-            return
-        modalidad = _get_required_modalidad(self)
-        if not modalidad:
-            return
-        user_inputs = {
-            "fecha_visita": fecha_visita,
-            "modalidad": modalidad,
-            "nit_empresa": self.fields["nit_empresa"].get().strip(),
-        }
-        try:
-            induccion_organizacional.confirm_section_1(self.company_data, user_inputs)
-        except Exception as exc:
-            messagebox.showerror("Error", str(exc))
-            return
-        self._show_section_2()
+        _confirm_section1_and_continue(
+            self,
+            confirm_fn=induccion_organizacional.confirm_section_1,
+            next_step=self._show_section_2,
+        )
 
     def _confirm_section_2(self):
         payload = []
@@ -15383,7 +16354,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             induccion_organizacional.confirm_section_2(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_3()
 
@@ -15399,7 +16370,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             induccion_organizacional.confirm_section_3(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_4()
 
@@ -15415,7 +16386,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             induccion_organizacional.confirm_section_4(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_5()
 
@@ -15426,7 +16397,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             induccion_organizacional.confirm_section_5(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_6()
 
@@ -15443,7 +16414,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             induccion_organizacional.confirm_section_6(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._export_form()
 
@@ -15605,6 +16576,14 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         entry.configure(state="readonly")
 
     def _search_company(self, mode="nit"):
+        target_button = self.search_name_btn if mode == "nombre" else self.search_nit_btn
+        _run_section1_company_search(
+            self,
+            mode=mode,
+            lookup=induccion_operativa,
+            button=target_button,
+        )
+        return
         nit = self.fields["nit_empresa"].get().strip()
         nombre = (
             self.fields.get("nombre_busqueda").get().strip()
@@ -15632,7 +16611,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
                 company = induccion_operativa.get_empresa_by_nit(nit)
         except Exception as exc:
             self.status_label.config(text="")
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
 
         if not company:
@@ -16242,26 +17221,11 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         ttk.Button(actions, text="Finalizar", command=self._confirm_section_9).pack(side="right")
 
     def _confirm_and_continue(self):
-        if not self.company_data:
-            messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
-            return
-        fecha_visita = _get_required_fecha_visita(self)
-        if not fecha_visita:
-            return
-        modalidad = _get_required_modalidad(self)
-        if not modalidad:
-            return
-        user_inputs = {
-            "fecha_visita": fecha_visita,
-            "modalidad": modalidad,
-            "nit_empresa": self.fields["nit_empresa"].get().strip(),
-        }
-        try:
-            induccion_operativa.confirm_section_1(self.company_data, user_inputs)
-        except Exception as exc:
-            messagebox.showerror("Error", str(exc))
-            return
-        self._show_section_2()
+        _confirm_section1_and_continue(
+            self,
+            confirm_fn=induccion_operativa.confirm_section_1,
+            next_step=self._show_section_2,
+        )
 
     def _confirm_section_2(self):
         payload = []
@@ -16281,7 +17245,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             induccion_operativa.confirm_section_2(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_3()
 
@@ -16295,7 +17259,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             induccion_operativa.confirm_section_3(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_4()
 
@@ -16316,7 +17280,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             induccion_operativa.confirm_section_4(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_5()
 
@@ -16330,7 +17294,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             induccion_operativa.confirm_section_5(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_6()
 
@@ -16341,7 +17305,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             induccion_operativa.confirm_section_6(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_7()
 
@@ -16352,7 +17316,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             induccion_operativa.confirm_section_7(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_8()
 
@@ -16363,7 +17327,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             induccion_operativa.confirm_section_8(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_9()
 
@@ -16380,7 +17344,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             induccion_operativa.confirm_section_9(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._export_form()
 
@@ -16532,6 +17496,14 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         entry.configure(state="readonly")
 
     def _search_company(self, mode="nit"):
+        target_button = self.search_name_btn if mode == "nombre" else self.search_nit_btn
+        _run_section1_company_search(
+            self,
+            mode=mode,
+            lookup=sensibilizacion,
+            button=target_button,
+        )
+        return
         nit = self.fields["nit_empresa"].get().strip()
         nombre = self.fields.get("nombre_busqueda").get().strip() if self.fields.get("nombre_busqueda") else ""
         if mode == "nit":
@@ -16554,7 +17526,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
                 company = sensibilizacion.get_empresa_by_nit(nit)
         except Exception as exc:
             self.status_label.config(text="")
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
 
         if not company:
@@ -16760,32 +17732,17 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         ttk.Button(actions, text="Finalizar", command=self._confirm_section_5).pack(side="right")
 
     def _confirm_section_1(self):
-        if not self.company_data:
-            messagebox.showerror("Error", "Busca una empresa antes de confirmar.")
-            return
-        fecha_visita = _get_required_fecha_visita(self)
-        if not fecha_visita:
-            return
-        modalidad = _get_required_modalidad(self)
-        if not modalidad:
-            return
-        user_inputs = {
-            "fecha_visita": fecha_visita,
-            "modalidad": modalidad,
-            "nit_empresa": self.fields["nit_empresa"].get().strip(),
-        }
-        try:
-            sensibilizacion.confirm_section_1(self.company_data, user_inputs)
-        except Exception as exc:
-            messagebox.showerror("Error", str(exc))
-            return
-        self._show_section_2()
+        _confirm_section1_and_continue(
+            self,
+            confirm_fn=sensibilizacion.confirm_section_1,
+            next_step=self._show_section_2,
+        )
 
     def _confirm_section_2(self):
         try:
             sensibilizacion.confirm_section_2({})
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_3()
 
@@ -16794,7 +17751,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             sensibilizacion.confirm_section_3(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_4()
 
@@ -16802,7 +17759,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             sensibilizacion.confirm_section_4({})
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._show_section_5()
 
@@ -16819,7 +17776,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             sensibilizacion.confirm_section_5(payload)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
         self._export_form()
 
@@ -16883,6 +17840,10 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         self._case_summary_cache = None
         self._case_suggestion_cache = None
         self._case_cache_key = ""
+        self._buscar_vinculado_busy = False
+        self._company_lookup_hint_id = "seguimientos_company_lookup"
+        self._compensar_hint_id = "seguimientos_compensar"
+        self.status_label_widget = None
 
         self._build_header()
         self._build_body()
@@ -16913,8 +17874,8 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         tk.Label(
             header,
             text=(
-                "Flujo por persona: busca por cédula en el shared drive, "
-                "detecta o crea el caso, descarga una copia editable y sugiere la pestaña siguiente."
+                "Busca a la persona por cédula, confirma la empresa del caso "
+                "y abre la hoja correcta para continuar."
             ),
             font=FONT_SUBTITLE,
             fg="#333333",
@@ -16940,9 +17901,11 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         )
         self.cedula_combo = ttk.Combobox(search, width=30, state="normal")
         self.cedula_combo.grid(row=0, column=1, sticky="w", pady=4)
+        ui_feedback.bind_placeholder(self.cedula_combo, "Ej: 12345678")
         self.cedula_combo.bind("<KeyRelease>", self._filter_cedulas)
 
-        ttk.Button(search, text="Buscar", command=self._buscar_vinculado).grid(
+        self.buscar_vinculado_btn = ttk.Button(search, text="Buscar", style="Primary.TButton", command=self._buscar_vinculado)
+        self.buscar_vinculado_btn.grid(
             row=0, column=2, sticky="w", padx=(12, 0), pady=4
         )
 
@@ -16960,24 +17923,31 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             width=30,
         )
         self.compensar_combo.grid(row=1, column=1, sticky="w", pady=4)
+        compensar_hint = tk.Label(search, text="", font=("Arial", 9), fg="#6B6B6B", bg=COLOR_LIGHT_BG)
+        compensar_hint.grid(row=2, column=1, columnspan=2, sticky="w", pady=(2, 0))
+        ui_feedback.register_group_hint(self, self._compensar_hint_id, compensar_hint)
 
         company_lookup = tk.LabelFrame(
             container,
-            text="Resolver Empresa Si No Viene Amarrada",
+            text="Confirma la empresa del caso",
             bg=COLOR_LIGHT_BG,
             font=FONT_LABEL,
             padx=12,
             pady=10,
         )
         company_lookup.pack(fill="x", pady=(12, 0))
+        company_hint = tk.Label(company_lookup, text="", font=("Arial", 9), fg="#6B6B6B", bg=COLOR_LIGHT_BG)
+        company_hint.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        ui_feedback.register_group_hint(self, self._company_lookup_hint_id, company_hint)
 
         tk.Label(company_lookup, text="NIT empresa:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
-            row=0, column=0, sticky="w", padx=(0, 8), pady=4
+            row=1, column=0, sticky="w", padx=(0, 8), pady=4
         )
         self.company_nit_entry = ttk.Combobox(
             company_lookup, textvariable=self.company_nit_var, width=28, state="disabled", values=()
         )
-        self.company_nit_entry.grid(row=0, column=1, sticky="w", pady=4)
+        self.company_nit_entry.grid(row=1, column=1, sticky="w", pady=4)
+        ui_feedback.bind_placeholder(self.company_nit_entry, "Ej: 900123456-7")
         self.company_nit_entry.bind("<KeyRelease>", self._update_company_nit_suggestions)
         self.company_nit_entry.bind("<Button-1>", self._update_company_nit_suggestions)
         self.company_nit_entry.bind("<FocusIn>", self._update_company_nit_suggestions)
@@ -16986,18 +17956,20 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         self.company_nit_btn = ttk.Button(
             company_lookup,
             text="Buscar por NIT",
+            style="Secondary.TButton",
             command=self._buscar_empresa_manual_por_nit,
             state="disabled",
         )
-        self.company_nit_btn.grid(row=0, column=2, sticky="w", padx=(12, 0), pady=4)
+        self.company_nit_btn.grid(row=1, column=2, sticky="w", padx=(12, 0), pady=4)
 
         tk.Label(company_lookup, text="Nombre empresa:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
-            row=1, column=0, sticky="w", padx=(0, 8), pady=4
+            row=2, column=0, sticky="w", padx=(0, 8), pady=4
         )
         self.company_name_entry = ttk.Combobox(
             company_lookup, textvariable=self.company_name_search_var, width=62, state="disabled", values=()
         )
-        self.company_name_entry.grid(row=1, column=1, sticky="w", pady=4)
+        self.company_name_entry.grid(row=2, column=1, sticky="w", pady=4)
+        ui_feedback.bind_placeholder(self.company_name_entry, "Escribe al menos 2 letras")
         self.company_name_entry.bind("<KeyRelease>", self._update_company_name_suggestions)
         self.company_name_entry.bind("<Button-1>", self._update_company_name_suggestions)
         self.company_name_entry.bind("<FocusIn>", self._update_company_name_suggestions)
@@ -17006,10 +17978,11 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         self.company_name_btn = ttk.Button(
             company_lookup,
             text="Buscar por nombre",
+            style="Secondary.TButton",
             command=self._buscar_empresa_manual_por_nombre,
             state="disabled",
         )
-        self.company_name_btn.grid(row=1, column=2, sticky="w", padx=(12, 0), pady=4)
+        self.company_name_btn.grid(row=2, column=2, sticky="w", padx=(12, 0), pady=4)
 
         info = tk.LabelFrame(
             container,
@@ -17038,11 +18011,11 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         status.pack(fill="x", pady=(12, 0))
         status.grid_columnconfigure(1, weight=1)
 
-        self._add_info_row(status, 0, "Archivo / Link:", self.path_var)
+        self._add_info_row(status, 0, "Caso:", self.path_var)
         self._add_info_row(status, 1, "Empresa:", self.company_var)
         self._add_info_row(status, 2, "Seguimientos:", self.followups_var)
         self._add_info_row(status, 3, "Sugerencia:", self.suggestion_var)
-        tk.Label(
+        self.status_label_widget = tk.Label(
             status,
             textvariable=self.status_var,
             font=("Arial", 10),
@@ -17050,15 +18023,17 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             bg=COLOR_LIGHT_BG,
             anchor="w",
             justify="left",
-        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        )
+        self.status_label_widget.grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         actions = tk.Frame(container, bg=COLOR_LIGHT_BG)
         _pack_actions(actions, pad_y=(14, FORM_PADY), pad_x=False)
 
-        ttk.Button(actions, text="Regresar", command=self._close_to_hub).pack(side="left")
+        ttk.Button(actions, text="Regresar", style="Secondary.TButton", command=self._close_to_hub).pack(side="left")
         self.create_btn = ttk.Button(
             actions,
             text="Abrir / Preparar Caso",
+            style="Primary.TButton",
             command=self._abrir_preparar_caso,
             state="disabled",
         )
@@ -17066,10 +18041,13 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         self.open_btn = ttk.Button(
             actions,
             text="Abrir en Drive",
+            style="Secondary.TButton",
             command=self._abrir_archivo,
             state="disabled",
         )
         self.open_btn.pack(side="right", padx=(0, 8))
+        ui_feedback.set_group_hint(self, self._company_lookup_hint_id, "Primero busca al vinculado arriba.", state="hint")
+        ui_feedback.set_group_hint(self, self._compensar_hint_id, "Primero busca al vinculado arriba.", state="hint")
 
     def _add_info_row(self, parent, row, label, var):
         tk.Label(parent, text=label, font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
@@ -17098,12 +18076,34 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             self.company_name_btn.config(state=state)
         except Exception:
             pass
+        hint_text = ""
+        if not enabled and not self.user_row:
+            hint_text = "Primero busca al vinculado arriba."
+        ui_feedback.set_group_hint(
+            self,
+            self._company_lookup_hint_id,
+            hint_text,
+            state="hint",
+        )
 
     def _set_compensar_choice_enabled(self, enabled):
         try:
             self.compensar_combo.config(state="readonly" if enabled else "disabled")
         except Exception:
             pass
+        hint_text = ""
+        if not enabled:
+            hint_text = (
+                "Confirma la empresa del caso arriba."
+                if self.user_row
+                else "Primero busca al vinculado arriba."
+            )
+        ui_feedback.set_group_hint(
+            self,
+            self._compensar_hint_id,
+            hint_text,
+            state="hint",
+        )
 
     def _resolve_compensar_choice(self, company):
         caja = str((company or {}).get("caja_compensacion") or "").strip().lower()
@@ -17189,29 +18189,46 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         self._set_compensar_choice_enabled(bool(linked_name or linked_nit) and not compensar_choice)
 
     def _buscar_empresa_manual_por_nit(self, _event=None):
-        raw_nit = self.company_nit_var.get().strip()
+        raw_nit = ui_feedback.get_widget_value(self.company_nit_entry)
         nit = raw_nit.split(" - ", 1)[0].strip()
         if not nit:
-            messagebox.showerror("Empresa", "Ingresa el NIT para buscar la empresa.")
+            _show_inline_feedback(self, "Ingresa el NIT para buscar la empresa.", state="error")
             return
-        try:
-            company = seguimientos.get_empresa_by_nit(nit)
-        except Exception as exc:
-            messagebox.showerror("Empresa", str(exc))
-            return
-        if not company:
-            self.compensar_var.set("")
-            self._set_compensar_choice_enabled(True)
-            messagebox.showinfo("Empresa", "No se encontró empresa para ese NIT.")
-            return
-        self.linked_company = company
-        self._apply_linked_company_to_ui()
-        self.status_var.set("Empresa resuelta manualmente por NIT.")
+
+        def _worker():
+            return seguimientos.get_empresa_by_nit(nit)
+
+        def _on_success(company):
+            if not company:
+                self.compensar_var.set("")
+                self._set_compensar_choice_enabled(True)
+                _show_inline_feedback(self, "No se encontró empresa para ese NIT.", state="warning")
+                return
+            self.linked_company = company
+            self._apply_linked_company_to_ui()
+            _show_inline_feedback(self, "Empresa encontrada por NIT.", state="success")
+
+        def _on_error(exc):
+            _show_inline_feedback(self, _log_user_error("followup_case", exc), state="error")
+
+        _run_async_ui_task(
+            self,
+            busy_attr="_manual_company_lookup_busy",
+            widgets=[self.company_nit_entry, self.company_name_entry, self.company_nit_btn, self.company_name_btn],
+            loading_button=self.company_nit_btn,
+            loading_button_text="Buscando...",
+            status_label=self.status_label_widget,
+            loading_text="Buscando empresa...",
+            loading_state="loading",
+            worker=_worker,
+            on_success=_on_success,
+            on_error=_on_error,
+        )
 
     def _buscar_empresa_manual_por_nombre(self, _event=None):
-        name = self.company_name_search_var.get().strip()
+        name = ui_feedback.get_widget_value(self.company_name_entry)
         if not name:
-            messagebox.showerror("Empresa", "Ingresa el nombre para buscar la empresa.")
+            _show_inline_feedback(self, "Ingresa el nombre para buscar la empresa.", state="error")
             return
         options = list(self.company_name_entry.cget("values") or [])
         if options:
@@ -17219,21 +18236,56 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             if exact and exact != name:
                 self.company_name_search_var.set(str(exact).strip())
                 name = str(exact).strip()
-        try:
-            company = seguimientos.get_empresa_by_nombre(name)
-        except Exception as exc:
-            messagebox.showerror("Empresa", str(exc))
-            return
-        if not company:
-            self.compensar_var.set("")
-            self._set_compensar_choice_enabled(True)
-            messagebox.showinfo("Empresa", "No se encontró empresa con ese nombre.")
-            return
-        self.linked_company = company
-        self._apply_linked_company_to_ui()
-        self.status_var.set("Empresa resuelta manualmente por nombre.")
 
-    def _run_loading_job(self, *, title, initial_status, worker, on_success, on_error_title="Error"):
+        def _worker():
+            return seguimientos.get_empresa_by_nombre(name)
+
+        def _on_success(company):
+            if not company:
+                self.compensar_var.set("")
+                self._set_compensar_choice_enabled(True)
+                _show_inline_feedback(self, "No se encontró empresa con ese nombre.", state="warning")
+                return
+            self.linked_company = company
+            self._apply_linked_company_to_ui()
+            _show_inline_feedback(self, "Empresa encontrada por nombre.", state="success")
+
+        def _on_error(exc):
+            _show_inline_feedback(self, _log_user_error("followup_case", exc), state="error")
+
+        _run_async_ui_task(
+            self,
+            busy_attr="_manual_company_lookup_busy",
+            widgets=[self.company_nit_entry, self.company_name_entry, self.company_nit_btn, self.company_name_btn],
+            loading_button=self.company_name_btn,
+            loading_button_text="Buscando...",
+            status_label=self.status_label_widget,
+            loading_text="Buscando empresa...",
+            loading_state="loading",
+            worker=_worker,
+            on_success=_on_success,
+            on_error=_on_error,
+        )
+
+    def _run_loading_job(
+        self,
+        *,
+        title,
+        initial_status,
+        worker,
+        on_success,
+        on_error_context="ui_error",
+        busy_attr=None,
+        busy_widgets=None,
+    ):
+        if busy_attr and bool(getattr(self, busy_attr, False)):
+            return False
+        if busy_attr:
+            setattr(self, busy_attr, True)
+        snapshots = _capture_widget_snapshots(busy_widgets or [])
+        for widget in list(busy_widgets or []):
+            _disable_widget(widget)
+        _set_window_busy_cursor(self, True)
         dialog = LoadingDialog(self, title=title)
         dialog.set_status(initial_status)
         dialog.set_progress(8)
@@ -17256,12 +18308,18 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
                 self.after(180, _check_done)
                 return
             dialog.close()
+            _restore_widget_snapshots(snapshots)
+            _set_window_busy_cursor(self, False)
+            if busy_attr:
+                setattr(self, busy_attr, False)
             if result["error"] is not None:
-                messagebox.showerror(on_error_title, str(result["error"]))
-                return
+                _show_inline_feedback(self, _log_user_error(on_error_context, result["error"]), state="error")
+                return False
             on_success(result["value"])
+            return True
 
         self.after(180, _check_done)
+        return True
 
     def _apply_summary_result(self, *, suggestion=None, summary=None, missing_case_status=None):
         if not suggestion and not summary:
@@ -17296,7 +18354,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             self._filtered_cedulas = list(self.cedula_options)
             self.cedula_combo["values"] = self._filtered_cedulas
         except Exception as exc:
-            self.status_var.set(f"No se pudieron cargar cédulas desde Supabase: {exc}")
+            self.status_var.set(_log_user_error("linked_user_search", exc))
 
     def _filter_cedulas(self, _event=None):
         raw = self.cedula_combo.get().strip()
@@ -17307,9 +18365,9 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         self.cedula_combo["values"] = self._filtered_cedulas[:50]
 
     def _buscar_vinculado(self):
-        cedula = self.cedula_combo.get().strip()
+        cedula = ui_feedback.get_widget_value(self.cedula_combo)
         if not cedula:
-            messagebox.showerror("Error", "Ingresa una cédula.")
+            _show_inline_feedback(self, "Ingresa una cédula para buscar el caso.", state="error")
             return
         normalized = re.sub(r"\D+", "", cedula)
 
@@ -17323,7 +18381,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
                 linked_company = seguimientos.get_linked_company_for_user(row)
             except Exception:
                 linked_company = {}
-            progress("Buscando el caso en Google Drive...", 60)
+            progress("Buscando el caso...", 60)
             case_record = seguimientos.find_case_record(normalized, row.get("nombre_usuario"))
             case_path = (case_record or {}).get("local_path") if case_record else None
             case_target = (
@@ -17408,7 +18466,9 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             initial_status="Preparando la búsqueda del caso...",
             worker=_worker,
             on_success=_on_success,
-            on_error_title="Búsqueda",
+            on_error_context="linked_user_search",
+            busy_attr="_buscar_vinculado_busy",
+            busy_widgets=[self.cedula_combo, getattr(self, "buscar_vinculado_btn", None)],
         )
 
     def _refresh_suggestion(self):
@@ -17467,7 +18527,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             result = seguimientos.ensure_case_record(cedula, user_row, is_compensar=is_compensar)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return False
         self.case_record = result.get("record") or {}
         self.case_path = self.case_record.get("local_path")
@@ -17500,7 +18560,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
                 user_row["empresa_nombre"] = str(self.linked_company.get("nombre_empresa") or "").strip()
 
         def _worker(progress):
-            progress("Preparando el caso en Google Drive...", 20)
+            progress("Preparando el caso...", 20)
             result = seguimientos.ensure_case_record(cedula, user_row, is_compensar=is_compensar)
             record = result.get("record") or {}
             case_path = record.get("local_path")
@@ -17566,7 +18626,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             initial_status="Validando la cédula y preparando el caso...",
             worker=_worker,
             on_success=_on_success,
-            on_error_title="Caso",
+            on_error_context="followup_case",
         )
 
     def _abrir_archivo(self):
@@ -17578,7 +18638,13 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             if open_target and str(open_target).startswith("http"):
                 _open_url_prefer_chrome(open_target)
             elif self.case_path and os.path.exists(self.case_path):
-                os.startfile(self.case_path)
+                _open_local_file_safely(
+                    self.case_path,
+                    allowed_roots=[
+                        seguimientos._get_shared_root(),
+                        os.path.join(tempfile.gettempdir(), "reca_seguimientos_drive"),
+                    ],
+                )
             else:
                 raise RuntimeError("No se encontró una ruta o link válido del caso.")
         except Exception as exc:
@@ -17656,7 +18722,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
                     bootstrap=data.get("bootstrap"),
                 )
             except Exception as exc:
-                messagebox.showerror("Error", str(exc))
+                messagebox.showerror("Error", _log_user_error("ui_error", exc))
                 return
             _focus_window(editor)
 
@@ -17665,12 +18731,119 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             initial_status="Preparando el editor del caso...",
             worker=_worker,
             on_success=_on_success,
-            on_error_title="Seguimientos",
+            on_error_context="followup_case",
         )
 
     def _close_to_hub(self):
         _return_to_hub(self)
         self.destroy()
+
+
+class _SeguimientoDateField(tk.Frame):
+    _DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y")
+
+    def __init__(self, master, *, host, textvariable=None, width=14):
+        super().__init__(master, bg=COLOR_LIGHT_BG)
+        self.host = host
+        self.var = textvariable or tk.StringVar(master=self, value="")
+        self.always_disabled = False
+
+        self.entry = tk.Entry(self, textvariable=self.var, width=width, state="readonly")
+        self.entry.pack(side="left")
+        self.host._always_readonly_widgets.add(self.entry)
+
+        self.select_button = ttk.Button(self, text="Seleccionar", width=11, command=self.open_picker)
+        self.select_button.pack(side="left", padx=(6, 0))
+        self.clear_button = ttk.Button(self, text="Limpiar", width=8, command=self.clear)
+        self.clear_button.pack(side="left", padx=(4, 0))
+
+    def _parse_date(self, value):
+        text = str(value or "").strip()
+        if not text:
+            return None
+        for fmt in self._DATE_FORMATS:
+            try:
+                return datetime.strptime(text, fmt).date()
+            except Exception:
+                continue
+        return None
+
+    def _center_dialog(self, dialog):
+        dialog.update_idletasks()
+        parent = self.winfo_toplevel()
+        parent_x = parent.winfo_rootx()
+        parent_y = parent.winfo_rooty()
+        parent_w = parent.winfo_width() or parent.winfo_reqwidth()
+        parent_h = parent.winfo_height() or parent.winfo_reqheight()
+        dialog_w = dialog.winfo_width() or dialog.winfo_reqwidth()
+        dialog_h = dialog.winfo_height() or dialog.winfo_reqheight()
+        x = parent_x + max(0, (parent_w - dialog_w) // 2)
+        y = parent_y + max(0, (parent_h - dialog_h) // 2)
+        dialog.geometry(f"+{x}+{y}")
+
+    def set_enabled(self, editable):
+        enabled = bool(editable) and not self.always_disabled
+        self.entry.config(state="readonly" if enabled else "disabled")
+        self.select_button.config(state="normal" if enabled else "disabled")
+        self.clear_button.config(state="normal" if enabled else "disabled")
+
+    def set(self, value):
+        normalized = self._parse_date(value)
+        self.var.set(normalized.strftime("%Y-%m-%d") if normalized else "")
+
+    def get(self):
+        return str(self.var.get() or "")
+
+    def clear(self):
+        self.var.set("")
+
+    def open_picker(self):
+        if str(self.select_button.cget("state") or "") == "disabled":
+            return
+        initial_date = self._parse_date(self.var.get()) or date.today()
+        dialog = tk.Toplevel(self)
+        dialog.title("Seleccionar fecha")
+        dialog.configure(bg=COLOR_LIGHT_BG)
+        dialog.resizable(False, False)
+        dialog.transient(self.winfo_toplevel())
+
+        result = {"value": None}
+        calendar = Calendar(
+            dialog,
+            selectmode="day",
+            year=initial_date.year,
+            month=initial_date.month,
+            day=initial_date.day,
+            date_pattern="yyyy-mm-dd",
+        )
+        calendar.pack(padx=12, pady=(12, 8))
+
+        actions = tk.Frame(dialog, bg=COLOR_LIGHT_BG)
+        actions.pack(fill="x", padx=12, pady=(0, 12))
+
+        def _accept(_event=None):
+            try:
+                chosen = calendar.selection_get()
+            except Exception:
+                chosen = None
+            result["value"] = chosen
+            dialog.destroy()
+
+        def _cancel(_event=None):
+            dialog.destroy()
+
+        ttk.Button(actions, text="Cancelar", command=_cancel).pack(side="right")
+        ttk.Button(actions, text="Aceptar", command=_accept).pack(side="right", padx=(0, 8))
+
+        dialog.bind("<Return>", _accept)
+        dialog.bind("<Escape>", _cancel)
+        self._center_dialog(dialog)
+        dialog.grab_set()
+        calendar.focus_set()
+        dialog.wait_window()
+
+        if result["value"] is not None:
+            self.var.set(result["value"].strftime("%Y-%m-%d"))
 
 
 class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
@@ -17720,6 +18893,10 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         self.base_func_entries_2 = []
         self.base_dates_1 = []
         self.base_dates_2 = []
+        self.base_company_widgets = {}
+        self.base_date_widgets = {}
+        self.base_modalidad_widget = None
+        self._always_readonly_widgets = set()
         self.company_name_combo = None
 
         self.follow_vars = {}
@@ -17789,7 +18966,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             side="right", padx=(0, 8)
         )
 
-        tk.Label(
+        self.status_label_widget = tk.Label(
             self,
             textvariable=self.status_var,
             font=("Arial", 10),
@@ -17798,7 +18975,8 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             anchor="w",
             justify="left",
             wraplength=1140,
-        ).pack(fill="x", padx=FORM_PADX, pady=(0, 8))
+        )
+        self.status_label_widget.pack(fill="x", padx=FORM_PADX, pady=(0, 8))
 
     def _build_scroller(self):
         outer = tk.Frame(self, bg=COLOR_LIGHT_BG)
@@ -17826,46 +19004,30 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         for child in self.content_frame.winfo_children():
             child.destroy()
 
-    def _add_labeled_entry(self, parent, row, label, var, width=40):
+    def _add_labeled_entry(self, parent, row, label, var, width=40, readonly=False):
         tk.Label(parent, text=label, font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
             row=row, column=0, sticky="w", padx=(0, 8), pady=3
         )
         entry = tk.Entry(parent, textvariable=var, width=width)
+        if readonly:
+            entry.configure(state="readonly")
+            self._always_readonly_widgets.add(entry)
         entry.grid(row=row, column=1, sticky="w", pady=3)
         return entry
-
-    def _safe_set_date_widget(self, widget, value):
-        text = str(value or "").strip()
-        if not text:
-            try:
-                widget.delete(0, tk.END)
-            except Exception:
-                pass
-            return
-        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y"):
-            try:
-                widget.set_date(datetime.strptime(text, fmt).date())
-                return
-            except Exception:
-                continue
-        try:
-            widget.set_date(text)
-        except Exception:
-            pass
 
     def _add_labeled_date(self, parent, row, label, var, width=20):
         tk.Label(parent, text=label, font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
             row=row, column=0, sticky="w", padx=(0, 8), pady=3
         )
-        date_entry = DateEntry(
+        date_field = _SeguimientoDateField(
             parent,
+            host=self,
             textvariable=var,
             width=width,
-            date_pattern="yyyy-mm-dd",
         )
-        date_entry.grid(row=row, column=1, sticky="w", pady=3)
-        self._safe_set_date_widget(date_entry, var.get())
-        return date_entry
+        date_field.grid(row=row, column=1, sticky="w", pady=3)
+        date_field.set(var.get())
+        return date_field
 
     def _add_dictation_subsection(
         self,
@@ -17998,6 +19160,59 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             )
         self.sheet_var.set(target_sheet)
 
+    def _run_loading_job(
+        self,
+        *,
+        title,
+        initial_status,
+        worker,
+        on_success,
+        on_error_context="ui_error",
+        busy_attr=None,
+        busy_widgets=None,
+    ):
+        if busy_attr and bool(getattr(self, busy_attr, False)):
+            return False
+        if busy_attr:
+            setattr(self, busy_attr, True)
+        snapshots = _capture_widget_snapshots(busy_widgets or [])
+        for widget in list(busy_widgets or []):
+            _disable_widget(widget)
+        _set_window_busy_cursor(self, True)
+        dialog = LoadingDialog(self, title=title)
+        dialog.set_status(initial_status)
+        dialog.set_progress(8)
+        result = {"value": None, "error": None}
+
+        def _progress(status=None, progress=None):
+            _update_loading_async(dialog, status=status, progress=progress)
+
+        def _worker():
+            try:
+                result["value"] = worker(_progress)
+            except Exception as exc:
+                result["error"] = exc
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+        def _check_done():
+            if thread.is_alive():
+                self.after(180, _check_done)
+                return
+            dialog.close()
+            _restore_widget_snapshots(snapshots)
+            _set_window_busy_cursor(self, False)
+            if busy_attr:
+                setattr(self, busy_attr, False)
+            if result["error"] is not None:
+                _show_inline_feedback(self, _log_user_error(on_error_context, result["error"]), state="error")
+                return
+            on_success(result["value"])
+
+        self.after(180, _check_done)
+        return True
+
     def _is_sheet_editable(self, sheet_name):
         current = str(sheet_name or "").strip()
         if current == str(self.base_sheet_name or "").strip():
@@ -18005,6 +19220,9 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         return current == str((self.workflow or {}).get("editable_sheet") or "").strip()
 
     def _set_single_widget_edit_state(self, widget, editable):
+        if isinstance(widget, _SeguimientoDateField):
+            widget.set_enabled(editable)
+            return
         try:
             klass = str(widget.winfo_class() or "")
         except Exception:
@@ -18013,7 +19231,10 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             if klass == "Text":
                 widget.config(state="normal" if editable else "disabled")
             elif klass in {"Entry", "TEntry", "DateEntry"}:
-                widget.config(state="normal" if editable else "disabled")
+                if widget in self._always_readonly_widgets:
+                    widget.config(state="readonly" if editable else "disabled")
+                else:
+                    widget.config(state="normal" if editable else "disabled")
             elif klass == "TCombobox":
                 widget.config(state="readonly" if editable else "disabled")
             elif klass in {"Button", "TButton"}:
@@ -18034,7 +19255,18 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
                 return self.base_dates_2[pos]
         return None
 
+    def _apply_base_followup_date_states(self, active_followup):
+        try:
+            active_idx = int(active_followup or 1)
+        except Exception:
+            active_idx = 1
+        for idx, widget in enumerate(list(self.base_dates_1) + list(self.base_dates_2), start=1):
+            self._set_single_widget_edit_state(widget, idx == active_idx)
+
     def _set_widget_edit_state(self, widget, editable):
+        if isinstance(widget, _SeguimientoDateField):
+            widget.set_enabled(editable)
+            return
         try:
             klass = str(widget.winfo_class() or "")
         except Exception:
@@ -18043,12 +19275,12 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             if klass == "Text":
                 widget.config(state="normal" if editable else "disabled")
             elif klass in {"Entry", "TEntry", "DateEntry"}:
-                widget.config(state="normal" if editable else "disabled")
-            elif klass == "TCombobox":
-                if widget is self.company_name_combo:
-                    widget.config(state="normal" if editable else "disabled")
-                else:
+                if widget in self._always_readonly_widgets:
                     widget.config(state="readonly" if editable else "disabled")
+                else:
+                    widget.config(state="normal" if editable else "disabled")
+            elif klass == "TCombobox":
+                widget.config(state="readonly" if editable else "disabled")
             elif klass in {"Button", "TButton"}:
                 widget.config(state="normal" if editable else "disabled")
         except Exception:
@@ -18064,14 +19296,13 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         if current_sheet == str(self.base_sheet_name or "").strip():
             if next_followup <= 1:
                 self._set_widget_edit_state(self.content_frame, True)
+                self._apply_base_followup_date_states(1)
                 if self.save_button is not None:
                     self.save_button.config(state="normal")
                 self.status_var.set("Hoja base y seguimiento 1 habilitados hasta diligenciar el seguimiento 1.")
                 return
             self._set_widget_edit_state(self.content_frame, False)
-            next_date_widget = self._get_base_followup_date_widget(next_followup)
-            if next_date_widget is not None:
-                self._set_single_widget_edit_state(next_date_widget, True)
+            self._apply_base_followup_date_states(next_followup)
             if self.save_button is not None:
                 self.save_button.config(state="normal")
             self.status_var.set(
@@ -18095,6 +19326,10 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _render_sheet_base(self):
         payload = seguimientos.get_base_payload(self.case_target)
+        self.base_company_widgets = {}
+        self.base_date_widgets = {}
+        self.base_modalidad_widget = None
+        self.company_name_combo = None
         self.base_vars = {
             k: tk.StringVar(value=str(payload.get(k, "")))
             for k in [
@@ -18142,7 +19377,13 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         top.grid_columnconfigure(1, weight=1)
 
         row = 0
-        self._add_labeled_date(top, row, "Fecha visita:", self.base_vars["fecha_visita"], width=18)
+        self.base_date_widgets["fecha_visita"] = self._add_labeled_date(
+            top,
+            row,
+            "Fecha visita:",
+            self.base_vars["fecha_visita"],
+            width=18,
+        )
         row += 1
         tk.Label(top, text="Modalidad:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
             row=row, column=0, sticky="w", padx=(0, 8), pady=3
@@ -18155,69 +19396,32 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             width=26,
         )
         mod_combo.grid(row=row, column=1, sticky="w", pady=3)
+        self.base_modalidad_widget = mod_combo
         row += 1
-        tk.Label(top, text="Nombre empresa:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
-            row=row, column=0, sticky="w", padx=(0, 8), pady=3
-        )
-        self.company_name_combo = ttk.Combobox(
-            top,
-            textvariable=self.base_vars["nombre_empresa"],
-            values=(),
-            state="normal",
-            width=72,
-        )
-        self.company_name_combo.grid(row=row, column=1, sticky="w", pady=3)
-        self.company_name_combo.bind("<KeyRelease>", self._update_empresa_nombre_suggestions)
-        self.company_name_combo.bind("<Button-1>", self._update_empresa_nombre_suggestions)
-        self.company_name_combo.bind("<FocusIn>", self._update_empresa_nombre_suggestions)
-        self.company_name_combo.bind("<<ComboboxSelected>>", self._search_selected_or_typed_company_name)
-        self.company_name_combo.bind("<Return>", self._search_selected_or_typed_company_name)
-        row += 1
-        self._add_labeled_entry(top, row, "NIT:", self.base_vars["nit_empresa"], width=25)
-        row += 1
-        self._add_labeled_entry(top, row, "Ciudad/Municipio:", self.base_vars["ciudad_empresa"], width=40)
-        row += 1
-        self._add_labeled_entry(top, row, "Dirección:", self.base_vars["direccion_empresa"], width=70)
-        row += 1
-        self._add_labeled_entry(top, row, "Correo:", self.base_vars["correo_1"], width=60)
-        row += 1
-        self._add_labeled_entry(top, row, "Teléfonos:", self.base_vars["telefono_empresa"], width=40)
-        row += 1
-        self._add_labeled_entry(top, row, "Contacto empresa:", self.base_vars["contacto_empresa"], width=45)
-        row += 1
-        self._add_labeled_entry(top, row, "Cargo empresa:", self.base_vars["cargo"], width=45)
-        row += 1
-        self._add_labeled_entry(top, row, "Asesor:", self.base_vars["asesor"], width=40)
-        row += 1
-        self._add_labeled_entry(top, row, "Sede Compensar:", self.base_vars["sede_empresa"], width=30)
-        row += 1
-        self._add_labeled_entry(
-            top,
-            row,
-            "Empresa afiliada a Caja de Compensación:",
-            self.base_vars["caja_compensacion"],
-            width=30,
-        )
-        row += 1
-        self._add_labeled_entry(
-            top,
-            row,
-            "Profesional asignado RECA:",
-            self.base_vars["profesional_asignado"],
-            width=40,
-        )
-        row += 1
-
-        search_actions = tk.Frame(top, bg=COLOR_LIGHT_BG)
-        search_actions.grid(row=row, column=1, sticky="w", pady=(4, 0))
-        ttk.Button(search_actions, text="Buscar empresa por NIT", command=self._buscar_empresa_por_nit).pack(
-            side="left"
-        )
-        ttk.Button(
-            search_actions,
-            text="Buscar empresa por nombre",
-            command=self._buscar_empresa_por_nombre,
-        ).pack(side="left", padx=(8, 0))
+        for field_id, label, width in [
+            ("nombre_empresa", "Nombre empresa:", 72),
+            ("nit_empresa", "NIT:", 25),
+            ("ciudad_empresa", "Ciudad/Municipio:", 40),
+            ("direccion_empresa", "Dirección:", 70),
+            ("correo_1", "Correo:", 60),
+            ("telefono_empresa", "Teléfonos:", 40),
+            ("contacto_empresa", "Contacto empresa:", 45),
+            ("cargo", "Cargo empresa:", 45),
+            ("asesor", "Asesor:", 40),
+            ("sede_empresa", "Sede Compensar:", 30),
+            ("caja_compensacion", "Empresa afiliada a Caja de Compensación:", 30),
+            ("profesional_asignado", "Profesional asignado RECA:", 40),
+        ]:
+            widget = self._add_labeled_entry(
+                top,
+                row,
+                label,
+                self.base_vars[field_id],
+                width=width,
+                readonly=True,
+            )
+            self.base_company_widgets[field_id] = widget
+            row += 1
 
         vinc = tk.LabelFrame(
             self.content_frame,
@@ -18245,7 +19449,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         ]:
             self._add_labeled_entry(vinc, r, f"{label}:", self.base_vars[key], width=50)
             r += 1
-        self._add_labeled_date(
+        self.base_date_widgets["fecha_firma_contrato"] = self._add_labeled_date(
             vinc,
             r,
             "Fecha firma contrato:",
@@ -18253,7 +19457,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             width=18,
         )
         r += 1
-        self._add_labeled_date(
+        self.base_date_widgets["fecha_inicio_contrato"] = self._add_labeled_date(
             vinc,
             r,
             "Fecha inicio contrato:",
@@ -18261,7 +19465,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             width=18,
         )
         r += 1
-        self._add_labeled_date(
+        self.base_date_widgets["fecha_fin_contrato"] = self._add_labeled_date(
             vinc,
             r,
             "Fecha fin contrato:",
@@ -18341,24 +19545,85 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             tk.Label(dates, text=f"Seguimiento {i+1}:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
                 row=i, column=0, sticky="w", pady=2
             )
-            e1 = DateEntry(dates, width=22, date_pattern="yyyy-mm-dd")
+            e1_var = tk.StringVar(value=d1[i] if i < len(d1) else "")
+            e1 = _SeguimientoDateField(dates, host=self, textvariable=e1_var, width=14)
             e1.grid(row=i, column=1, sticky="w", padx=(0, 24), pady=2)
-            if i < len(d1):
-                self._safe_set_date_widget(e1, d1[i] or "")
+            e1.set(d1[i] if i < len(d1) else "")
             self.base_dates_1.append(e1)
 
             tk.Label(
                 dates, text=f"Seguimiento {i+4}:", font=FONT_LABEL, bg=COLOR_LIGHT_BG
             ).grid(row=i, column=2, sticky="w", pady=2)
-            e2 = DateEntry(dates, width=22, date_pattern="yyyy-mm-dd")
+            e2_var = tk.StringVar(value=d2[i] if i < len(d2) else "")
+            e2 = _SeguimientoDateField(dates, host=self, textvariable=e2_var, width=14)
             e2.grid(row=i, column=3, sticky="w", pady=2)
-            if i < len(d2):
-                self._safe_set_date_widget(e2, d2[i] or "")
+            e2.set(d2[i] if i < len(d2) else "")
             if self.max_seg <= 3:
-                e2.config(state="disabled")
+                e2.always_disabled = True
+                e2.set_enabled(False)
             self.base_dates_2.append(e2)
 
         self.status_var.set("Editando hoja base.")
+
+    def _build_followup_eval_actions(self, parent, specs, *, row, columnspan):
+        actions = tk.LabelFrame(
+            parent,
+            text="Acciones rápidas",
+            bg=COLOR_LIGHT_BG,
+            font=FONT_LABEL,
+            padx=10,
+            pady=8,
+        )
+        actions.grid(row=row, column=0, columnspan=columnspan, sticky="w", pady=(0, 10))
+        for row_index, (label, group_key) in enumerate(specs):
+            action_row = tk.Frame(actions, bg=COLOR_LIGHT_BG)
+            action_row.pack(fill="x", pady=(0, 6 if row_index < len(specs) - 1 else 0))
+            tk.Label(
+                action_row,
+                text=label,
+                font=FONT_LABEL,
+                bg=COLOR_LIGHT_BG,
+                width=22,
+                anchor="w",
+            ).pack(side="left", padx=(0, 8))
+            buttons = tk.Frame(action_row, bg=COLOR_LIGHT_BG)
+            buttons.pack(side="left", fill="x", expand=True)
+            for idx, option in enumerate(seguimientos.EVAL_OPTIONS):
+                ttk.Button(
+                    buttons,
+                    text=option,
+                    width=18,
+                    command=lambda selected=option, current_group=group_key: self._set_followup_eval_group_values(
+                        current_group,
+                        selected,
+                    ),
+                ).grid(
+                    row=idx // 3,
+                    column=idx % 3,
+                    sticky="w",
+                    padx=(0, 8),
+                    pady=(0, 4),
+                )
+
+    def _set_followup_eval_group_values(self, group_key, value):
+        group_map = {
+            "auto": self.follow_item_auto,
+            "item_empresa": self.follow_item_emp,
+            "empresa_eval": self.follow_emp_eval,
+        }
+        fields = list(group_map.get(str(group_key or "").strip()) or [])
+        for var in fields:
+            try:
+                var.set(str(value or ""))
+            except Exception:
+                continue
+        status_map = {
+            "auto": "autoevaluación",
+            "item_empresa": "evaluación de la empresa",
+            "empresa_eval": "evaluación empresarial",
+        }
+        group_label = status_map.get(str(group_key or "").strip(), "evaluación")
+        self.status_var.set(f"Se aplicó '{value}' a toda la {group_label}.")
 
     def _render_sheet_followup(self, idx):
         self.current_followup_index = idx
@@ -18415,15 +19680,24 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             pady=10,
         )
         items.pack(fill="x", pady=(0, 10))
-        tk.Label(items, text="Ítem", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(row=0, column=0, sticky="w")
+        self._build_followup_eval_actions(
+            items,
+            [
+                ("Aplicar a autoevaluación:", "auto"),
+                ("Aplicar a eval. empresa:", "item_empresa"),
+            ],
+            row=0,
+            columnspan=4,
+        )
+        tk.Label(items, text="Ítem", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(row=1, column=0, sticky="w")
         tk.Label(items, text="Observación", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
-            row=0, column=1, sticky="w", padx=(8, 0)
+            row=1, column=1, sticky="w", padx=(8, 0)
         )
         tk.Label(items, text="Autoevaluación", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
-            row=0, column=2, sticky="w", padx=(8, 0)
+            row=1, column=2, sticky="w", padx=(8, 0)
         )
         tk.Label(items, text="Eval. empresa", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
-            row=0, column=3, sticky="w", padx=(8, 0)
+            row=1, column=3, sticky="w", padx=(8, 0)
         )
 
         self.follow_item_obs = []
@@ -18435,10 +19709,10 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         emp_vals = payload.get("item_eval_empresa") or []
         for i, label in enumerate(labels):
             tk.Label(items, text=label, bg=COLOR_LIGHT_BG, anchor="w", justify="left").grid(
-                row=i + 1, column=0, sticky="w", pady=2
+                row=i + 2, column=0, sticky="w", pady=2
             )
             e_obs = tk.Entry(items, width=40)
-            e_obs.grid(row=i + 1, column=1, sticky="w", padx=(8, 0), pady=2)
+            e_obs.grid(row=i + 2, column=1, sticky="w", padx=(8, 0), pady=2)
             if i < len(obs_vals):
                 e_obs.insert(0, obs_vals[i] or "")
             self.follow_item_obs.append(e_obs)
@@ -18447,14 +19721,14 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             c_auto = ttk.Combobox(
                 items, textvariable=v_auto, values=seguimientos.EVAL_OPTIONS, state="readonly", width=20
             )
-            c_auto.grid(row=i + 1, column=2, sticky="w", padx=(8, 0), pady=2)
+            c_auto.grid(row=i + 2, column=2, sticky="w", padx=(8, 0), pady=2)
             self.follow_item_auto.append(v_auto)
 
             v_emp = tk.StringVar(value=emp_vals[i] if i < len(emp_vals) else "")
             c_emp = ttk.Combobox(
                 items, textvariable=v_emp, values=seguimientos.EVAL_OPTIONS, state="readonly", width=20
             )
-            c_emp.grid(row=i + 1, column=3, sticky="w", padx=(8, 0), pady=2)
+            c_emp.grid(row=i + 2, column=3, sticky="w", padx=(8, 0), pady=2)
             self.follow_item_emp.append(v_emp)
 
         middle = tk.LabelFrame(
@@ -18476,13 +19750,19 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             state="readonly",
             width=34,
         ).grid(row=0, column=1, sticky="w")
+        self._build_followup_eval_actions(
+            middle,
+            [("Aplicar a evaluación empresarial:", "empresa_eval")],
+            row=1,
+            columnspan=3,
+        )
 
-        tk.Label(middle, text="Ítem", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(row=1, column=0, sticky="w", pady=(8, 2))
+        tk.Label(middle, text="Ítem", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(row=2, column=0, sticky="w", pady=(8, 2))
         tk.Label(middle, text="Evaluación", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
-            row=1, column=1, sticky="w", padx=(8, 0), pady=(8, 2)
+            row=2, column=1, sticky="w", padx=(8, 0), pady=(8, 2)
         )
         tk.Label(middle, text="Observación", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
-            row=1, column=2, sticky="w", padx=(8, 0), pady=(8, 2)
+            row=2, column=2, sticky="w", padx=(8, 0), pady=(8, 2)
         )
 
         self.follow_emp_eval = []
@@ -18492,15 +19772,15 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         emp_obs_vals = payload.get("empresa_observacion") or []
         for i, label in enumerate(emp_labels):
             tk.Label(middle, text=label, bg=COLOR_LIGHT_BG, anchor="w", justify="left").grid(
-                row=i + 2, column=0, sticky="w", pady=2
+                row=i + 3, column=0, sticky="w", pady=2
             )
             v = tk.StringVar(value=emp_eval_vals[i] if i < len(emp_eval_vals) else "")
             ttk.Combobox(
                 middle, textvariable=v, values=seguimientos.EVAL_OPTIONS, state="readonly", width=20
-            ).grid(row=i + 2, column=1, sticky="w", padx=(8, 0), pady=2)
+            ).grid(row=i + 3, column=1, sticky="w", padx=(8, 0), pady=2)
             self.follow_emp_eval.append(v)
             e = tk.Entry(middle, width=45)
-            e.grid(row=i + 2, column=2, sticky="w", padx=(8, 0), pady=2)
+            e.grid(row=i + 3, column=2, sticky="w", padx=(8, 0), pady=2)
             if i < len(emp_obs_vals):
                 e.insert(0, emp_obs_vals[i] or "")
             self.follow_emp_obs.append(e)
@@ -18573,12 +19853,16 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
     def _copy_previous_followup_values(self):
         idx = int(self.current_followup_index or 0)
         if idx <= 1:
-            messagebox.showinfo("Seguimientos", "El seguimiento 1 no tiene un seguimiento anterior para copiar.")
+            _show_inline_feedback(
+                self,
+                "El seguimiento 1 no tiene un seguimiento anterior para copiar.",
+                state="warning",
+            )
             return
         try:
             previous = seguimientos.get_followup_payload(self.case_target, idx - 1)
         except Exception as exc:
-            messagebox.showerror("Error", f"No se pudo leer el seguimiento anterior.\n{exc}")
+            _show_inline_feedback(self, _log_user_error("followup_case", exc), state="error")
             return
 
         self.follow_vars["modalidad"].set(str(previous.get("modalidad") or ""))
@@ -18643,17 +19927,18 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
     def _buscar_empresa_por_nit(self):
         nit = self.base_vars.get("nit_empresa").get().strip() if self.base_vars.get("nit_empresa") else ""
         if not nit:
-            messagebox.showerror("Error", "Ingresa NIT para buscar empresa.")
+            _show_inline_feedback(self, "Ingresa NIT para buscar empresa.", state="error")
             return
         try:
             company = seguimientos.get_empresa_by_nit(nit)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            _show_inline_feedback(self, _log_user_error("followup_case", exc), state="error")
             return
         if not company:
-            messagebox.showinfo("Empresa", "No se encontró empresa para ese NIT.")
+            _show_inline_feedback(self, "No se encontró empresa para ese NIT.", state="warning")
             return
         self._apply_company_data(company)
+        _show_inline_feedback(self, "Empresa encontrada por NIT.", state="success")
 
     def _buscar_empresa_por_nombre(self):
         name = (
@@ -18662,17 +19947,18 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             else ""
         )
         if not name:
-            messagebox.showerror("Error", "Ingresa nombre de empresa para buscar.")
+            _show_inline_feedback(self, "Ingresa nombre de empresa para buscar.", state="error")
             return
         try:
             company = seguimientos.get_empresa_by_nombre(name)
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            _show_inline_feedback(self, _log_user_error("followup_case", exc), state="error")
             return
         if not company:
-            messagebox.showinfo("Empresa", "No se encontró empresa con ese nombre.")
+            _show_inline_feedback(self, "No se encontró empresa con ese nombre.", state="warning")
             return
         self._apply_company_data(company)
+        _show_inline_feedback(self, "Empresa encontrada por nombre.", state="success")
 
     def _apply_company_data(self, company):
         mapping = {
@@ -18703,6 +19989,40 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         payload["seguimiento_fechas_4_6"] = [e.get().strip() for e in self.base_dates_2]
         return payload
 
+    def _validate_base_payload(self, payload):
+        if self.base_date_widgets.get("fecha_visita") is not None:
+            ui_feedback.register_field(self, "fecha_visita", self.base_date_widgets.get("fecha_visita").entry)
+        if self.base_modalidad_widget is not None:
+            ui_feedback.register_field(self, "modalidad", self.base_modalidad_widget)
+        ui_feedback.clear_field_errors(self, ["fecha_visita", "modalidad"])
+        missing = []
+        if not str((payload or {}).get("fecha_visita") or "").strip():
+            missing.append("Fecha visita")
+            ui_feedback.set_field_error(self, "fecha_visita", "Completa la fecha de visita.")
+        if not str((payload or {}).get("modalidad") or "").strip():
+            missing.append("Modalidad")
+            ui_feedback.set_field_error(self, "modalidad", "Selecciona la modalidad.")
+        if not missing:
+            return True
+        _show_inline_feedback(
+            self,
+            "Completa fecha de visita y modalidad antes de guardar la hoja base.",
+            state="error",
+        )
+        if "Fecha visita" in missing:
+            widget = self.base_date_widgets.get("fecha_visita")
+            if widget is not None:
+                try:
+                    widget.select_button.focus_set()
+                except Exception:
+                    pass
+        elif self.base_modalidad_widget is not None:
+            try:
+                self.base_modalidad_widget.focus_set()
+            except Exception:
+                pass
+        return False
+
     def _collect_followup_payload(self, idx):
         payload = {
             "modalidad": self.follow_vars["modalidad"].get().strip(),
@@ -18723,71 +20043,125 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _save_current_sheet(self):
         sheet = self.sheet_var.get()
+        if sheet == seguimientos.SHEET_FINAL:
+            _show_inline_feedback(self, "Esta hoja no se diligencia manualmente.", state="warning")
+            try:
+                self.sheet_combo.focus_set()
+            except Exception:
+                pass
+            return
         if not self._is_sheet_editable(sheet):
-            messagebox.showinfo(
-                "Seguimientos",
-                "Esta hoja ya está cerrada. Solo se puede editar la hoja actualmente habilitada."
+            _show_inline_feedback(
+                self,
+                "Esta hoja ya está cerrada. Solo se puede editar la hoja actualmente habilitada.",
+                state="warning",
             )
+            try:
+                self.sheet_combo.focus_set()
+            except Exception:
+                pass
             return
         try:
             if sheet == self.base_sheet_name:
                 payload = self._collect_base_payload()
-                seguimientos.save_base_payload(self.case_target, payload)
+                if not self._validate_base_payload(payload):
+                    return
+                idx = None
+                save_kind = "base"
             elif sheet.startswith(seguimientos.SHEET_PREFIX):
                 idx = int(re.search(r"(\d+)$", sheet).group(1))
                 payload = self._collect_followup_payload(idx)
-                seguimientos.save_followup_payload(self.case_target, idx, payload)
-            else:
-                messagebox.showinfo("Ponderado final", "Esta hoja no se diligencia manualmente.")
-                return
-        except PermissionError:
-            messagebox.showerror(
-                "Archivo en uso",
-                "No se pudo guardar porque el Excel está abierto en otra aplicación.",
-            )
-            return
+                save_kind = "followup"
         except Exception as exc:
-            messagebox.showerror("Error", str(exc))
+            _show_inline_feedback(self, _log_user_error("save_sheet", exc), state="error")
             return
-        try:
-            if self.case_record and self.case_path:
-                seguimientos.sync_case_record_from_local(self.case_record, self.case_path)
-        except Exception as exc:
-            messagebox.showwarning(
-                "Sincronización con Drive",
-                f"La hoja se guardó localmente, pero falló la sincronización con Drive.\n{exc}",
-            )
-        if sheet.startswith(seguimientos.SHEET_PREFIX):
-            hub = self._get_hub_window()
-            if hub:
+        def _worker(progress):
+            progress("Preparando los datos de la hoja...", 12)
+            if save_kind == "base":
+                progress("Guardando la hoja base...", 42)
                 try:
-                    hub.record_followup_completion(
-                        case_target=self.case_target,
-                        case_path=self.case_path,
-                        case_record=self.case_record,
-                        followup_index=idx,
-                    )
+                    seguimientos.save_base_payload(self.case_target, payload)
+                except PermissionError as exc:
+                    raise RuntimeError(
+                        "No se pudo guardar porque el Excel está abierto en otra aplicación."
+                    ) from exc
+            else:
+                progress(f"Guardando seguimiento {idx}...", 42)
+                try:
+                    seguimientos.save_followup_payload(self.case_target, idx, payload)
+                except PermissionError as exc:
+                    raise RuntimeError(
+                        "No se pudo guardar porque el Excel está abierto en otra aplicación."
+                    ) from exc
+            sync_warning = ""
+            progress("Sincronizando el caso con Drive...", 72)
+            if self.case_record and self.case_path:
+                try:
+                    seguimientos.sync_case_record_from_local(self.case_record, self.case_path)
                 except Exception as exc:
-                    _log_capture(
-                        f"record_followup_completion failed case={self.case_target!r} idx={idx} err={exc}"
-                    )
-        self.status_var.set(f"Guardado exitoso en hoja: {sheet}")
-        if isinstance(self.owner, SeguimientosWindow):
-            self.owner.case_record = self.case_record
-            self.owner.case_path = self.case_path
-            self.owner.path_var.set(
-                (self.case_record or {}).get("webViewLink") or self.case_path
-            )
-            self.owner._refresh_suggestion()
-        self._refresh_workflow_state()
-        self._render_selected_sheet()
+                    sync_warning = str(exc)
+            if save_kind == "followup":
+                progress("Actualizando el estado del seguimiento...", 88)
+                hub = self._get_hub_window()
+                if hub:
+                    try:
+                        hub.record_followup_completion(
+                            case_target=self.case_target,
+                            case_path=self.case_path,
+                            case_record=self.case_record,
+                            followup_index=idx,
+                        )
+                    except Exception as exc:
+                        _log_capture(
+                            f"record_followup_completion failed case={self.case_target!r} idx={idx} err={exc}"
+                        )
+            progress("Actualizando la pantalla...", 96)
+            return {
+                "sheet": sheet,
+                "sync_warning": sync_warning,
+            }
+
+        def _on_success(result):
+            sync_warning = str((result or {}).get("sync_warning") or "").strip()
+            if sync_warning:
+                _log_capture(f"[UI] context=sync_case_record err={sync_warning}")
+                _show_inline_feedback(
+                    self,
+                    "La hoja se guardó, pero quedó pendiente la sincronización del caso.",
+                    state="warning",
+                )
+            if not sync_warning:
+                self.status_var.set(f"Guardado exitoso en hoja: {sheet}")
+            if isinstance(self.owner, SeguimientosWindow):
+                self.owner.case_record = self.case_record
+                self.owner.case_path = self.case_path
+                self.owner.path_var.set(
+                    (self.case_record or {}).get("webViewLink") or self.case_path
+                )
+                self.owner._refresh_suggestion()
+            self._refresh_workflow_state(preferred_sheet=sheet)
+            self._render_selected_sheet()
+
+        self._run_loading_job(
+            title="Guardando hoja",
+            initial_status="Preparando el guardado...",
+            worker=_worker,
+            on_success=_on_success,
+            on_error_context="save_sheet",
+        )
 
     def _open_excel(self):
         try:
             if self.case_record and str((self.case_record or {}).get("webViewLink") or "").strip():
                 _open_url_prefer_chrome(str(self.case_record.get("webViewLink")))
             elif self.case_path:
-                os.startfile(self.case_path)
+                _open_local_file_safely(
+                    self.case_path,
+                    allowed_roots=[
+                        seguimientos._get_shared_root(),
+                        os.path.join(tempfile.gettempdir(), "reca_seguimientos_drive"),
+                    ],
+                )
             else:
                 raise RuntimeError("No hay ruta o link del caso para abrir.")
         except Exception as exc:
@@ -18808,10 +20182,6 @@ if __name__ == "__main__":
             pass
     finally:
         _release_single_instance_mutex()
-
-
-
-
 
 
 

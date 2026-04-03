@@ -1,10 +1,11 @@
+import io
 import json
 import os
 import re
 import sys
 import time
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 try:
     from zoneinfo import ZoneInfo
@@ -1164,4 +1165,301 @@ def publish_evaluacion_accesibilidad_sheet(
     spreadsheet_id = str(result.get("file_id") or "").strip()
     if spreadsheet_id and format_ranges:
         set_sheet_ranges_bold(spreadsheet_id, format_ranges, bold=False)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# PDF export con metadata RECA
+# ---------------------------------------------------------------------------
+
+_MESES_ES = {
+    1: "Ene", 2: "Feb", 3: "Mar", 4: "Abr", 5: "May", 6: "Jun",
+    7: "Jul", 8: "Ago", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dic",
+}
+
+_PDF_EXPORT_FOLDER_KEY = "pdf_export_folder_id"
+_PDF_EXPORT_FOLDER_ENV = "PDF_EXPORT_FOLDER_ID"
+
+
+def _get_pdf_folder_id():
+    """Retorna el ID de la carpeta Drive donde se guardan los PDFs de actas."""
+    env_val = str(os.getenv(_PDF_EXPORT_FOLDER_ENV) or "").strip()
+    if env_val:
+        return env_val
+    config = _load_config()
+    cfg_val = str(config.get(_PDF_EXPORT_FOLDER_KEY) or "").strip()
+    if cfg_val:
+        return cfg_val
+    raise RuntimeError(
+        f"Falta {_PDF_EXPORT_FOLDER_ENV} o config.json con {_PDF_EXPORT_FOLDER_KEY}."
+    )
+
+
+def get_acta_pdf_name(tipo_acta: str, fecha_servicio: date, extra: str | None = None) -> str:
+    """Retorna el nombre del archivo PDF según los CRITERIOS DE ROTULACIÓN de RECA.
+
+    Args:
+        tipo_acta: Identificador del tipo de acta (ej. "presentacion_programa").
+        fecha_servicio: Fecha del servicio como objeto ``date``.
+        extra: Campo variable según el tipo (nombre de vacante, oferente, empresa, etc.).
+
+    Returns:
+        Nombre del archivo sin extensión.
+    """
+    d = fecha_servicio.day
+    m = _MESES_ES.get(fecha_servicio.month, str(fecha_servicio.month))
+    y = fecha_servicio.year
+    fecha_str = f"{d:02d}_{m}_{y}"
+
+    extra_clean = str(extra or "").strip()
+
+    nombres = {
+        "presentacion_programa": f"PRESENTACIÓN DEL PROGRAMA DE INCLUSIÓN LABORAL- {fecha_str}",
+        "reactivacion_programa": f"REACTIVACIÓN DEL PROGRAMA DE INCLUSIÓN LABORAL- {fecha_str}",
+        "evaluacion_accesibilidad": f"EVALUACIÓN DE ACCESIBILIDAD- {fecha_str}",
+        "condiciones_vacante": (
+            f"REVISIÓN DE LAS CONDICIONES DE LA VACANTE- {extra_clean}- {fecha_str}"
+            if extra_clean
+            else f"REVISIÓN DE LAS CONDICIONES DE LA VACANTE- {fecha_str}"
+        ),
+        "seleccion_individual": (
+            f"PROCESO DE SELECCIÓN INCLUYENTE INDIVIDUAL- {extra_clean}- {fecha_str}"
+            if extra_clean
+            else f"PROCESO DE SELECCIÓN INCLUYENTE INDIVIDUAL- {fecha_str}"
+        ),
+        "seleccion_grupal": (
+            f"PROCESO DE SELECCIÓN INCLUYENTE GRUPAL \u2013 ({extra_clean}) OFERENTES- {fecha_str}"
+            if extra_clean
+            else f"PROCESO DE SELECCIÓN INCLUYENTE GRUPAL- {fecha_str}"
+        ),
+        "contratacion_individual": (
+            f"PROCESO DE CONTRATACIÓN INCLUYENTE INDIVIDUAL- {extra_clean}- {fecha_str}"
+            if extra_clean
+            else f"PROCESO DE CONTRATACIÓN INCLUYENTE INDIVIDUAL- {fecha_str}"
+        ),
+        "contratacion_grupal": (
+            f"PROCESO CONTRATACION INCLUYENTE GRUPAL \u2013 ({extra_clean}) VINCULADOS- {fecha_str}"
+            if extra_clean
+            else f"PROCESO CONTRATACION INCLUYENTE GRUPAL- {fecha_str}"
+        ),
+        "induccion_operativa": (
+            f"INDUCCIÓN OPERATIVA- {extra_clean}- {fecha_str}"
+            if extra_clean
+            else f"INDUCCIÓN OPERATIVA- {fecha_str}"
+        ),
+        "induccion_organizacional": (
+            f"INDUCCIÓN ORGANIZACIONAL- {extra_clean}- {fecha_str}"
+            if extra_clean
+            else f"INDUCCIÓN ORGANIZACIONAL- {fecha_str}"
+        ),
+        "capacitacion_sensibilizacion": f"CAPACITACIÓN Y SENSIBILIZACIÓN -{fecha_str}",
+        "seguimiento": (
+            f"SEGUIMIENTO AL PROCESO DE INCLUSIÓN LABORAL- {extra_clean}- {fecha_str}"
+            if extra_clean
+            else f"SEGUIMIENTO AL PROCESO DE INCLUSIÓN LABORAL- {fecha_str}"
+        ),
+        "control_asistencia": (
+            f"CONTROL ASISTENCIA INCLUSIÓN LABORAL- {extra_clean}- {fecha_str}"
+            if extra_clean
+            else f"CONTROL ASISTENCIA INCLUSIÓN LABORAL- {fecha_str}"
+        ),
+        "interprete_individual": (
+            f"SERVICIO INTÉRPRETE LSC \u2013 {extra_clean} -{fecha_str}"
+            if extra_clean
+            else f"SERVICIO INTÉRPRETE LSC- {fecha_str}"
+        ),
+        "interprete_grupal": (
+            f"SERVICIO INTÉRPRETE LSC - ({extra_clean}) OFERENTES -{fecha_str}"
+            if extra_clean
+            else f"SERVICIO INTÉRPRETE LSC- {fecha_str}"
+        ),
+    }
+
+    return nombres.get(tipo_acta, f"ACTA- {fecha_str}")
+
+
+def _build_drive_service_for_pdf():
+    """Construye y retorna un cliente autenticado de Google Drive."""
+    from google.oauth2.service_account import Credentials
+    from googleapiclient.discovery import build
+
+    creds_path = _get_credentials_path()
+    credentials = Credentials.from_service_account_file(creds_path, scopes=[SCOPE])
+    return build("drive", "v3", credentials=credentials, cache_discovery=False)
+
+
+def export_google_sheet_as_pdf(service, file_id: str) -> bytes:
+    """Exporta un Google Sheets a PDF usando la Drive API y retorna los bytes del PDF.
+
+    Args:
+        service: Cliente autenticado de Google Drive.
+        file_id: ID del archivo Google Sheets a exportar.
+
+    Returns:
+        Contenido del PDF como ``bytes``.
+    """
+    from googleapiclient.http import MediaIoBaseDownload
+
+    request = service.files().export_media(
+        fileId=file_id,
+        mimeType="application/pdf",
+    )
+    buffer = io.BytesIO()
+    downloader = MediaIoBaseDownload(buffer, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    return buffer.getvalue()
+
+
+def inject_reca_metadata(pdf_bytes: bytes, metadata_dict: dict) -> bytes:
+    """Inyecta el JSON del acta en el campo /RECA_Data de la metadata del PDF.
+
+    El campo es invisible para el lector humano pero permite a RECA ODS
+    extraer la información estructurada sin depender del parser de regex.
+
+    Args:
+        pdf_bytes: Contenido original del PDF.
+        metadata_dict: Diccionario con los datos del acta a embeber.
+
+    Returns:
+        Nuevo contenido del PDF con la metadata inyectada.
+    """
+    from pypdf import PdfReader, PdfWriter
+
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    writer = PdfWriter()
+    writer.append_pages_from_reader(reader)
+    writer.add_metadata({"/RECA_Data": json.dumps(metadata_dict, ensure_ascii=False)})
+    output = io.BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+def upload_pdf_to_folder(
+    service,
+    pdf_bytes: bytes,
+    file_name: str,
+    folder_id: str,
+) -> dict:
+    """Sube el PDF (en memoria) a la carpeta de Drive especificada.
+
+    Args:
+        service: Cliente autenticado de Google Drive.
+        pdf_bytes: Contenido del PDF.
+        file_name: Nombre del archivo (sin extensión; se añade .pdf automáticamente).
+        folder_id: ID de la carpeta destino en Drive.
+
+    Returns:
+        Dict con ``file_id``, ``file_name`` y ``webViewLink``.
+    """
+    from googleapiclient.http import MediaIoBaseUpload
+
+    safe_name = _sanitize_filename(file_name) + ".pdf"
+    media = MediaIoBaseUpload(io.BytesIO(pdf_bytes), mimetype="application/pdf", resumable=False)
+    file_metadata = {
+        "name": safe_name,
+        "mimeType": "application/pdf",
+        "parents": [folder_id],
+    }
+    created = execute_google_create_with_confirmation(
+        lambda: service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields="id,name,webViewLink",
+            supportsAllDrives=True,
+        ),
+        lambda: _find_existing_pdf(service, folder_id, safe_name),
+        operation_name="drive.upload_pdf",
+        logger=_google_request_logger(),
+    )
+    _log_drive(
+        f"PDF_UPLOADED file_id={created.get('id')} name={created.get('name')!r} "
+        f"folder_id={folder_id}"
+    )
+    return {
+        "file_id": str(created.get("id") or ""),
+        "file_name": str(created.get("name") or safe_name),
+        "webViewLink": str(created.get("webViewLink") or ""),
+    }
+
+
+def _find_existing_pdf(service, folder_id: str, file_name: str) -> dict | None:
+    """Busca un PDF con el mismo nombre en la carpeta para evitar duplicados."""
+    safe_query_name = file_name.replace("'", "\\'")
+    query = (
+        f"mimeType='application/pdf' "
+        f"and name='{safe_query_name}' "
+        f"and '{folder_id}' in parents "
+        f"and trashed=false"
+    )
+    result = execute_google_request_with_retry(
+        service.files().list(
+            q=query,
+            fields="files(id,name,webViewLink)",
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True,
+            pageSize=1,
+        ),
+        operation_name="drive.find_pdf",
+        logger=_google_request_logger(),
+    )
+    files = result.get("files", [])
+    return files[0] if files else None
+
+
+def create_and_upload_acta_pdf(
+    *,
+    service,
+    sheet_file_id: str,
+    tipo_acta: str,
+    acta_metadata: dict,
+    fecha_servicio: date,
+    folder_id: str,
+    folder_name: str | None = None,
+    extra: str | None = None,
+) -> dict:
+    """Orquesta la exportación, inyección de metadata y subida del PDF del acta.
+
+    1. Exporta el Google Sheet como PDF via Drive API.
+    2. Inyecta el JSON del acta en /RECA_Data (invisible para el cliente).
+    3. Si ``folder_name`` está presente, crea o reutiliza una subcarpeta con ese
+       nombre dentro de ``folder_id`` (ej. nombre de empresa) y sube el PDF ahí.
+       Si no, sube directamente a ``folder_id``.
+
+    Args:
+        service: Cliente autenticado de Google Drive.
+        sheet_file_id: ID del Google Sheet a exportar.
+        tipo_acta: Tipo de acta (ej. "presentacion_programa").
+        acta_metadata: Diccionario de datos del acta para embeber en la metadata.
+        fecha_servicio: Fecha del servicio como ``date``.
+        folder_id: ID de la carpeta raíz de PDFs en Drive.
+        folder_name: Nombre de la subcarpeta por empresa (opcional).
+        extra: Campo extra para el nombre del archivo (vacante, oferente, etc.).
+
+    Returns:
+        Dict con ``file_id``, ``file_name`` y ``webViewLink`` del PDF subido.
+    """
+    pdf_name = get_acta_pdf_name(tipo_acta, fecha_servicio, extra=extra)
+    _log_drive(f"PDF_EXPORT_START sheet_id={sheet_file_id} tipo={tipo_acta!r} name={pdf_name!r}")
+
+    # Resolver carpeta destino: subcarpeta por empresa si se indica
+    target_folder_id = folder_id
+    clean_folder_name = str(folder_name or "").strip()
+    if clean_folder_name:
+        try:
+            target_folder_id = _get_or_create_folder(service, folder_id, clean_folder_name)
+            _log_drive(f"PDF_EXPORT_SUBFOLDER folder={clean_folder_name!r} id={target_folder_id}")
+        except Exception as exc:
+            _log_drive(f"WARN PDF_EXPORT_SUBFOLDER_FAILED folder={clean_folder_name!r} err={exc} — usando raíz")
+            target_folder_id = folder_id
+
+    pdf_bytes = export_google_sheet_as_pdf(service, sheet_file_id)
+    pdf_bytes = inject_reca_metadata(pdf_bytes, acta_metadata)
+    result = upload_pdf_to_folder(service, pdf_bytes, pdf_name, target_folder_id)
+
+    _log_drive(
+        f"PDF_EXPORT_OK file_id={result['file_id']} name={result['file_name']!r} "
+        f"folder={clean_folder_name or 'raiz'!r}"
+    )
     return result

@@ -831,10 +831,35 @@ def export_to_excel(cache=None):
     clear_cache_file()
     clear_form_cache()
 
+    # Determinar tipo_acta según tipo_visita
+    tipo_acta = "reactivacion_programa" if tipo_visita == "reactivacion" else "presentacion_programa"
+
+    # Construir metadata para embeber en el PDF (usada por RECA ODS)
+    fecha_visita_raw = section_1.get("fecha_visita") or ""
+    asistentes_raw = cache.get("section_5") or []
+    asistentes = [
+        {"nombre": str(a.get("nombre") or "").strip(), "cargo": str(a.get("cargo") or "").strip()}
+        for a in asistentes_raw
+        if isinstance(a, dict) and str(a.get("nombre") or "").strip()
+    ]
+    acta_metadata = {
+        "tipo_acta": tipo_acta,
+        "nit_empresa": str(section_1.get("nit_empresa") or "").strip(),
+        "nombre_empresa": str(empresa_nombre or "").strip(),
+        "fecha_servicio": str(fecha_visita_raw).strip(),
+        "nombre_profesional": str(section_1.get("profesional_asignado") or section_1.get("asesor") or "").strip(),
+        "modalidad_servicio": str(section_1.get("modalidad") or "").strip(),
+        "asistentes": asistentes,
+        "participantes": [],
+    }
+
     return {
         "output_path": result.get("webViewLink", ""),
         "drive_file_id": result.get("file_id", ""),
         "already_in_drive": True,
+        "tipo_acta": tipo_acta,
+        "fecha_servicio": str(fecha_visita_raw).strip(),
+        "acta_metadata": acta_metadata,
     }
 
 

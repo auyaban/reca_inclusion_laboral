@@ -1179,14 +1179,112 @@ def _drive_upload_operation_label(job):
     upload_kind = str((job or {}).get("upload_kind") or "excel_upload").strip().lower()
     if upload_kind == "evaluacion_sheet":
         return "sheet_copy"
+    if upload_kind == "pdf_export":
+        return "pdf_export"
     return "upload"
+
+
+# Tipos de acta que tienen exportación a PDF habilitada
+_PDF_EXPORT_ENABLED_TIPOS = {"presentacion_programa", "reactivacion_programa", "condiciones_vacante"}
+
+
+def _enqueue_pdf_export_job(*, sheet_file_id, tipo_acta, fecha_servicio, acta_metadata, extra_name=None, pdf_folder_id, company_name="", registro_id=""):
+    """Encola un job de exportación a PDF en la cola de uploads de Drive.
+
+    A diferencia de ``_enqueue_drive_upload_job``, este job preserva todos los
+    campos necesarios para la exportación a PDF y NO actualiza el estado en Supabase
+    al completarse (el Google Sheet ya actualizó ese estado).
+    """
+    _ensure_drive_upload_worker()
+    record = {
+        "id": str(uuid.uuid4()),
+        "upload_kind": "pdf_export",
+        "sheet_file_id": str(sheet_file_id or "").strip(),
+        "tipo_acta": str(tipo_acta or "").strip(),
+        "fecha_servicio": str(fecha_servicio or "").strip(),
+        "acta_metadata": acta_metadata if isinstance(acta_metadata, dict) else {},
+        "extra_name": str(extra_name or "").strip() or None,
+        "pdf_folder_id": str(pdf_folder_id or "").strip(),
+        "company_name": str(company_name or "").strip(),
+        "registro_id": str(registro_id or "").strip(),
+        "attempts": 0,
+        "last_error": "",
+        "next_try_at": float(time.time()),
+    }
+    with _DRIVE_UPLOAD_LOCK:
+        _DRIVE_UPLOAD_QUEUE.append(record)
+        _persist_drive_upload_queue_locked()
+    return record["id"]
+
+
+def _perform_pdf_export_attempt(job, attempted_at):
+    """Ejecuta la exportación del Google Sheet a PDF con metadata RECA.
+
+    No actualiza Supabase — el estado ya fue registrado por el job del Google Sheet.
+    """
+    from datetime import date as _date
+
+    sheet_file_id = str((job or {}).get("sheet_file_id") or "").strip()
+    tipo_acta = str((job or {}).get("tipo_acta") or "").strip()
+    fecha_servicio_str = str((job or {}).get("fecha_servicio") or "").strip()
+    acta_metadata = (job or {}).get("acta_metadata") or {}
+    extra_name_raw = (job or {}).get("extra_name")
+    extra_name = str(extra_name_raw or "").strip() or None
+    pdf_folder_id = str((job or {}).get("pdf_folder_id") or "").strip()
+
+    try:
+        if not sheet_file_id:
+            raise RuntimeError("Falta sheet_file_id en el job de PDF export.")
+        if not tipo_acta:
+            raise RuntimeError("Falta tipo_acta en el job de PDF export.")
+        if not fecha_servicio_str:
+            raise RuntimeError("Falta fecha_servicio en el job de PDF export.")
+
+        try:
+            fecha_servicio = _date.fromisoformat(fecha_servicio_str)
+        except ValueError as exc:
+            raise RuntimeError(f"Fecha de servicio inválida: {fecha_servicio_str!r}") from exc
+
+        if not pdf_folder_id:
+            pdf_folder_id = drive_upload._get_pdf_folder_id()
+
+        company_name_for_pdf = str((job or {}).get("company_name") or "").strip()
+        service = drive_upload._build_drive_service_for_pdf()
+        upload_result = drive_upload.create_and_upload_acta_pdf(
+            service=service,
+            sheet_file_id=sheet_file_id,
+            tipo_acta=tipo_acta,
+            acta_metadata=acta_metadata,
+            fecha_servicio=fecha_servicio,
+            folder_id=pdf_folder_id,
+            folder_name=company_name_for_pdf or None,
+            extra=extra_name,
+        )
+    except Exception as exc:
+        return _build_drive_upload_result_from_exception(job, exc, attempted_at=attempted_at)
+
+    uploaded_at = _get_colombia_now().isoformat()
+    return {
+        "status": "synced",
+        "error": "",
+        "attempted_at": attempted_at,
+        "uploaded_at": uploaded_at,
+        "output_path": "",
+        "remote_url": str(upload_result.get("webViewLink") or ""),
+        "drive_file_id": str(upload_result.get("file_id") or ""),
+    }
 
 
 def _perform_drive_upload_attempt(job):
     attempted_at = _get_colombia_now().isoformat()
+    upload_kind = str((job or {}).get("upload_kind") or "excel_upload").strip().lower()
+
+    # Delegación especial para PDF export (manejo propio, sin actualizar Supabase)
+    if upload_kind == "pdf_export":
+        return _perform_pdf_export_attempt(job, attempted_at)
+
     excel_path = str((job or {}).get("local_excel_path") or "").strip()
     company_name = str((job or {}).get("company_name") or "").strip()
-    upload_kind = str((job or {}).get("upload_kind") or "excel_upload").strip().lower()
     try:
         if upload_kind == "evaluacion_sheet":
             sheet_export = (job or {}).get("sheet_export") or {}
@@ -5482,6 +5580,33 @@ def _start_background_finalization(
                         },
                         completion_payload=completion_payload,
                     )
+                    # Encolar exportación a PDF si el formulario lo soporta
+                    if (
+                        drive_file_id
+                        and isinstance(export_result, dict)
+                        and str(export_result.get("tipo_acta") or "") in _PDF_EXPORT_ENABLED_TIPOS
+                    ):
+                        try:
+                            _pdf_folder_id = drive_upload._get_pdf_folder_id()
+                            _pdf_registro_id = str(
+                                (completion_result or {}).get("registro_id") or ""
+                            ).strip()
+                            _enqueue_pdf_export_job(
+                                sheet_file_id=drive_file_id,
+                                tipo_acta=str(export_result.get("tipo_acta") or ""),
+                                fecha_servicio=str(export_result.get("fecha_servicio") or ""),
+                                acta_metadata=export_result.get("acta_metadata") or {},
+                                extra_name=export_result.get("extra_name"),
+                                pdf_folder_id=_pdf_folder_id,
+                                company_name=company_name,
+                                registro_id=_pdf_registro_id,
+                            )
+                            _log_capture(
+                                f"[PDF_EXPORT] job enqueued tipo={export_result.get('tipo_acta')!r} "
+                                f"sheet_id={drive_file_id}"
+                            )
+                        except Exception as _pdf_err:
+                            _log_capture(f"[PDF_EXPORT] failed to enqueue job: {_pdf_err}")
                 else:
                     _update_loading_async(
                         loading,

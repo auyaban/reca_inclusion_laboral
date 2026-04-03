@@ -1083,12 +1083,55 @@ def _section_6_extra_rows(section_6_payload=None):
     return _get_section_6_extra_rows(cache_snapshot)
 
 
+def _get_section_8_rows(payload):
+    if isinstance(payload, dict):
+        return list(payload.get("asistentes") or [])
+    return list(payload or [])
+
+
+def _build_dynamic_layout(cache_data=None):
+    cache = FORM_CACHE if cache_data is None else (cache_data or {})
+    section_6_cfg = EXCEL_MAPPING.get("section_6", {})
+    section_6_rows = list(cache.get("section_6") or [])
+    section_6_start_row = int(section_6_cfg.get("start_row", 153) or 153)
+    section_6_base_rows = int(section_6_cfg.get("base_rows", 4) or 4)
+    section_6_extra_rows = max(0, len(section_6_rows) - section_6_base_rows)
+
+    section_8_cfg = EXCEL_MAPPING.get("section_8", {})
+    section_8_rows = _get_section_8_rows(cache.get("section_8") or [])
+    section_8_base_rows = int(section_8_cfg.get("rows", 3) or 3)
+
+    section_7_title_row = SECTION_7_TITLE_ROW + section_6_extra_rows
+    section_8_title_row = SECTION_8_TITLE_ROW + section_6_extra_rows
+
+    return {
+        "section_6": {
+            "start_row": section_6_start_row,
+            "base_rows": section_6_base_rows,
+            "total_rows": len(section_6_rows),
+            "extra_rows": section_6_extra_rows,
+        },
+        "section_7": {
+            "title_row": section_7_title_row,
+            "content_row": section_7_title_row + 1,
+        },
+        "section_8": {
+            "title_row": section_8_title_row,
+            "start_row": section_8_title_row + 1,
+            "base_rows": section_8_base_rows,
+            "total_rows": len(section_8_rows),
+        },
+    }
+
+
 def _section_7_content_row_for_payload(section_6_payload=None):
-    return SECTION_7_TITLE_ROW + 1 + _section_6_extra_rows(section_6_payload)
+    layout = _build_dynamic_layout({"section_6": list(section_6_payload or [])})
+    return int(layout["section_7"]["content_row"])
 
 
 def _section_8_start_row_for_payload(section_6_payload=None):
-    return SECTION_8_TITLE_ROW + 1 + _section_6_extra_rows(section_6_payload)
+    layout = _build_dynamic_layout({"section_6": list(section_6_payload or [])})
+    return int(layout["section_8"]["start_row"])
 
 
 def _shift_cell_reference(cell_ref, row_delta):
@@ -1122,9 +1165,11 @@ def _build_section_writes(section_id, payload):
     if section_id == "section_7":
         if not payload:
             return []
-        row_offset = _get_section_6_extra_rows()
-        cell = EXCEL_MAPPING["section_7"].get("observaciones_recomendaciones", "A159")
-        cell = _shift_cell_reference(cell, row_offset)
+        layout = _build_dynamic_layout()
+        cell = _shift_cell_reference(
+            EXCEL_MAPPING["section_7"].get("observaciones_recomendaciones", "A159"),
+            int(layout["section_6"]["extra_rows"]),
+        )
         value = payload.get("observaciones_recomendaciones", "")
         if not value:
             return []
@@ -1133,8 +1178,9 @@ def _build_section_writes(section_id, payload):
     if section_id == "section_8":
         if not payload:
             return []
+        layout = _build_dynamic_layout()
         mapping = EXCEL_MAPPING["section_8"]
-        start_row = int(mapping["start_row"]) + _get_section_6_extra_rows()
+        start_row = int(layout["section_8"]["start_row"])
         name_col = mapping["name_col"]
         cargo_col = mapping["cargo_col"]
         writes = []
@@ -1169,31 +1215,28 @@ def _build_section_writes(section_id, payload):
 
 
 def _build_row_insertions(cache):
+    layout = _build_dynamic_layout(cache)
     row_insertions = []
 
-    section_6 = list((cache or {}).get("section_6") or [])
-    section_6_cfg = EXCEL_MAPPING.get("section_6", {})
-    section_6_base_rows = int(section_6_cfg.get("base_rows", 4) or 4)
-    if section_6 and len(section_6) > section_6_base_rows:
+    section_6_layout = layout["section_6"]
+    if int(section_6_layout["total_rows"]) > int(section_6_layout["base_rows"]):
         row_insertions.append(
             {
                 "sheet_name": SHEET_NAME,
-                "start_row": int(section_6_cfg["start_row"]),
-                "base_rows": section_6_base_rows,
-                "total_rows": len(section_6),
+                "start_row": int(section_6_layout["start_row"]),
+                "base_rows": int(section_6_layout["base_rows"]),
+                "total_rows": int(section_6_layout["total_rows"]),
             }
         )
 
-    section_8 = list((cache or {}).get("section_8") or [])
-    section_8_cfg = EXCEL_MAPPING.get("section_8", {})
-    section_8_base_rows = int(section_8_cfg.get("rows", 3) or 3)
-    if section_8 and len(section_8) > section_8_base_rows:
+    section_8_layout = layout["section_8"]
+    if int(section_8_layout["total_rows"]) > int(section_8_layout["base_rows"]):
         row_insertions.append(
             {
                 "sheet_name": SHEET_NAME,
-                "start_row": int(section_8_cfg["start_row"]),
-                "base_rows": section_8_base_rows,
-                "total_rows": len(section_8),
+                "start_row": int(section_8_layout["start_row"]),
+                "base_rows": int(section_8_layout["base_rows"]),
+                "total_rows": int(section_8_layout["total_rows"]),
             }
         )
 
@@ -1202,9 +1245,9 @@ def _build_row_insertions(cache):
 
 def _write_section_with_ws(ws, section_id, payload):
     if section_id == "section_6":
-        mapping = EXCEL_MAPPING["section_6"]
-        start_row = int(mapping["start_row"])
-        base_rows = int(mapping.get("base_rows", 4) or 4)
+        layout = _build_dynamic_layout({"section_6": list(payload or [])})
+        start_row = int(layout["section_6"]["start_row"])
+        base_rows = int(layout["section_6"]["base_rows"])
         rows = list(payload or [])
         extra_rows = max(0, len(rows) - base_rows)
         insert_row = start_row + base_rows
@@ -1224,18 +1267,16 @@ def _write_section_with_ws(ws, section_id, payload):
         value = str((payload or {}).get("observaciones_recomendaciones") or "").strip()
         if not value:
             return
-        write_row = _section_7_content_row_for_payload(FORM_CACHE.get("section_6") or [])
+        write_row = int(_build_dynamic_layout()["section_7"]["content_row"])
         _log_excel(f"WRITE section=section_7 cell=A{write_row} key=observaciones_recomendaciones")
         ws_write(ws, f"A{write_row}", value)
         return
 
     if section_id == "section_8":
-        if isinstance(payload, dict):
-            rows = list(payload.get("asistentes") or [])
-        else:
-            rows = list(payload or [])
-        start_row = _section_8_start_row_for_payload(FORM_CACHE.get("section_6") or [])
-        base_rows = int(EXCEL_MAPPING.get("section_8", {}).get("rows", 3) or 3)
+        rows = _get_section_8_rows(payload)
+        layout = _build_dynamic_layout()
+        start_row = int(layout["section_8"]["start_row"])
+        base_rows = int(layout["section_8"]["base_rows"])
         extra_rows = max(0, len(rows) - base_rows)
         insert_row = start_row + base_rows
         for _ in range(extra_rows):
@@ -1409,6 +1450,31 @@ def export_to_excel(progress_callback=None):
 
     _log_excel("SUCCESS export_all (Google Sheets)")
 
+    # Construir metadata para embeber en el PDF (usada por RECA ODS)
+    section_1 = FORM_CACHE.get("section_1") or {}
+    section_2 = FORM_CACHE.get("section_2") or {}
+    fecha_visita_raw = str(section_1.get("fecha_visita") or "").strip()
+    nombre_vacante = str(section_2.get("nombre_vacante") or "").strip()
+    section_8_raw = FORM_CACHE.get("section_8") or []
+    asistentes = []
+    if isinstance(section_8_raw, list):
+        asistentes = [
+            {"nombre": str(a.get("nombre") or "").strip(), "cargo": str(a.get("cargo") or "").strip()}
+            for a in section_8_raw
+            if isinstance(a, dict) and str(a.get("nombre") or "").strip()
+        ]
+    acta_metadata = {
+        "tipo_acta": "condiciones_vacante",
+        "nit_empresa": str(section_1.get("nit_empresa") or "").strip(),
+        "nombre_empresa": str(empresa_nombre or "").strip(),
+        "fecha_servicio": fecha_visita_raw,
+        "nombre_profesional": str(section_1.get("profesional_asignado") or section_1.get("asesor") or "").strip(),
+        "modalidad_servicio": str(section_1.get("modalidad") or "").strip(),
+        "cargo_objetivo": nombre_vacante,
+        "asistentes": asistentes,
+        "participantes": [],
+    }
+
     clear_cache_file()
     clear_form_cache()
 
@@ -1416,6 +1482,10 @@ def export_to_excel(progress_callback=None):
         "output_path": result.get("webViewLink", ""),
         "drive_file_id": result.get("file_id", ""),
         "already_in_drive": True,
+        "tipo_acta": "condiciones_vacante",
+        "fecha_servicio": fecha_visita_raw,
+        "acta_metadata": acta_metadata,
+        "extra_name": nombre_vacante,
     }
 
 def register_form():

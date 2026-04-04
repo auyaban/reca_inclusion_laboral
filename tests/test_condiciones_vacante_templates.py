@@ -43,12 +43,12 @@ class CondicionesVacanteTemplateWriterTests(unittest.TestCase):
         with patch.object(cv, "ws_write") as write_mock, patch.object(cv, "_log_excel"):
             cv._write_section_with_ws(ws, "section_6", payload)
 
-        self.assertEqual(ws.insert_calls, [156, 156, 156, 156])
-        self.assertEqual(ws.copy_calls, [(155, 156)] * 4)
+        self.assertEqual(ws.insert_calls, [157, 157, 157, 157])
+        self.assertEqual(ws.copy_calls, [(156, 157)] * 4)
         written_cells = [call.args[1] for call in write_mock.call_args_list]
         self.assertEqual(
             written_cells,
-            ["A152", "A153", "A154", "A155", "A156", "A157", "A158", "A159"],
+            ["A153", "A154", "A155", "A156", "A157", "A158", "A159", "A160"],
         )
 
     def test_section_7_and_section_8_shift_after_section_6_overflow(self) -> None:
@@ -71,13 +71,13 @@ class CondicionesVacanteTemplateWriterTests(unittest.TestCase):
         self.assertEqual(
             writes,
             [
-                ("A162", "Observacion"),
-                ("E164", "Uno"),
-                ("L164", "Cargo 1"),
-                ("E165", "Dos"),
-                ("L165", "Cargo 2"),
-                ("E166", "Tres"),
-                ("L166", "Cargo 3"),
+                ("A163", "Observacion"),
+                ("E165", "Uno"),
+                ("L165", "Cargo 1"),
+                ("E166", "Dos"),
+                ("L166", "Cargo 2"),
+                ("E167", "Tres"),
+                ("L167", "Cargo 3"),
             ],
         )
 
@@ -96,8 +96,8 @@ class CondicionesVacanteTemplateWriterTests(unittest.TestCase):
         with patch.object(cv, "ws_write"), patch.object(cv, "_log_excel"):
             cv._write_section_with_ws(ws, "section_8", section_8)
 
-        self.assertEqual(ws.insert_calls, [163, 163])
-        self.assertEqual(ws.copy_calls, [(162, 163)] * 2)
+        self.assertEqual(ws.insert_calls, [164, 164])
+        self.assertEqual(ws.copy_calls, [(163, 164)] * 2)
 
     def test_section_8_overflow_shifts_insert_boundary_after_section_6_growth(self) -> None:
         ws = _DummyWorksheet()
@@ -115,8 +115,8 @@ class CondicionesVacanteTemplateWriterTests(unittest.TestCase):
         with patch.object(cv, "ws_write"), patch.object(cv, "_log_excel"):
             cv._write_section_with_ws(ws, "section_8", section_8)
 
-        self.assertEqual(ws.insert_calls, [167, 167])
-        self.assertEqual(ws.copy_calls, [(166, 167)] * 2)
+        self.assertEqual(ws.insert_calls, [168, 168])
+        self.assertEqual(ws.copy_calls, [(167, 168)] * 2)
 
 
 if __name__ == "__main__":

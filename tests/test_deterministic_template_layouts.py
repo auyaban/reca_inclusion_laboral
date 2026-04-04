@@ -180,10 +180,10 @@ class DeterministicTemplateLayoutTests(unittest.TestCase):
         ws = _worksheet("revision_condicion.xlsx", "3. REVISION DE LAS CONDICIONES")
         self.assertRowStartsWith(ws, condiciones.SECTION_7_TITLE_ROW, "7. OBSERVACIONES / RECOMENDACIONES")
         self.assertRowStartsWith(ws, condiciones.SECTION_8_TITLE_ROW, "8.ASISTENTES")
-        self.assertEqual(condiciones._section_7_content_row_for_payload([{}] * 4), 158)
-        self.assertEqual(condiciones._section_7_content_row_for_payload([{}] * 8), 162)
-        self.assertEqual(condiciones._section_8_start_row_for_payload([{}] * 4), 160)
-        self.assertEqual(condiciones._section_8_start_row_for_payload([{}] * 8), 164)
+        self.assertEqual(condiciones._section_7_content_row_for_payload([{}] * 4), 159)
+        self.assertEqual(condiciones._section_7_content_row_for_payload([{}] * 8), 163)
+        self.assertEqual(condiciones._section_8_start_row_for_payload([{}] * 4), 161)
+        self.assertEqual(condiciones._section_8_start_row_for_payload([{}] * 8), 165)
 
     def test_sensibilizacion_template_rows(self) -> None:
         ws = _worksheet("sensibilizacion.xlsx", "8. SENSIBILIZACION")

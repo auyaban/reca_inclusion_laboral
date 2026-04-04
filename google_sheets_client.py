@@ -593,6 +593,7 @@ def insert_template_block_rows(
     template_end_row,
     repeat_count=1,
     paste_type="PASTE_NORMAL",
+    copy_row_heights=False,
 ):
     spreadsheet_id = extract_spreadsheet_id(spreadsheet_id_or_url)
     total_blocks = max(0, int(repeat_count or 0))
@@ -692,6 +693,87 @@ def insert_template_block_rows(
             ),
             operation_name="sheets.copy_template_block_rows",
         )
+
+    if copy_row_heights:
+        # copyPaste PASTE_NORMAL does not copy row dimension properties (pixelSize).
+        # The inserted rows inherit their height from inheritFromBefore, which is the
+        # last row before the insertion point.  When that row is a tall "nota" cell
+        # (excluded from auto-resize), every structure row in the new blocks ends up
+        # at the wrong height.  We fix this by reading the template row heights and
+        # applying them explicitly to every copied block.
+        height_meta = execute_google_request_with_retry(
+            service.spreadsheets().get(
+                spreadsheetId=spreadsheet_id,
+                ranges=[f"'{sheet_name}'!A{start_row}:A{end_row}"],
+                includeGridData=True,
+                fields="sheets.data.rowMetadata",
+            ),
+            operation_name="sheets.get_template_row_heights",
+        )
+        row_heights: list[int] = []
+        for _sheet in height_meta.get("sheets", []):
+            for grid in _sheet.get("data", []):
+                for rm in grid.get("rowMetadata", []):
+                    pix = int(rm.get("pixelSize") or 0)
+                    row_heights.append(pix if pix > 0 else 21)
+            if row_heights:
+                break
+
+        # Pad / truncate to exactly block_height entries
+        if len(row_heights) < block_height:
+            row_heights.extend([21] * (block_height - len(row_heights)))
+        else:
+            row_heights = row_heights[:block_height]
+
+        height_requests = []
+        for block_idx in range(total_blocks):
+            dest_start = insert_index + (block_idx * block_height)
+            # Group consecutive rows that share the same height into one request
+            run_start = dest_start
+            run_h = row_heights[0]
+            for i in range(1, block_height):
+                h = row_heights[i]
+                if h == run_h:
+                    continue
+                height_requests.append(
+                    {
+                        "updateDimensionProperties": {
+                            "range": {
+                                "sheetId": sheet_id,
+                                "dimension": "ROWS",
+                                "startIndex": run_start,
+                                "endIndex": dest_start + i,
+                            },
+                            "properties": {"pixelSize": run_h},
+                            "fields": "pixelSize",
+                        }
+                    }
+                )
+                run_start = dest_start + i
+                run_h = h
+            height_requests.append(
+                {
+                    "updateDimensionProperties": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "dimension": "ROWS",
+                            "startIndex": run_start,
+                            "endIndex": dest_start + block_height,
+                        },
+                        "properties": {"pixelSize": run_h},
+                        "fields": "pixelSize",
+                    }
+                }
+            )
+
+        if height_requests:
+            execute_google_request_with_retry(
+                service.spreadsheets().batchUpdate(
+                    spreadsheetId=spreadsheet_id,
+                    body={"requests": height_requests},
+                ),
+                operation_name="sheets.copy_template_row_heights",
+            )
 
     return {
         "sheetId": sheet_id,

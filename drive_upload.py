@@ -1002,6 +1002,7 @@ def publish_sheet_from_template(
                 template_end_row = int(row_spec.get("template_end_row") or 0)
                 repeat_count = int(row_spec.get("repeat_count") or 0)
                 paste_type = str(row_spec.get("paste_type") or "PASTE_NORMAL").strip() or "PASTE_NORMAL"
+                copy_row_heights = bool(row_spec.get("copy_row_heights", False))
 
                 if template_start_row > 0 and template_end_row >= template_start_row:
                     insert_at_row = int(row_spec.get("insert_at_row") or start_row or 0)
@@ -1021,6 +1022,7 @@ def publish_sheet_from_template(
                         template_end_row=template_end_row,
                         repeat_count=inserted,
                         paste_type=paste_type,
+                        copy_row_heights=copy_row_heights,
                     )
                     _log_drive(
                         f"INSERT_TEMPLATE_BLOCK_ROWS id={spreadsheet_id} sheet={sheet_name!r} "

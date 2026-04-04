@@ -1023,6 +1023,10 @@ def _build_section_2_row_insertions(vinculados):
             "template_start_row": VINCULADO_FIRST_BLOCK_START_ROW,
             "template_end_row": VINCULADO_FIRST_BLOCK_START_ROW + VINCULADO_BLOCK_HEIGHT - 1,
             "repeat_count": total_vinculados - 1,
+            # copyPaste PASTE_NORMAL does not copy row heights; restore them from
+            # the template block so structure rows in new blocks are not inflated
+            # by the tall "nota" row they inherit from inheritFromBefore.
+            "copy_row_heights": True,
         }
     ]
 
@@ -1089,15 +1093,13 @@ def _build_section_7_row_insertions(payload, num_vinculados=1):
     ]
 
 
-def _build_auto_resize_excluded_rows(num_vinculados=1):
-    total = max(1, int(num_vinculados or 1))
-    excluded_rows = set()
-    trailing_offsets = {1, 50, 51}
-    for idx in range(total):
-        block_start_row = _section_2_group_block_start_row(idx)
-        for offset in trailing_offsets:
-            excluded_rows.add(block_start_row + offset)
-    return {SHEET_NAME: sorted(excluded_rows)}
+def _build_auto_resize_excluded_rows():
+    # Only the three fixed rows of the first block are excluded from auto-resize:
+    #   row 17  — structure / header row inside block 1 (no content writes)
+    #   row 66  — rutas_atencion_nivel_apoyo / observacion (last data pair)
+    #   row 67  — rutas_atencion_nota (last "nota" cell, intentionally fixed height)
+    # New vinculado blocks receive full auto-resize on all their rows.
+    return {SHEET_NAME: [17, 66, 67]}
 
 
 def _build_section_1_writes(payload):
@@ -1228,7 +1230,7 @@ def export_to_excel(clear_cache=True):
         folder_name=_sanitize_filename(empresa_nombre),
         row_insertions=row_insertions or None,
         checkbox_cells=checkbox_cells or None,
-        auto_resize_excluded_rows=_build_auto_resize_excluded_rows(num_vinculados=num_vinculados),
+        auto_resize_excluded_rows=_build_auto_resize_excluded_rows(),
     )
 
     _log_excel("SUCCESS export_all")

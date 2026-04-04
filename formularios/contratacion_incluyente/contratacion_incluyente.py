@@ -1093,13 +1093,23 @@ def _build_section_7_row_insertions(payload, num_vinculados=1):
     ]
 
 
-def _build_auto_resize_excluded_rows():
-    # Only the three fixed rows of the first block are excluded from auto-resize:
-    #   row 17  — structure / header row inside block 1 (no content writes)
-    #   row 66  — rutas_atencion_nivel_apoyo / observacion (last data pair)
-    #   row 67  — rutas_atencion_nota (last "nota" cell, intentionally fixed height)
-    # New vinculado blocks receive full auto-resize on all their rows.
-    return {SHEET_NAME: [17, 66, 67]}
+def _build_auto_resize_excluded_rows(num_vinculados=1):
+    # For every vinculado block, three rows are excluded from auto-resize so that
+    # their template heights are preserved:
+    #   offset +1  → row 17, 69, 121 … (structure/header row, no writes — exclusion
+    #                is redundant but kept for explicitness per design intent)
+    #   offset +50 → row 66, 118, 170 … (rutas_atencion_nivel_apoyo / observacion)
+    #   offset +51 → row 67, 119, 171 … (rutas_atencion_nota, intentionally fixed height)
+    # The height-inflation bug for structure rows (offsets 0–3) is handled separately
+    # via copy_row_heights=True in _build_section_2_row_insertions, not here.
+    total = max(1, int(num_vinculados or 1))
+    excluded_rows: set[int] = set()
+    for idx in range(total):
+        block_start_row = _section_2_group_block_start_row(idx)
+        excluded_rows.add(block_start_row + 1)
+        excluded_rows.add(block_start_row + 50)
+        excluded_rows.add(block_start_row + 51)
+    return {SHEET_NAME: sorted(excluded_rows)}
 
 
 def _build_section_1_writes(payload):
@@ -1230,7 +1240,7 @@ def export_to_excel(clear_cache=True):
         folder_name=_sanitize_filename(empresa_nombre),
         row_insertions=row_insertions or None,
         checkbox_cells=checkbox_cells or None,
-        auto_resize_excluded_rows=_build_auto_resize_excluded_rows(),
+        auto_resize_excluded_rows=_build_auto_resize_excluded_rows(num_vinculados=num_vinculados),
     )
 
     _log_excel("SUCCESS export_all")

@@ -45,7 +45,7 @@ SECTION_2_LAST_COLUMN = "Q"
 
 # Base row positions for 1 vinculado (shift by (N-1)*BLOCK_HEIGHT for N vinculados)
 SECTION_6_BASE_AJUSTES_ROW = 70        # ajustes text row
-SECTION_7_BASE_START_ROW = 76          # first asistente data row
+SECTION_7_BASE_START_ROW = 75          # first asistente data row (row 76 removed from master)
 SECTION_7_NOMBRE_COL = "C"
 SECTION_7_CARGO_COL = "K"
 SECTION_6_TITLE_ROW_BY_TEMPLATE = {
@@ -53,8 +53,8 @@ SECTION_6_TITLE_ROW_BY_TEMPLATE = {
     TEMPLATE_VARIANT_GROUP_2_PLUS: 69,
 }
 SECTION_7_TITLE_ROW_BY_TEMPLATE = {
-    TEMPLATE_VARIANT_INDIVIDUAL: 75,
-    TEMPLATE_VARIANT_GROUP_2_PLUS: 75,
+    TEMPLATE_VARIANT_INDIVIDUAL: 74,
+    TEMPLATE_VARIANT_GROUP_2_PLUS: 74,
 }
 
 

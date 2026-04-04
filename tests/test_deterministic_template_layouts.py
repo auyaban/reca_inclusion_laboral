@@ -118,7 +118,7 @@ class DeterministicTemplateLayoutTests(unittest.TestCase):
         )
         self.assertEqual(
             contratacion.SECTION_7_TITLE_ROW_BY_TEMPLATE[contratacion.TEMPLATE_VARIANT_INDIVIDUAL],
-            75,
+            74,
         )
         self.assertEqual(contratacion.VINCULADO_CELL_MAP["nombre_oferente"], ("C", 20))
         self.assertEqual(contratacion.VINCULADO_CELL_MAP["rutas_atencion_nota"], ("M", 67))

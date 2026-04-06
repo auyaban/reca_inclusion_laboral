@@ -899,10 +899,10 @@ EXCEL_MAPPING = {
         "observaciones_generales": "A205",
     },
     "section_7": {
-        "cargos_compatibles": "A207",
+        "cargos_compatibles": "A208",
     },
     "section_8": {
-        "start_row": 211,
+        "start_row": 212,
         "name_col": "C",
         "cargo_col": "O",
         "label_name_col": "A",

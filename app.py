@@ -5253,15 +5253,30 @@ def _refresh_section_dictation_button(window):
         x = title.winfo_x() + title.winfo_width() + 12
         y = title.winfo_y() - 2
         button.place(x=x, y=max(0, y))
+    except tk.TclError:
+        try:
+            if getattr(window, "_section_dictation_button", None) is button:
+                window._section_dictation_button = None
+        except Exception:
+            pass
+        return
     except Exception:
         pass
 
-    if getattr(helper, "_is_processing", False):
-        button.configure(text="🎤 Procesando...", state="disabled")
-    elif getattr(helper, "_is_recording", False):
-        button.configure(text="🎤 Detener", state="normal")
-    else:
-        button.configure(text="🎤 Dictar", state="normal" if helper._can_dictate() else "disabled")
+    try:
+        if getattr(helper, "_is_processing", False):
+            button.configure(text="🎤 Procesando...", state="disabled")
+        elif getattr(helper, "_is_recording", False):
+            button.configure(text="🎤 Detener", state="normal")
+        else:
+            button.configure(text="🎤 Dictar", state="normal" if helper._can_dictate() else "disabled")
+    except tk.TclError:
+        try:
+            if getattr(window, "_section_dictation_button", None) is button:
+                window._section_dictation_button = None
+        except Exception:
+            pass
+        return
 
     try:
         window._section_dictation_after_id = window.after(

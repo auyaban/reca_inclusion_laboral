@@ -27,6 +27,29 @@ class CommonPathTests(unittest.TestCase):
 
         self.assertTrue(str(output_path).startswith(local_app_data))
 
+    def test_ensure_roaming_service_account_restores_bundle_and_updates_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            roaming_dir = Path(tmpdir) / "roaming"
+            bundle_dir = Path(tmpdir) / "bundle"
+            bundle_dir.mkdir(parents=True, exist_ok=True)
+            bundled_creds = bundle_dir / common.DEFAULT_SERVICE_ACCOUNT_FILE_NAME
+            bundled_creds.write_text('{"type":"service_account"}', encoding="utf-8")
+
+            with patch.object(common, "_get_roaming_app_dir", return_value=str(roaming_dir)):
+                with patch.object(common, "_get_bundle_dir", return_value=str(bundle_dir)):
+                    with patch.object(common, "_get_project_root", return_value=str(bundle_dir)):
+                        restored = common._ensure_roaming_service_account_file()
+            restored_path = Path(restored)
+            self.assertEqual(restored_path, roaming_dir / common.DEFAULT_SERVICE_ACCOUNT_FILE_NAME)
+            self.assertTrue(restored_path.exists())
+            self.assertEqual(restored_path.read_text(encoding="utf-8"), '{"type":"service_account"}')
+            env_path = roaming_dir / ".env"
+            self.assertTrue(env_path.exists())
+            self.assertIn(
+                "GOOGLE_SERVICE_ACCOUNT_FILE=service-account.json",
+                env_path.read_text(encoding="utf-8"),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

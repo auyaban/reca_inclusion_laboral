@@ -33,6 +33,7 @@ from logging_utils import log_drive_event
 from formularios.common import (
     DEFAULT_SERVICE_ACCOUNT_FILE_NAME,
     FORBIDDEN_CONFIG_KEYS,
+    _ensure_roaming_service_account_file,
     _get_roaming_app_dir,
     _load_env_file,
     _load_json_config,
@@ -88,6 +89,7 @@ def _split_filename(filename):
 
 
 def _get_credentials_path():
+    restored_path = _ensure_roaming_service_account_file()
     runtime_env, env_source = _load_env_file(".env", include_source=True)
     path = (
         os.getenv("GOOGLE_DRIVE_SA_JSON")
@@ -104,9 +106,13 @@ def _get_credentials_path():
     search_dirs.extend([_get_bundle_dir(), os.getcwd()])
     if path:
         resolved_path = _resolve_existing_path(path, base_dirs=search_dirs)
-        if not resolved_path:
-            raise RuntimeError("El archivo de credenciales de Google Drive configurado no es válido.")
-        return resolved_path
+        if resolved_path:
+            return resolved_path
+        if restored_path:
+            return restored_path
+        raise RuntimeError("El archivo de credenciales de Google Drive configurado no es válido.")
+    if restored_path:
+        return restored_path
     resolved_path = _resolve_existing_path(DEFAULT_SERVICE_ACCOUNT_FILE_NAME, base_dirs=search_dirs)
     if not resolved_path:
         raise RuntimeError(

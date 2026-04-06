@@ -23,6 +23,7 @@ from openpyxl.utils.cell import range_boundaries
 from formularios.common import (
     DEFAULT_SERVICE_ACCOUNT_FILE_NAME,
     FORBIDDEN_CONFIG_KEYS,
+    _ensure_roaming_service_account_file,
     _get_roaming_app_dir,
     _load_env_file,
     _load_json_config,
@@ -79,6 +80,7 @@ def _service_account_search_dirs(env_source=None):
 
 
 def _get_credentials_path():
+    restored_path = _ensure_roaming_service_account_file()
     runtime_env, env_source = _load_env_file(".env", include_source=True)
     env_path = str(
         os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
@@ -90,9 +92,13 @@ def _get_credentials_path():
     search_dirs = _service_account_search_dirs(env_source)
     if env_path:
         path = _resolve_existing_path(env_path, base_dirs=search_dirs)
-        if not path:
-            raise RuntimeError("El archivo de credenciales de Google Sheets configurado no es válido.")
-        return path
+        if path:
+            return path
+        if restored_path:
+            return restored_path
+        raise RuntimeError("El archivo de credenciales de Google Sheets configurado no es válido.")
+    if restored_path:
+        return restored_path
     path = _resolve_existing_path(DEFAULT_SERVICE_ACCOUNT_FILE_NAME, base_dirs=search_dirs)
     if not path:
         raise RuntimeError(

@@ -106,6 +106,7 @@ from formularios.common import (
     _supabase_auth_update_password,
     _clear_supabase_session,
     _get_desktop_dir,
+    _ensure_roaming_service_account_file,
     _load_env_file,
     _extract_public_error_detail,
     _get_local_app_cache_dir,
@@ -20890,6 +20891,10 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
 
 
 if __name__ == "__main__":
+    try:
+        _ensure_roaming_service_account_file()
+    except Exception:
+        pass
     if not _acquire_single_instance_mutex():
         _show_single_instance_warning()
         raise SystemExit(0)

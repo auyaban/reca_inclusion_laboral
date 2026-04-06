@@ -22,6 +22,7 @@ import re
 import time
 import unicodedata
 import json
+import shutil
 import stat
 import sys
 import threading
@@ -222,6 +223,81 @@ def _load_env_file(env_path=".env", include_source=False):
     if include_source:
         return env, chosen
     return env
+
+
+def _atomic_write_text_file(path, content):
+    target = str(path or "").strip()
+    if not target:
+        return
+    parent = os.path.dirname(target)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp_path = f"{target}.{uuid.uuid4().hex}.tmp"
+    with open(tmp_path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(content)
+    os.replace(tmp_path, target)
+
+
+def _upsert_env_value(env_path, key, value):
+    target = str(env_path or "").strip()
+    clean_key = str(key or "").strip()
+    if not target or not clean_key:
+        return
+    rows = []
+    found = False
+    if os.path.exists(target):
+        try:
+            with open(target, "r", encoding="utf-8") as handle:
+                rows = handle.read().splitlines()
+        except OSError:
+            rows = []
+    updated_rows = []
+    for raw in rows:
+        line = str(raw or "")
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in line:
+            row_key, _row_value = line.split("=", 1)
+            normalized_key = row_key.strip().lstrip("\ufeff")
+            if normalized_key == clean_key:
+                updated_rows.append(f"{clean_key}={value}")
+                found = True
+                continue
+        updated_rows.append(line)
+    if not found:
+        updated_rows.append(f"{clean_key}={value}")
+    _atomic_write_text_file(target, "\n".join(updated_rows).rstrip() + "\n")
+
+
+def _get_bundled_service_account_path():
+    search_dirs = [
+        _get_bundle_dir(),
+        _get_project_root(),
+        os.getcwd(),
+    ]
+    return _resolve_existing_path(
+        DEFAULT_SERVICE_ACCOUNT_FILE_NAME,
+        base_dirs=search_dirs,
+    )
+
+
+def _ensure_roaming_service_account_file():
+    roaming_dir = _get_roaming_app_dir(create=True)
+    if not roaming_dir:
+        return ""
+    os.makedirs(roaming_dir, exist_ok=True)
+    target_path = os.path.join(roaming_dir, DEFAULT_SERVICE_ACCOUNT_FILE_NAME)
+    if not os.path.exists(target_path):
+        source_path = _get_bundled_service_account_path()
+        if source_path and os.path.abspath(source_path) != os.path.abspath(target_path):
+            shutil.copyfile(source_path, target_path)
+    if os.path.exists(target_path):
+        _upsert_env_value(
+            os.path.join(roaming_dir, ".env"),
+            "GOOGLE_SERVICE_ACCOUNT_FILE",
+            DEFAULT_SERVICE_ACCOUNT_FILE_NAME,
+        )
+        return os.path.normpath(target_path)
+    return ""
 
 
 def _resolve_env_candidates(env_path=".env"):

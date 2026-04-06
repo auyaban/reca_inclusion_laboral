@@ -28,6 +28,18 @@ class RuntimeEnvResolutionTests(unittest.TestCase):
 
         self.assertEqual(resolved, os.fspath(creds_path))
 
+    def test_drive_upload_credentials_path_falls_back_to_restored_roaming_file(self) -> None:
+        with patch.object(
+            drive_upload,
+            "_load_env_file",
+            return_value=({"GOOGLE_SERVICE_ACCOUNT_FILE": "missing.json"}, "C:/fake/.env"),
+        ):
+            with patch.object(drive_upload, "_ensure_roaming_service_account_file", return_value="C:/roaming/service-account.json"):
+                with patch.object(drive_upload, "_resolve_existing_path", return_value=""):
+                    resolved = drive_upload._get_credentials_path()
+
+        self.assertEqual(resolved, "C:/roaming/service-account.json")
+
     def test_google_sheets_default_spreadsheet_id_reads_env_file(self) -> None:
         spreadsheet_url = "https://docs.google.com/spreadsheets/d/demoSheetId-123/edit#gid=0"
 
@@ -57,6 +69,22 @@ class RuntimeEnvResolutionTests(unittest.TestCase):
                         resolved = google_sheets_client._get_credentials_path()
 
         self.assertEqual(resolved, os.fspath(creds_path))
+
+    def test_google_sheets_credentials_path_falls_back_to_restored_roaming_file(self) -> None:
+        with patch.object(
+            google_sheets_client,
+            "_load_env_file",
+            return_value=({"GOOGLE_SERVICE_ACCOUNT_FILE": "missing.json"}, "C:/fake/.env"),
+        ):
+            with patch.object(
+                google_sheets_client,
+                "_ensure_roaming_service_account_file",
+                return_value="C:/roaming/service-account.json",
+            ):
+                with patch.object(google_sheets_client, "_resolve_existing_path", return_value=""):
+                    resolved = google_sheets_client._get_credentials_path()
+
+        self.assertEqual(resolved, "C:/roaming/service-account.json")
 
     def test_seguimientos_template_id_uses_master_template_id(self) -> None:
         with patch.object(seguimientos, "get_master_template_id", return_value="masterSheetId-789"):

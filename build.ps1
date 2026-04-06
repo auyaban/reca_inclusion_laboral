@@ -147,8 +147,11 @@ if (-not [System.IO.Path]::IsPathRooted($googleServiceAccount)) {
     $googleServiceAccount = Join-Path (Split-Path -Parent $envPath) $googleServiceAccount
 }
 $googleServiceAccountPath = (Resolve-Path $googleServiceAccount).Path
-$googleServiceAccountFileName = [System.IO.Path]::GetFileName($googleServiceAccountPath)
+$googleServiceAccountFileName = "service-account.json"
 $googleServiceAccountSourcePath = $googleServiceAccountPath.Replace('"', '""')
+$bundledServiceAccountPath = Join-Path $root ".build\service-account.json"
+New-Item -ItemType Directory -Path (Split-Path -Parent $bundledServiceAccountPath) -Force | Out-Null
+Copy-Item -Path $googleServiceAccountPath -Destination $bundledServiceAccountPath -Force
 
 $installerConfig = @"
 #define SupabaseUrl "$supabaseUrl"
@@ -198,6 +201,7 @@ $pyiArgs = @(
     "--add-data", "templates;templates",
     "--add-data", "Diccionario.txt;.",
     "--add-data", "VERSION;.",
+    "--add-data", "$bundledServiceAccountPath;.",
     "--hidden-import", "win32com",
     "--hidden-import", "win32com.client",
     "--hidden-import", "pythoncom",
@@ -222,6 +226,7 @@ $requiredRuntimePaths = @(
     "config.json",
     "Diccionario.txt",
     "VERSION",
+    "service-account.json",
     "templates"
 )
 

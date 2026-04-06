@@ -111,10 +111,33 @@ class EvaluacionAccesibilidadWindowTests(_TkTestCase):
                 free_text_widgets = []
                 for widgets in fields.values():
                     for key, widget in widgets.items():
-                        if key in {"observaciones", "detalle"}:
+                        if key in {"observaciones", "detalle", "texto"}:
                             free_text_widgets.append(widget)
                             self.assertIsInstance(widget, tk.Text)
                 self.assertTrue(free_text_widgets)
+
+    def test_detail_text_widgets_start_with_two_lines(self) -> None:
+        window = self._create_window()
+
+        window._show_section_2_2()
+        detail_widget = next(
+            widgets["texto"]
+            for widgets in window.section2_2_fields.values()
+            if "texto" in widgets
+        )
+
+        self.assertIsInstance(detail_widget, tk.Text)
+        self.assertEqual(int(detail_widget.cget("height")), 2)
+
+        window._show_section_2_4()
+        detail_widget = next(
+            widgets["detalle"]
+            for widgets in window.section2_4_fields.values()
+            if "detalle" in widgets
+        )
+
+        self.assertIsInstance(detail_widget, tk.Text)
+        self.assertEqual(int(detail_widget.cget("height")), 2)
 
     def test_modalidad_alias_restores_legacy_mixta_as_mixto(self) -> None:
         window = self._create_window()

@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.0.5 - 2026-04-06
+
+Esta version corrige la reanudacion de formularios desde borradores y mejora la captura de detalles largos en `Evaluacion de Accesibilidad`.
+
+### Cambios principales
+
+- La seccion `1` vuelve a hidratar correctamente los datos de empresa desde cache o borrador y mantiene habilitado `Continuar` cuando el usuario regresa a corregir informacion antes de finalizar.
+- `Seleccion Incluyente` y los demas formularios que reutilizan la seccion `1` comparten ahora una restauracion consistente del estado de empresa al reabrir o devolverse dentro del flujo.
+- Los campos `Detalle` de `Evaluacion de Accesibilidad` ahora usan cajas de texto de `2` lineas con autoajuste hasta `10`, evitando cortes visuales cuando la respuesta es larga.
+- Se agregaron pruebas de interfaz para validar la restauracion de seccion `1` y el comportamiento multilinea de los campos `Detalle`.
+
+### Como afecta a los usuarios
+
+- Un acta abierta desde `Borradores` ya no queda bloqueada en la seccion `1` despues de refrescar la empresa.
+- Los usuarios pueden corregir informacion de empresa y continuar de nuevo hasta la seccion final sin perder la navegacion.
+- En `Evaluacion de Accesibilidad`, los textos largos en `Detalle` se leen y editan mejor sin quedar comprimidos en una sola linea.
+
 ## 2.0.4 - 2026-04-06
 
 Esta version ajusta la logica de dependencias en `Seleccion Incluyente` y corrige el mapeo de comunicacion escrita en la plantilla maestra.

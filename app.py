@@ -4585,6 +4585,85 @@ def _section1_build_actions(self, parent):
         state="disabled",
     )
     self.continue_btn.pack(side="right")
+    _refresh_section1_continue_button(self)
+
+
+def _refresh_section1_continue_button(window):
+    button = getattr(window, "continue_btn", None)
+    if button is None:
+        return
+    try:
+        if not button.winfo_exists():
+            return
+    except Exception:
+        return
+    try:
+        button.config(state="normal" if getattr(window, "company_data", None) else "disabled")
+    except Exception:
+        pass
+
+
+def _restore_section1_cached_state(window, module, *, include_company_name=True):
+    if module is None or not hasattr(module, "get_form_cache"):
+        return False
+    try:
+        cache = module.get_form_cache().get("section_1", {})
+    except Exception:
+        cache = {}
+    if not isinstance(cache, dict) or not cache:
+        return False
+
+    fields = getattr(window, "fields", {}) or {}
+    window.company_data = copy.deepcopy(cache)
+
+    def _set_widget_value(widget, value):
+        if widget is None:
+            return
+        if isinstance(widget, DateEntry):
+            text = str(value or "").strip()
+            try:
+                widget.delete(0, tk.END)
+            except Exception:
+                pass
+            if not text:
+                return
+            try:
+                widget.set_date(text)
+            except Exception:
+                try:
+                    widget.insert(0, text)
+                except Exception:
+                    pass
+            return
+        try:
+            state = str(widget.cget("state") or "")
+        except Exception:
+            state = ""
+        if state == "readonly" and isinstance(widget, tk.Entry):
+            _set_readonly_entry_value(widget, value)
+            return
+        _set_input_value(widget, value)
+
+    for field_id, value in cache.items():
+        widget = fields.get(field_id)
+        if widget is None:
+            continue
+        _set_widget_value(widget, value)
+
+    if include_company_name:
+        search_widget = fields.get("nombre_busqueda")
+        if search_widget is not None:
+            _set_widget_value(search_widget, cache.get("nombre_empresa", ""))
+
+    status_label = getattr(window, "status_label", None)
+    if status_label is not None:
+        try:
+            ui_feedback.set_semantic_label(status_label, "Empresa cargada desde el borrador.", state="success")
+        except Exception:
+            pass
+
+    _refresh_section1_continue_button(window)
+    return True
 
 
 def _bind_tooltip(widget, text_provider, *, delay_ms=500):
@@ -6152,6 +6231,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         self._build_search(content)
         self._build_groups(content)
         self._build_actions(content)
+        _restore_section1_cached_state(self, presentacion_programa)
     def _show_section_2(self):
         self._clear_section_container()
         self.header_title.config(text="2. TEMARIO")
@@ -10362,6 +10442,11 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
     def _get_accessible_options(self):
         return ["Sí", "No", "Parcial"]
 
+    def _create_detail_text_widget(self, parent, *, width=80, min_lines=2, max_lines=10):
+        detail = tk.Text(parent, width=width, height=min_lines, wrap="word")
+        _attach_autoexpand(detail, min_lines, max_lines)
+        return detail
+
     def _show_section_1(self):
         self._clear_section_container()
         section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
@@ -10370,6 +10455,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         self._build_search(content)
         self._build_groups(content)
         self._build_actions(content)
+        _restore_section1_cached_state(self, evaluacion_accesibilidad)
 
     def _show_section_2(self):
         self._clear_section_container()
@@ -10436,9 +10522,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                 self.section2_1_fields[field_id]["observaciones"] = obs
 
             elif question["type"] == "texto":
-                entry = tk.Entry(row, width=90)
-                entry.grid(row=1, column=0, columnspan=4, sticky="w", padx=8, pady=6)
-                self.section2_1_fields[field_id]["texto"] = entry
+                detail = self._create_detail_text_widget(row)
+                detail.grid(row=1, column=0, columnspan=4, sticky="we", padx=8, pady=6)
+                self.section2_1_fields[field_id]["texto"] = detail
             elif question["type"] == "lista":
                 if question.get("has_accesible"):
                     tk.Label(
@@ -10553,9 +10639,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                entry = tk.Entry(row, width=90)
-                entry.grid(row=current_row, column=1, columnspan=3, sticky="w", padx=4, pady=4)
-                self.section2_2_fields[field_id]["texto"] = entry
+                detail = self._create_detail_text_widget(row)
+                detail.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
+                self.section2_2_fields[field_id]["texto"] = detail
 
             elif question["type"] == "lista":
                 tk.Label(
@@ -10754,9 +10840,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                entry = tk.Entry(row, width=90)
-                entry.grid(row=current_row, column=1, columnspan=3, sticky="w", padx=4, pady=4)
-                self.section2_3_fields[field_id]["texto"] = entry
+                detail = self._create_detail_text_widget(row)
+                detail.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
+                self.section2_3_fields[field_id]["texto"] = detail
 
             elif question["type"] == "lista":
                 tk.Label(
@@ -11016,9 +11102,8 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                detail = tk.Text(row, width=80, height=2, wrap="word")
+                detail = self._create_detail_text_widget(row)
                 detail.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
-                _attach_autoexpand(detail, 2, 6)
                 self.section2_4_fields[field_id]["detalle"] = detail
 
         self._prefill_section_fields("section_2_4", self.section2_4_fields)
@@ -11150,9 +11235,8 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                detail = tk.Text(row, width=80, height=2, wrap="word")
+                detail = self._create_detail_text_widget(row)
                 detail.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
-                _attach_autoexpand(detail, 2, 6)
                 self.section2_5_fields[field_id]["detalle"] = detail
 
         self._prefill_section_fields("section_2_5", self.section2_5_fields)
@@ -11241,9 +11325,8 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                detail = tk.Text(row, width=80, height=2, wrap="word")
+                detail = self._create_detail_text_widget(row)
                 detail.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
-                _attach_autoexpand(detail, 2, 6)
                 self.section2_6_fields[field_id]["detalle"] = detail
 
         self._prefill_section_fields("section_2_6", self.section2_6_fields)
@@ -11377,9 +11460,8 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     font=("Arial", 9, "bold"),
                     bg="white",
                 ).grid(row=current_row, column=0, sticky="w", padx=8, pady=4)
-                detail = tk.Text(row, width=80, height=2, wrap="word")
+                detail = self._create_detail_text_widget(row)
                 detail.grid(row=current_row, column=1, columnspan=3, sticky="we", padx=4, pady=4)
-                _attach_autoexpand(detail, 2, 6)
                 self.section3_fields[field_id]["detalle"] = detail
 
         self._prefill_section_fields("section_3", self.section3_fields)
@@ -12325,6 +12407,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         self._build_search(content)
         self._build_groups(content)
         self._build_actions(content)
+        _restore_section1_cached_state(self, condiciones_vacante)
 
     def _build_search(self, parent):
         _section1_build_search(self, parent)
@@ -13764,8 +13847,6 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         content = _build_scrollable_content(section_frame, self)
         self._build_search(content)
         self._build_groups(content)
-        self._prefill_section_1()
-
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         self.continue_btn = ttk.Button(
@@ -13775,6 +13856,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             state="disabled",
         )
         self.continue_btn.pack(side="right")
+        _restore_section1_cached_state(self, self._seleccion_module)
 
     def _build_search(self, parent):
         _section1_build_search(self, parent)
@@ -15238,6 +15320,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         self._build_search(content)
         self._build_groups(content)
         self._build_actions(content)
+        _restore_section1_cached_state(self, contratacion_incluyente)
 
     def _show_section_2(self):
         self._clear_section_container()
@@ -16327,12 +16410,12 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
         content = _build_scrollable_content(section_frame, self)
         self._build_search(content)
         self._build_groups(content)
-        self._prefill_section_1()
-
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         ttk.Button(actions, text="Regresar", command=self._close_to_hub).pack(side="left")
-        ttk.Button(actions, text="Continuar", command=self._confirm_and_continue).pack(side="right")
+        self.continue_btn = ttk.Button(actions, text="Continuar", command=self._confirm_and_continue)
+        self.continue_btn.pack(side="right")
+        _restore_section1_cached_state(self, induccion_organizacional)
 
     def _show_section_2(self):
         self._clear_section_container()
@@ -17297,12 +17380,12 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         content = _build_scrollable_content(section_frame, self)
         self._build_search(content)
         self._build_groups(content)
-        self._prefill_section_1()
-
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         ttk.Button(actions, text="Regresar", command=self._close_to_hub).pack(side="left")
-        ttk.Button(actions, text="Continuar", command=self._confirm_and_continue).pack(side="right")
+        self.continue_btn = ttk.Button(actions, text="Continuar", command=self._confirm_and_continue)
+        self.continue_btn.pack(side="right")
+        _restore_section1_cached_state(self, induccion_operativa)
 
     def _load_cedula_options(self):
         try:
@@ -18209,12 +18292,12 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         content = _build_scrollable_content(section_frame, self)
         self._build_search(content)
         self._build_groups(content)
-        self._prefill_section_1()
-
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         ttk.Button(actions, text="Regresar", command=self._close_to_hub).pack(side="left")
-        ttk.Button(actions, text="Continuar", command=self._confirm_section_1).pack(side="right")
+        self.continue_btn = ttk.Button(actions, text="Continuar", command=self._confirm_section_1)
+        self.continue_btn.pack(side="right")
+        _restore_section1_cached_state(self, sensibilizacion)
 
     def _show_section_2(self):
         self._clear_section_container()

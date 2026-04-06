@@ -1,3 +1,23 @@
+"""
+formularios/induccion_operativa/induccion_operativa.py
+Formulario: "7. INDUCCIÓN OPERATIVA"
+
+Responsabilidades:
+  - Mapeo de campos a celdas del master spreadsheet (hoja 7)
+  - Secciones 1–9: datos empresa, datos del vinculado, cargo, temas técnicos,
+    evaluación, observaciones, compromisos, asistentes, cierre
+  - Similar en estructura a induccion_organizacional pero con secciones
+    adicionales para contenido técnico/operativo del cargo
+
+Entry points para app.py:
+  confirm_section_1(company_data, user_inputs)
+  confirm_section_2..9(payload)
+  validate_before_finalize()  → retorna lista de ValidationIssue
+  export_to_excel()           → escribe en Google Sheets y sube a Drive
+  register_form()             → metadata para HubWindow
+
+Depende de: google_sheets_client, formularios/common, formularios/finalize_validation
+"""
 import copy
 import json
 import os
@@ -1178,6 +1198,28 @@ def export_to_excel(clear_cache=True):
         row_insertions=row_insertions or None,
     )
 
+    # Capturar datos del cache ANTES de limpiarlo
+    section_1 = FORM_CACHE.get("section_1") or {}
+    fecha_visita_raw = str(section_1.get("fecha_visita") or "").strip()
+    section_9_raw = FORM_CACHE.get("section_9") or []
+    asistentes = [
+        {"nombre": str(a.get("nombre") or "").strip(), "cargo": str(a.get("cargo") or "").strip()}
+        for a in (section_9_raw if isinstance(section_9_raw, list) else [])
+        if isinstance(a, dict) and str(a.get("nombre") or "").strip()
+    ]
+    acta_metadata = {
+        "tipo_acta": "induccion_operativa",
+        "nit_empresa": str(section_1.get("nit_empresa") or "").strip(),
+        "nombre_empresa": str(empresa_nombre or "").strip(),
+        "fecha_servicio": fecha_visita_raw,
+        "nombre_profesional": str(
+            section_1.get("profesional_asignado") or section_1.get("asesor") or ""
+        ).strip(),
+        "modalidad_servicio": str(section_1.get("modalidad") or "").strip(),
+        "asistentes": asistentes,
+        "participantes": [],
+    }
+
     if clear_cache:
         clear_cache_file()
         clear_form_cache()
@@ -1186,4 +1228,7 @@ def export_to_excel(clear_cache=True):
         "output_path": result.get("webViewLink", ""),
         "drive_file_id": result.get("file_id", ""),
         "already_in_drive": True,
+        "tipo_acta": "induccion_operativa",
+        "fecha_servicio": fecha_visita_raw,
+        "acta_metadata": acta_metadata,
     }

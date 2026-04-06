@@ -1,4 +1,42 @@
-﻿import threading
+﻿"""
+app.py — Punto de entrada y UI completa de la aplicación.
+
+Este archivo contiene TODAS las ventanas Tkinter y la mayoría de la lógica de
+navegación, autenticación y estado local. Es el archivo más grande (~20k líneas).
+
+Estructura interna (buscar los marcadores # ── SECCIÓN):
+  1. Imports y constantes globales           (líneas   1 – 225)
+  2. Helpers: autosave y estado de formulario (línea  226)
+  3. Helpers: instancia única y logs         (línea  523)
+  4. Helpers: cola de subida a Drive         (línea  868)
+  5. Helpers: credenciales DPAPI y auth local (línea 1450)
+  6. Helpers: borradores y formularios       (línea 1643)
+  7. Helpers: UI (widgets, feedback, wizard) (línea 1716)
+  8. Helpers: test fill                      (línea 2225)
+  9. Helpers: texto, encoding, entradas      (línea 2827)
+ 10. Helpers: autenticación y conectividad   (línea 3046)
+ 11. Helpers: ventanas y flujo de exportación (línea 3276)
+ 12. Helpers: labs / experimental            (línea 4058)
+ 13. Helpers: sección 1 (empresa)            (línea 4198)
+ 14. Helpers: scroll, dictado, asistentes    (línea 4471)
+ 15. Clases base: FormMousewheelMixin, LoadingDialog, Labs* (línea 4951)
+ 16. Finalization helpers                    (línea 5441)
+ 17. get_forms() — registro de formularios   (línea 5859)
+ 18. VENTANA: Section1Window                 (línea 5874)
+ 19. VENTANA: HubWindow                      (línea 6687)
+ 20. VENTANA: EvaluacionAccesibilidadWindow  (línea 10055)
+ 21. VENTANA: CondicionesVacanteWindow       (línea 12028)
+ 22. VENTANA: SeleccionIncluyenteWindow      (línea 13369)
+ 23. VENTANA: ContratacionIncluyenteWindow   (línea 14771)
+ 24. VENTANA: InduccionOrganizacionalWindow  (línea 15966)
+ 25. VENTANA: InduccionOperativaWindow       (línea 16794)
+ 26. VENTANA: SensibilizacionWindow          (línea 17724)
+ 27. VENTANA: SeguimientosWindow             (línea 18156)
+ 28. VENTANA: SeguimientoEditorWindow        (línea 19192)
+
+Depende de: todos los demás módulos del proyecto.
+"""
+import threading
 import errno
 import re
 import os
@@ -221,6 +259,9 @@ WINDOW_CLASS_FORM_ID_MAP = {
     "SensibilizacionWindow": "sensibilizacion",
     "SeguimientosWindow": "seguimientos",
 }
+
+
+# ── HELPERS: Autosave, estado de formulario y borradores ────────────────────
 
 
 def _autosave_section(module, section_key, collect_fn):
@@ -518,6 +559,9 @@ def _collect_asistente_rows(rows):
         if nombre or cargo:
             values.append({"nombre": nombre, "cargo": cargo})
     return values
+
+
+# ── HELPERS: Instancia única (mutex), logs de app ───────────────────────────
 
 
 def _acquire_single_instance_mutex():
@@ -865,6 +909,9 @@ def _sync_completed_forms_from_remote(user_login):
             _log_capture(f"sync_completed_forms_from_remote store_failed user={login} err={exc}")
 
 
+# ── HELPERS: Cola de subida a Google Drive (queue persistida en JSON) ────────
+
+
 def _drive_job_identity(job):
     registro_id = str((job or {}).get("registro_id") or "").strip()
     if registro_id:
@@ -1191,6 +1238,10 @@ _PDF_EXPORT_ENABLED_TIPOS = {
     "condiciones_vacante",
     "seleccion_individual",
     "seleccion_grupal",
+    "contratacion_individual",
+    "contratacion_grupal",
+    "induccion_organizacional",
+    "induccion_operativa",
 }
 
 
@@ -1445,6 +1496,9 @@ def _drive_retry_all_queued_uploads():
         return len(_DRIVE_UPLOAD_QUEUE)
 
 
+# ── HELPERS: Credenciales guardadas (Windows DPAPI) y auth local ─────────────
+
+
 def _dpapi_encrypt_text(plain_text):
     if os.name != "nt":
         return ""
@@ -1638,6 +1692,9 @@ def _save_offline_auth_store(data):
     os.replace(tmp_path, path)
 
 
+# ── HELPERS: Borradores de formulario (drafts.json) ─────────────────────────
+
+
 def _load_drafts_store():
     path = _get_drafts_path()
     if not os.path.exists(path):
@@ -1709,6 +1766,9 @@ def _form_supports_drafts(form_meta_or_id):
     if value is None:
         return True
     return bool(value)
+
+
+# ── HELPERS: UI — widgets, feedback inline, wizard de progreso ───────────────
 
 
 def _log_user_error(context, exc):
@@ -2218,6 +2278,9 @@ def _set_widget_value_from_snapshot(widget, value):
     except Exception:
         return False
     return False
+
+
+# ── HELPERS: Test fill (relleno automático para QA) ─────────────────────────
 
 
 def _login_allows_test_fill(login):
@@ -2822,6 +2885,9 @@ def _consume_pending_draft_restore(window, form_id, module, section_routes, defa
     return False
 
 
+# ── HELPERS: Normalización de texto, encoding, entradas numéricas ────────────
+
+
 def _normalize_ascii_text(value):
     text = unicodedata.normalize("NFKD", str(value or ""))
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
@@ -3041,6 +3107,9 @@ def _bind_birthdate_entry(
     date_entry.bind("<FocusOut>", _format_and_validate)
 
 
+# ── HELPERS: Autenticación — hash de contraseña, login offline, conectividad ─
+
+
 def _hash_password(password, iterations=PASSWORD_HASH_ITERATIONS):
     pwd = str(password or "")
     if len(pwd) > MAX_PASSWORD_LENGTH:
@@ -3198,6 +3267,9 @@ def _is_connectivity_exception(exc):
         return True
     text = str(exc).lower()
     return "supabase no esta disponible" in text or "timed out" in text
+
+
+# ── HELPERS: Conectividad, probe de servicios, utilidades de ventana ─────────
 
 
 def check_internet(timeout=3, log_enabled=False):
@@ -4053,6 +4125,9 @@ def _confirm_section1_and_continue(window, *, confirm_fn, next_step, extra_input
     next_step()
 
 
+# ── HELPERS: Labs / funciones experimentales ────────────────────────────────
+
+
 def _confirm_labs_experimental_warning(parent):
     accepted = {"value": False}
     modal = tk.Toplevel(parent)
@@ -4191,6 +4266,9 @@ def _select_labs_flow(parent):
     except Exception:
         pass
     return str(selected["value"] or "").strip()
+
+
+# ── HELPERS: Sección 1 — búsqueda de empresa (compartida por todos los forms) ─
 
 
 def _section1_build_search(self, parent, include_tipo_visita=False):
@@ -4464,6 +4542,9 @@ def _bind_tooltip(widget, text_provider, *, delay_ms=500):
     widget.bind("<Enter>", _schedule, add="+")
     widget.bind("<Leave>", _cancel, add="+")
     widget.bind("<Button>", _cancel, add="+")
+
+
+# ── HELPERS: Scroll, dictado por voz, catálogos de asistentes ───────────────
 
 
 def _create_vscroll(parent, command):
@@ -4740,6 +4821,9 @@ def _on_section_dictation_click(window):
     _refresh_section_dictation_button(window)
 
 
+# ── HELPERS: Catálogos de asistentes y asesores ──────────────────────────────
+
+
 _ASISTENTES_PROF_CACHE = {
     "loaded_at": 0.0,
     "nombres": [],
@@ -4944,6 +5028,9 @@ def _configure_asistente_widgets(nombre_widget, cargo_widget, catalog=None):
 
     nombre_widget.bind("<<ComboboxSelected>>", _sync_cargo, add="+")
     nombre_widget.bind("<FocusOut>", _sync_cargo, add="+")
+
+
+# ── CLASES BASE: FormMousewheelMixin, LoadingDialog, Labs dialogs ─────────────
 
 
 class FormMousewheelMixin:
@@ -5473,6 +5560,9 @@ def _close_loading_async(loading):
     _safe_widget_after(getattr(loading, "window", None), loading.close)
 
 
+# ── HELPERS: Finalización de formularios (flujo Sheets + Drive + PDF) ────────
+
+
 def _build_finalize_error_message(form_name, stage, exc):
     label = str(form_name or "el formulario").strip()
     step = str(stage or "finalizando el formulario").strip()
@@ -5854,6 +5944,9 @@ def _start_background_finalization(
     )
 
 
+# ── REGISTRO DE FORMULARIOS ──────────────────────────────────────────────────
+
+
 def get_forms():
     return [
         presentacion_programa.register_form(),
@@ -5867,6 +5960,9 @@ def get_forms():
         sensibilizacion.register_form(),
         seguimientos.register_form(),
     ]
+
+
+# ── VENTANA: Section1Window — Sección 1 compartida (búsqueda de empresa) ─────
 
 
 class Section1Window(tk.Toplevel, FormMousewheelMixin):
@@ -6680,6 +6776,9 @@ def _section1_update_nombre_suggestions(self, open_dropdown=False):
         _show_empresa_autocomplete_popup(self, entry, suggestions)
     else:
         _hide_empresa_autocomplete_popup(self)
+
+
+# ── VENTANA: HubWindow — ventana principal / menú de formularios ──────────────
 
 
 class HubWindow(tk.Tk):
@@ -10050,6 +10149,9 @@ class HubWindow(tk.Tk):
 
         threading.Thread(target=_run, daemon=True).start()
 
+# ── VENTANA: EvaluacionAccesibilidadWindow ───────────────────────────────────
+
+
 class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
     def __init__(self, parent):
         super().__init__(parent)
@@ -12023,6 +12125,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
             next_step=self._show_section_2,
         )
 
+# ── VENTANA: CondicionesVacanteWindow ────────────────────────────────────────
+
+
 class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
     FORM_META_ID = "condiciones_vacante"
     WINDOW_TITLE = "Condiciones de Vacante - Seccion 1"
@@ -13362,6 +13467,9 @@ class CondicionesVacanteLabsWindow(CondicionesVacanteWindow):
             command=self._on_condiciones_section2_1_dictation,
         ).pack(side="right", padx=10, pady=10)
         return voice_box
+
+
+# ── VENTANA: SeleccionIncluyenteWindow ───────────────────────────────────────
 
 
 class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
@@ -14766,6 +14874,9 @@ class SeleccionIncluyenteLabsWindow(SeleccionIncluyenteWindow):
         super().__init__(parent)
 
 
+# ── VENTANA: ContratacionIncluyenteWindow ────────────────────────────────────
+
+
 class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
     def __init__(self, parent):
         super().__init__(parent)
@@ -15961,6 +16072,9 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         )
 
 
+# ── VENTANA: InduccionOrganizacionalWindow ───────────────────────────────────
+
+
 class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
     def __init__(self, parent):
         super().__init__(parent)
@@ -16787,6 +16901,9 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
     def _close_to_hub(self):
         _return_to_hub(self)
         self.destroy()
+
+
+# ── VENTANA: InduccionOperativaWindow ────────────────────────────────────────
 
 
 class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
@@ -17719,6 +17836,9 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         self.destroy()
 
 
+# ── VENTANA: SensibilizacionWindow ───────────────────────────────────────────
+
+
 class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
     def __init__(self, parent):
         super().__init__(parent)
@@ -18149,6 +18269,9 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
     def _close_to_hub(self):
         _return_to_hub(self)
         self.destroy()
+
+
+# ── VENTANA: SeguimientosWindow ──────────────────────────────────────────────
 
 
 class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
@@ -19185,6 +19308,9 @@ class _SeguimientoDateField(tk.Frame):
 
         if result["value"] is not None:
             self.var.set(result["value"].strftime("%Y-%m-%d"))
+
+
+# ── VENTANA: SeguimientoEditorWindow — editor de un seguimiento individual ───
 
 
 class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):

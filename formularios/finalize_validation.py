@@ -1,3 +1,14 @@
+"""
+formularios/finalize_validation.py — Validación pre-envío de formularios.
+
+Responsabilidades:
+  - ValidationIssue: dataclass que representa un campo con error (field_id, message, section_id)
+  - format_issues_for_message: formatea la lista de issues para mostrar al usuario
+  - Funciones auxiliares de normalización de texto para comparación
+
+Depende de: nada interno
+Usado por: app.py (_guard_form_finalization), módulos de formularios
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass

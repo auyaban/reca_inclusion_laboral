@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.0.3 - 2026-04-06
+
+Esta version amplía la generación de PDFs para más actas, corrige un desajuste en inducción organizacional y endurece la reutilización de plantillas de Google Sheets en escenarios dinámicos.
+
+### Cambios principales
+
+- `Contratación Incluyente`, `Inducción Organizacional` e `Inducción Operativa` ahora retornan metadata completa de acta para habilitar la exportación a PDF con rotulación y metadatos consistentes.
+- El flujo de finalización ahora encola exportación PDF para esos formularios adicionales, usando los mismos controles ya existentes para otros procesos.
+- La publicación desde plantilla en Google Sheets ahora tolera mejor rangos que todavía no existen en pestañas nuevas, evitando falsos positivos al evaluar si una hoja ya estaba poblada.
+- `Inducción Organizacional` corrige el número base de filas de asistentes para alinearse con la plantilla actual y evitar desplazamientos incorrectos.
+- Se actualizó la documentación interna del proyecto y de módulos críticos para facilitar mantenimiento, debugging y releases futuros.
+
+### Como afecta a los usuarios
+
+- Más formularios generan su PDF final automáticamente después de publicar el acta, sin depender de pasos manuales adicionales.
+- Los formularios con bloques dinámicos reutilizan mejor las plantillas remotas y reducen fallos por lectura de rangos fuera del grid actual.
+- `Inducción Organizacional` queda alineada con la plantilla vigente y reduce riesgo de exportes con filas corridas en la sección de asistentes.
+
 ## 2.0.2 - 2026-04-03
 
 Esta version corrige la distribucion de credenciales de Google en el instalador y evita que la interfaz confunda un problema de configuracion con falta de internet.

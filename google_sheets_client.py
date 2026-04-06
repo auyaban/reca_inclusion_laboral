@@ -1,3 +1,18 @@
+"""
+google_sheets_client.py — Capa de acceso a Google Sheets API.
+
+Responsabilidades:
+  - Autenticación con service account (busca service-account.json en varias rutas)
+  - Caché singleton del servicio Google Sheets (_SHEETS_SERVICE_CACHE) — thread-safe
+  - Lectura y escritura de rangos de celdas en hojas de cálculo
+  - Sanitización de fórmulas (FORMULA_PREFIXES) para evitar inyección en Sheets
+
+Depende de: formularios/common (_load_env_file, _load_json_config, etc.),
+            google_api_requests (execute_google_request_with_retry)
+Usado por: módulos de formularios, app.py
+
+NO contiene: lógica de negocio, mapeo de campos, construcción de payloads.
+"""
 import json
 import os
 import re

@@ -1,3 +1,22 @@
+"""
+formularios/induccion_organizacional/induccion_organizacional.py
+Formulario: "6. INDUCCIÓN ORGANIZACIONAL"
+
+Responsabilidades:
+  - Mapeo de campos a celdas del master spreadsheet (hoja 6)
+  - Secciones 1–6: datos empresa, datos del vinculado, temas cubiertos,
+    evaluación, compromisos, asistentes
+  - Manejo de asistentes múltiples: sección con filas dinámicas de participantes
+
+Entry points para app.py:
+  confirm_section_1(company_data, user_inputs)
+  confirm_section_2..6(payload)
+  validate_before_finalize()  → retorna lista de ValidationIssue
+  export_to_excel()           → escribe en Google Sheets y sube a Drive
+  register_form()             → metadata para HubWindow
+
+Depende de: google_sheets_client, formularios/common, formularios/finalize_validation
+"""
 import copy
 import json
 import os
@@ -400,7 +419,7 @@ SECTION_6_TITLE_ROW = 70
 SECTION_6_START_ROW = 71
 SECTION_6_NOMBRE_COL = "C"
 SECTION_6_CARGO_COL = "L"
-SECTION_6_BASE_ROWS = 3
+SECTION_6_BASE_ROWS = 4
 
 _SECTION_1_LEGACY_KEY_MAP = {
     "dirección_empresa": "direccion_empresa",
@@ -965,6 +984,28 @@ def export_to_excel(clear_cache=True):
         row_insertions=row_insertions or None,
     )
 
+    # Capturar datos del cache ANTES de limpiarlo
+    section_1 = FORM_CACHE.get("section_1") or {}
+    fecha_visita_raw = str(section_1.get("fecha_visita") or "").strip()
+    section_6_raw = FORM_CACHE.get("section_6") or []
+    asistentes = [
+        {"nombre": str(a.get("nombre") or "").strip(), "cargo": str(a.get("cargo") or "").strip()}
+        for a in (section_6_raw if isinstance(section_6_raw, list) else [])
+        if isinstance(a, dict) and str(a.get("nombre") or "").strip()
+    ]
+    acta_metadata = {
+        "tipo_acta": "induccion_organizacional",
+        "nit_empresa": str(section_1.get("nit_empresa") or "").strip(),
+        "nombre_empresa": str(empresa_nombre or "").strip(),
+        "fecha_servicio": fecha_visita_raw,
+        "nombre_profesional": str(
+            section_1.get("profesional_asignado") or section_1.get("asesor") or ""
+        ).strip(),
+        "modalidad_servicio": str(section_1.get("modalidad") or "").strip(),
+        "asistentes": asistentes,
+        "participantes": [],
+    }
+
     if clear_cache:
         clear_cache_file()
         clear_form_cache()
@@ -973,4 +1014,7 @@ def export_to_excel(clear_cache=True):
         "output_path": result.get("webViewLink", ""),
         "drive_file_id": result.get("file_id", ""),
         "already_in_drive": True,
+        "tipo_acta": "induccion_organizacional",
+        "fecha_servicio": fecha_visita_raw,
+        "acta_metadata": acta_metadata,
     }

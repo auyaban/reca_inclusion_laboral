@@ -1,3 +1,23 @@
+"""
+formularios/sensibilizacion/sensibilizacion.py
+Formulario: "8. SENSIBILIZACIÓN"
+
+Responsabilidades:
+  - Mapeo de campos a celdas del master spreadsheet (hoja 8)
+  - Secciones 1–5: datos empresa, tipo de actividad, participantes,
+    temas cubiertos, compromisos
+  - Es el formulario más simple en estructura (413 líneas vs ~1500 en otros)
+
+Entry points para app.py:
+  confirm_section_1(company_data, user_inputs)
+  confirm_section_2..5(payload)
+  validate_before_finalize()  → retorna lista de ValidationIssue
+  export_to_excel()           → escribe en Google Sheets y sube a Drive
+  register_form()             → metadata para HubWindow
+
+Depende de: google_sheets_client, formularios/common, formularios/finalize_validation,
+            formularios/evaluacion_programa (para datos de empresa)
+"""
 import json
 import os
 import time

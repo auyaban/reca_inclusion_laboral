@@ -1,3 +1,25 @@
+"""
+formularios/seleccion_incluyente/seleccion_incluyente.py
+Formulario: "4. SELECCIÓN INCLUYENTE"
+
+Responsabilidades:
+  - Mapeo de campos a celdas del master spreadsheet (hoja 4)
+  - Secciones 1, 2, 5, 6: datos empresa, proceso de selección, candidatos
+    evaluados (dinámica), compromisos
+  - Manejo de candidatos múltiples: sección 2 puede tener N candidatos;
+    cada uno genera filas adicionales en la hoja
+  - Vincula con evaluacion_accesibilidad para reutilizar datos de la empresa
+
+Entry points para app.py:
+  confirm_section_1(company_data, user_inputs)
+  confirm_section_2 / confirm_section_5 / confirm_section_6(payload)
+  validate_before_finalize()   → retorna lista de ValidationIssue
+  export_to_excel()            → escribe en Google Sheets y sube a Drive
+  register_form()              → metadata para HubWindow
+
+Depende de: google_sheets_client, formularios/common, formularios/finalize_validation,
+            formularios/evaluacion_programa (para datos de empresa)
+"""
 import json
 import os
 import time

@@ -1,3 +1,28 @@
+"""
+formularios/seguimientos/seguimientos.py
+Formulario: "9. SEGUIMIENTO AL PROCESO DE INCLUSIÓN LABORAL"
+
+Responsabilidades:
+  - Flujo diferente al resto: NO usa el master spreadsheet directamente.
+    Cada caso (persona vinculada) tiene su propio Google Sheet copiado desde
+    una plantilla (SEGUIMIENTOS_TEMPLATE_ID) en una carpeta compartida de Drive
+  - build_case_folder_name(): construye el nombre de carpeta por usuario/cédula
+  - Gestión de casos abiertos/cerrados: un caso = una carpeta en Drive con su Sheet
+  - Sincronización: lee casos existentes desde Drive (carpeta SEGUIMIENTOS_SHARED_ROOT)
+  - SeguimientoEditorWindow en app.py edita un caso individual
+
+Entry points para app.py:
+  register_form()              → metadata para HubWindow
+  get_empresa_by_nit/nombre/prefix() → búsqueda de empresa
+  build_case_folder_name()     → nombre de carpeta del caso en Drive
+
+Variables clave de entorno:
+  SEGUIMIENTOS_SHARED_ROOT     → ID de carpeta raíz en Drive
+  GOOGLE_SHEETS_SEGUIMIENTOS_TEMPLATE_ID → ID de la plantilla de seguimiento
+
+Depende de: google_sheets_client, drive_upload, google_api_requests,
+            formularios/common, openpyxl
+"""
 import os
 import re
 import shutil

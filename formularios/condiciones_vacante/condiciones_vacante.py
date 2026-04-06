@@ -1,3 +1,25 @@
+"""
+formularios/condiciones_vacante/condiciones_vacante.py
+Formulario: "3. REVISIÓN DE LAS CONDICIONES DE LA VACANTE"
+
+Responsabilidades:
+  - Mapeo de campos del formulario a celdas del master spreadsheet (hoja 3)
+  - Secciones 1–8: datos empresa, condiciones generales, perfil del cargo,
+    apoyos, competencias, observaciones, vacantes (dinámica), cierre
+  - Layout dinámico: _build_dynamic_layout / _build_row_insertions —
+    la sección 6 (vacantes) puede expandirse; secciones 7 y 8 se desplazan
+  - Diccionario de discapacidades: cargado desde Google Sheets oficial
+    o desde texto embebido como fallback
+
+Entry points para app.py:
+  confirm_section_1..8(payload)  → guarda sección en FORM_CACHE
+  validate_before_finalize()     → retorna lista de ValidationIssue
+  export_to_excel()              → escribe en Google Sheets y sube a Drive
+  register_form()                → metadata del formulario para HubWindow
+
+Depende de: google_sheets_client, formularios/common, formularios/finalize_validation,
+            formularios/evaluacion_programa (para evaluar el mismo acta de empresa)
+"""
 import os
 import json
 import time

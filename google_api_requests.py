@@ -1,3 +1,19 @@
+"""
+google_api_requests.py — Reintentos con backoff para Google API.
+
+Responsabilidades:
+  - execute_google_request_with_retry: reintentos para requests idempotentes
+  - execute_google_create_with_confirmation: reintentos para creates no-idempotentes
+    (verifica si el recurso ya fue creado antes de reintentar)
+  - Clasificación de errores retryable vs. no-retryable (4xx vs 5xx/timeout)
+  - Backoff exponencial con jitter + respeto del header Retry-After
+
+Depende de: nada interno
+Usado por: google_sheets_client.py, drive_upload.py
+
+IMPORTANTE: No usar execute_google_request_with_retry para uploads resumibles
+ni para creates que no sean idempotentes — usar execute_google_create_with_confirmation.
+"""
 import random
 import socket
 import time

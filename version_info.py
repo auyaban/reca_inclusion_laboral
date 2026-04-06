@@ -1,3 +1,14 @@
+"""
+version_info.py — Constantes de versión y rutas de datos de la app.
+
+Responsabilidades:
+  - get_version(): lee el archivo VERSION (bundle PyInstaller o fuente)
+  - resource_path(): resuelve rutas de recursos tanto en .exe (sys._MEIPASS) como en fuente
+  - appdata_dirname(), appdata_logs_dir(): rutas de datos de la app en el sistema
+
+Depende de: nada interno
+Usado por: updater.py, app.py
+"""
 import os
 import sys
 from pathlib import Path

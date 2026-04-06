@@ -1,3 +1,28 @@
+"""
+formularios/evaluacion_programa/evaluacion_accesibilidad.py
+Formulario: "2. EVALUACIÓN DE ACCESIBILIDAD"
+
+Responsabilidades:
+  - Mapeo de campos a celdas del master spreadsheet (hoja 2)
+  - Secciones 1–8: datos empresa, accesibilidad física (2.1–2.6), apoyos,
+    plan de mejora, compromisos, asistentes
+  - build_google_sheet_export_payload(): construye el payload completo para
+    escritura en Sheets a partir del FORM_CACHE
+  - build_google_sheet_input_ranges(): rangos de lectura para precargar datos
+    existentes desde Sheets (usado en restore/edición)
+
+Entry points para app.py:
+  confirm_section_1(company_data, user_inputs)
+  confirm_section_2_1..2_6 / confirm_section_3..8(payload)
+  validate_before_finalize()   → retorna lista de ValidationIssue
+  export_to_excel()            → escribe en Google Sheets y sube a Drive
+  register_form()              → metadata para HubWindow
+
+Nota: otros formularios importan este módulo para reutilizar datos de la
+empresa (nit, nombre) al enlazar registros.
+
+Depende de: google_sheets_client, formularios/common, formularios/finalize_validation
+"""
 import os
 import re
 import json

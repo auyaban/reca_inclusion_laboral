@@ -1,3 +1,23 @@
+"""
+logging_utils.py — Escritura de logs a archivos por canal.
+
+Responsabilidades:
+  - Resolver la carpeta de logs (Desktop > LOCALAPPDATA > cwd > temp)
+  - Escribir líneas con timestamp a archivos separados por canal
+  - Rotar logs cuando superan LOG_MAX_BYTES (10 MB), recortando a LOG_TRIM_BYTES (5 MB)
+  - Funciones de conveniencia por canal: log_app_event, log_excel_event,
+    log_drive_event, log_supabase_event, log_labs_event
+
+Canales y archivos:
+  app      → app.log
+  excel    → excel.log
+  drive    → drive.log
+  supabase → supabase.log
+  labs     → labs.log
+
+Depende de: nada interno
+Usado por: todos los demás módulos del proyecto
+"""
 import os
 import tempfile
 import threading

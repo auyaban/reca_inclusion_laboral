@@ -1,3 +1,15 @@
+"""
+completion_payloads.py — Construcción y serialización de payloads de finalización.
+
+Responsabilidades:
+  - Construir el dict final que se escribe en Supabase al completar un formulario
+  - Normalizar fechas, textos, nombres de archivo para el payload
+  - PAYLOAD_SCHEMA_VERSION: versión del esquema — cambiar rompe compatibilidad
+    con registros ya guardados en completed_forms.json
+
+Depende de: nada interno (solo stdlib)
+Usado por: app.py (antes de llamar a google_sheets_client y drive_upload)
+"""
 from __future__ import annotations
 
 import copy

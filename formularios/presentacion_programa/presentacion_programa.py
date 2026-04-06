@@ -1,3 +1,26 @@
+"""
+formularios/presentacion_programa/presentacion_programa.py
+Formulario: "1. PRESENTACIÓN DEL PROGRAMA IL" / "1.2 REACTIVACIÓN DEL PROGRAMA IL"
+
+Responsabilidades:
+  - Mapeo de campos a celdas del master spreadsheet (hoja 1 o 1.2 según tipo)
+  - Dos subtipos de acta: "presentacion" y "reactivacion" — comparten la misma
+    ventana pero escriben en hojas diferentes del spreadsheet
+  - Secciones: datos generales, datos de contacto, compromisos (checkboxes),
+    notas, asistentes
+  - confirm_section_3_item8(): maneja el bloque de checkboxes de compromisos
+  - confirm_section_4(): notas de texto libre
+  - confirm_section_5(): lista de asistentes
+
+Entry points para app.py:
+  confirm_section_1(company_data, user_inputs)
+  confirm_section_3_item8 / confirm_section_4 / confirm_section_5(payload)
+  validate_before_finalize()  → retorna lista de ValidationIssue
+  export_to_excel()           → escribe en Google Sheets y sube a Drive
+  register_form()             → metadata para HubWindow (incluye ambos subtipos)
+
+Depende de: google_sheets_client, formularios/common, formularios/finalize_validation
+"""
 import os
 import json
 import re

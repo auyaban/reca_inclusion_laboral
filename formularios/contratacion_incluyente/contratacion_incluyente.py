@@ -1,3 +1,25 @@
+"""
+formularios/contratacion_incluyente/contratacion_incluyente.py
+Formulario: "5. CONTRATACIÓN INCLUYENTE"
+
+Responsabilidades:
+  - Mapeo de campos a celdas del master spreadsheet (hoja 5)
+  - Secciones 1–2 y 6–7: datos empresa, datos del vinculado (persona contratada),
+    condiciones de contratación, compromisos
+  - Soporte multi-vinculado: el formulario puede tener N personas vinculadas;
+    cada vinculado genera un bloque de filas adicional en la hoja
+  - Layout dinámico por bloque de vinculados (_build_dynamic_layout,
+    _build_row_insertions) — las filas se desplazan según cuántos vinculados hay
+
+Entry points para app.py:
+  confirm_section_1(company_data, user_inputs)  → sección 1 (empresa)
+  confirm_section_2(payload) / confirm_section_6/7(payload) → secciones de vinculado
+  validate_before_finalize()   → retorna lista de ValidationIssue
+  export_to_excel()            → escribe en Google Sheets y sube a Drive
+  register_form()              → metadata para HubWindow
+
+Depende de: google_sheets_client, formularios/common, formularios/finalize_validation
+"""
 import os
 import json
 import time
@@ -1245,6 +1267,42 @@ def export_to_excel(clear_cache=True):
 
     _log_excel("SUCCESS export_all")
 
+    # Capturar datos del cache ANTES de limpiarlo
+    tipo_acta = "contratacion_individual" if num_vinculados <= 1 else "contratacion_grupal"
+    section_1 = FORM_CACHE.get("section_1") or {}
+    fecha_visita_raw = str(section_1.get("fecha_visita") or "").strip()
+    section_7_raw = FORM_CACHE.get("section_7") or []
+    asistentes = [
+        {"nombre": str(a.get("nombre") or "").strip(), "cargo": str(a.get("cargo") or "").strip()}
+        for a in (section_7_raw if isinstance(section_7_raw, list) else [])
+        if isinstance(a, dict) and str(a.get("nombre") or "").strip()
+    ]
+    participantes = [
+        {
+            "nombre": str(v.get("nombre_oferente") or "").strip(),
+            "cedula": str(v.get("cedula") or "").strip(),
+            "cargo": str(v.get("cargo_oferente") or "").strip(),
+        }
+        for v in vinculados
+        if str(v.get("nombre_oferente") or "").strip()
+    ]
+    acta_metadata = {
+        "tipo_acta": tipo_acta,
+        "nit_empresa": str(section_1.get("nit_empresa") or "").strip(),
+        "nombre_empresa": str(empresa_nombre or "").strip(),
+        "fecha_servicio": fecha_visita_raw,
+        "nombre_profesional": str(
+            section_1.get("profesional_asignado") or section_1.get("asesor") or ""
+        ).strip(),
+        "modalidad_servicio": str(section_1.get("modalidad") or "").strip(),
+        "asistentes": asistentes,
+        "participantes": participantes,
+    }
+    if tipo_acta == "contratacion_individual" and vinculados:
+        extra_name = str(vinculados[0].get("nombre_oferente") or "").strip() or None
+    else:
+        extra_name = str(num_vinculados) if num_vinculados > 1 else None
+
     if clear_cache:
         clear_cache_file()
         clear_form_cache()
@@ -1253,4 +1311,8 @@ def export_to_excel(clear_cache=True):
         "output_path": result.get("webViewLink", ""),
         "drive_file_id": result.get("file_id", ""),
         "already_in_drive": True,
+        "tipo_acta": tipo_acta,
+        "fecha_servicio": fecha_visita_raw,
+        "acta_metadata": acta_metadata,
+        "extra_name": extra_name,
     }

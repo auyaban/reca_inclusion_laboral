@@ -1,3 +1,20 @@
+"""
+drive_upload.py — Subida de archivos a Google Drive en hilo de fondo.
+
+Responsabilidades:
+  - Worker thread (_drive_upload_worker_loop) que procesa una cola FIFO persistida
+  - Cola guardada en JSON (%LOCALAPPDATA%/RECA/drive_upload_queue.json)
+  - Cola de fallidos (drive_failed_queue.json) con resumen de error
+  - Subida de archivos Excel (.xlsx) y exportación a PDF desde Sheets
+  - Reintentos con backoff (_next_drive_retry_delay_seconds)
+  - Cifrado/descifrado de credenciales guardadas usando Windows DPAPI
+
+Depende de: formularios/common, google_api_requests, logging_utils
+Usado por: app.py (_enqueue_drive_upload_job, _enqueue_pdf_export_job)
+
+IMPORTANTE: La cola es compartida entre hilos — todos los accesos a las listas
+internas usan locks. No modificar _DRIVE_UPLOAD_QUEUE directamente.
+"""
 import io
 import json
 import os
@@ -940,7 +957,13 @@ def publish_sheet_from_template(
                     )
                     continue
 
-                current_values = batch_read_sheet_values(spreadsheet_id, ranges)
+                try:
+                    current_values = batch_read_sheet_values(spreadsheet_id, ranges)
+                except Exception:
+                    # Ranges may exceed the current grid size (e.g. multi-vinculado
+                    # acta requested on a fresh single-vinculado tab that hasn't had
+                    # rows inserted yet).  Treat as unpopulated → safe to reuse.
+                    current_values = {}
                 populated_ranges = _count_populated_target_ranges(current_values, ranges)
                 if populated_ranges <= 0:
                     _log_drive(

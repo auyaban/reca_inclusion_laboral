@@ -1,3 +1,22 @@
+"""
+formularios/common.py — Utilidades compartidas de bajo nivel.
+
+Responsabilidades:
+  - Autenticación y sesiones Supabase (login, refresh, tokens JWT)
+  - HTTP a Supabase: _supabase_get, _supabase_upsert, _supabase_rpc, etc.
+  - Queue de escritura asíncrona con reintentos (para funcionar offline)
+  - Caché SQLite de respuestas Supabase (tabla supabase_get_cache)
+  - Búsqueda y caché en memoria de empresas (_find_cached_company_row)
+  - Resolución de rutas del sistema (%APPDATA%, %LOCALAPPDATA%, Desktop)
+  - Carga de config.json y .env con validación de claves prohibidas
+
+Depende de: logging_utils (solo)
+Usado por: prácticamente todos los demás módulos del proyecto.
+
+IMPORTANTE: _supabase_enqueue_upsert / _supabase_enqueue_patch son la forma
+preferida de escribir — usan la queue offline. Usar _supabase_upsert directo
+solo cuando se necesita resultado síncrono (ej. login).
+"""
 import os
 import re
 import time
@@ -41,6 +60,9 @@ def _log_supabase(message, level="INFO"):
         log_supabase_event(message, level=level)
     except Exception:
         pass
+
+
+# ── Resolución de rutas del sistema ─────────────────────────────────────────
 
 
 def _get_project_root():
@@ -104,6 +126,9 @@ def _get_local_app_cache_dir():
     if local_root:
         return _ensure_private_dir(os.path.join(local_root, "cache"))
     return _ensure_private_dir(os.path.join(os.getcwd(), ".cache"))
+
+
+# ── Carga de configuración (config.json y .env) ──────────────────────────────
 
 
 def _resolve_config_candidates(config_path="config.json"):
@@ -246,6 +271,9 @@ def _load_supabase_credentials(env_path=".env"):
             f"Missing SUPABASE_URL or SUPABASE_KEY. Revisa .env en: {joined}"
         )
     raise RuntimeError("Missing SUPABASE_URL or SUPABASE_KEY")
+
+
+# ── Sesión Supabase — tokens JWT, cabeceras, error helpers, redacción ────────
 
 
 def _supabase_headers(api_key, bearer_token=None):
@@ -429,6 +457,9 @@ def _get_cache_scope(token):
     if uid:
         return f"user:{uid}"
     return "anon"
+
+
+# ── HTTP Supabase — auth, GET, upsert, rpc, ping ────────────────────────────
 
 
 def _supabase_refresh_session(env_path=".env"):
@@ -696,6 +727,12 @@ def _format_supabase_error(prefix, exc):
     return f"{prefix}: {detail}" if detail else prefix
 
 
+# ── Caché SQLite offline (respuestas GET) y cola de escritura ────────────────
+# _WRITE_QUEUE: cola FIFO de jobs pendientes de upsert a Supabase
+# _FAILED_WRITE_QUEUE: jobs que fallaron permanentemente (para diagnóstico)
+# Worker thread: _supabase_write_worker_loop / _ensure_write_worker
+
+
 _WRITE_QUEUE_LOCK = threading.Lock()
 _WRITE_QUEUE = []
 _WRITE_WORKER_STARTED = False
@@ -926,6 +963,11 @@ def _clear_supabase_get_cache():
             conn.close()
 
 
+# ── Caché de empresa en memoria ──────────────────────────────────────────────
+# _find_cached_company_row: busca por NIT o nombre en caché local (SQLite)
+# _merge_company_row_with_cache: combina resultado de Supabase con caché local
+
+
 def _is_blank_company_value(value):
     if value is None:
         return True
@@ -1049,6 +1091,12 @@ def _merge_company_row_with_cache(row, *, field_map=None, nit="", nombre=""):
                     merged[source_key] = candidate
                     break
     return merged
+
+
+# ── Queue de escritura Supabase — worker, enqueue, retry ────────────────────
+# Usar _supabase_enqueue_upsert / _supabase_enqueue_patch para escritura async
+# Usar _supabase_upsert_with_queue / _supabase_patch_with_queue para escritura
+# síncrona con fallback a cola si falla la conexión
 
 
 def _atomic_write_json(path, payload):
@@ -1557,6 +1605,9 @@ def _supabase_patch(table, filters, values, env_path=".env"):
     ) from last_exc
 
 
+# ── Normalización de texto, fechas, decimales y rutas de archivo ─────────────
+
+
 def _normalize_text(value):
     if value is None:
         return ""
@@ -1785,6 +1836,9 @@ def _build_process_output_path(company_name, process_name, extension=".xlsx", ro
     os.makedirs(fallback_output_dir, exist_ok=True)
     fallback_name = f"{fallback_process} - {fallback_company}{extension}"
     return _next_available_file_path(os.path.join(fallback_output_dir, fallback_name))
+
+
+# ── Utilidades para construcción de hojas (Sheets / Excel) ──────────────────
 
 
 def format_checkbox_symbol(value):

@@ -3,7 +3,6 @@ import json
 import os
 import re
 import subprocess
-import base64
 import tempfile
 import urllib.error
 import urllib.request
@@ -88,10 +87,6 @@ def _repo_config():
     return owner, name, token, installer_asset, hash_asset
 
 
-def _escape_powershell_single_quoted(value: str) -> str:
-    return str(value or "").replace("`", "``").replace("'", "''")
-
-
 def _http_get_json(url: str, timeout: int = 20, token: str = "") -> dict:
     headers = {
         "Accept": "application/vnd.github+json",
@@ -124,48 +119,6 @@ def _latest_release_via_redirect(owner: str, repo: str, timeout: int = 20) -> st
     with urllib.request.urlopen(req, timeout=timeout) as response:
         final_url = str(response.geturl() or "")
     _log_update(f"Fallback redirect final url: {final_url}")
-    match = re.search(r"/releases/tag/([^/?#]+)", final_url)
-    if not match:
-        return None
-    return str(match.group(1)).lstrip("v")
-
-
-def _latest_release_via_powershell_redirect(owner: str, repo: str, timeout: int = 25) -> str | None:
-    """
-    Fallback usando la pila de red de Windows sobre github.com en vez de api.github.com.
-    """
-    owner_ps = _escape_powershell_single_quoted(owner)
-    repo_ps = _escape_powershell_single_quoted(repo)
-    script = (
-        "$ErrorActionPreference='Stop';"
-        f"$u='https://github.com/{owner_ps}/{repo_ps}/releases/latest';"
-        "$r=Invoke-WebRequest -Uri $u -Headers @{ 'User-Agent'='reca-inclusion-laboral-updater' } -Method Get -UseBasicParsing;"
-        "$final='';"
-        "if ($r -and $r.BaseResponse -and $r.BaseResponse.ResponseUri) { $final=$r.BaseResponse.ResponseUri.AbsoluteUri };"
-        "if (-not $final) { $final=$u };"
-        "[Console]::Out.Write($final)"
-    )
-    completed = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
-    _log_update(
-        "Fallback PowerShell redirect completed: "
-        f"returncode={completed.returncode}, stdout_len={len(completed.stdout or '')}, "
-        f"stderr_len={len(completed.stderr or '')}"
-    )
-    if completed.returncode != 0:
-        stderr = (completed.stderr or "").strip()
-        if stderr:
-            _log_update(f"ERROR powershell redirect latest: {stderr}")
-        return None
-    final_url = (completed.stdout or "").strip()
-    if not final_url:
-        return None
-    _log_update(f"Fallback PowerShell redirect final url: {final_url}")
     match = re.search(r"/releases/tag/([^/?#]+)", final_url)
     if not match:
         return None
@@ -206,52 +159,6 @@ def _latest_version_via_raw(owner: str, repo: str, timeout: int = 20) -> str | N
     return version
 
 
-def _latest_release_via_powershell(owner: str, repo: str, token: str = "", timeout: int = 25) -> str | None:
-    """
-    Fallback para entornos corporativos donde urllib falla por proxy/TLS,
-    usando stack de red de Windows via PowerShell.
-    """
-    owner_ps = _escape_powershell_single_quoted(owner)
-    repo_ps = _escape_powershell_single_quoted(repo)
-    script = (
-        "$ErrorActionPreference='Stop';"
-        f"$u='https://api.github.com/repos/{owner_ps}/{repo_ps}/releases/latest';"
-        "$h=@{ 'User-Agent'='reca-inclusion-laboral-updater'; 'Accept'='application/vnd.github+json' };"
-        + (
-            "$h['Authorization']='Bearer ' + $env:RECA_GITHUB_TOKEN;"
-            if token
-            else ""
-        )
-        + "$r=Invoke-RestMethod -Uri $u -Headers $h -Method Get;"
-        "if ($r -and $r.tag_name) { [Console]::Out.Write(($r.tag_name.ToString())) }"
-    )
-    env = None
-    if token:
-        env = os.environ.copy()
-        env["RECA_GITHUB_TOKEN"] = token
-    completed = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-        env=env,
-    )
-    _log_update(
-        f"Fallback PowerShell API completed: returncode={completed.returncode}, "
-        f"stdout_len={len(completed.stdout or '')}, stderr_len={len(completed.stderr or '')}"
-    )
-    if completed.returncode != 0:
-        stderr = (completed.stderr or "").strip()
-        if stderr:
-            _log_update(f"ERROR powershell api latest: {stderr}")
-        return None
-    out = (completed.stdout or "").strip()
-    if not out:
-        return None
-    return out.lstrip("v")
-
-
 def _get_latest_release() -> tuple[str | None, dict]:
     owner, repo, token, installer_asset, hash_asset = _repo_config()
     api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
@@ -273,15 +180,7 @@ def _get_latest_release() -> tuple[str | None, dict]:
                 return version, _assets_for_version(version)
         except Exception as fallback_exc:
             _log_update(f"ERROR fallback release/latest redirect: {fallback_exc}")
-        # 2) Redirect publico usando stack de red de Windows.
-        try:
-            version = _latest_release_via_powershell_redirect(owner, repo, timeout=25)
-            if version:
-                _log_update(f"FALLBACK powershell releases/latest redirect OK: v{version}")
-                return version, _assets_for_version(version)
-        except Exception as fallback_exc:
-            _log_update(f"ERROR fallback powershell release/latest redirect: {fallback_exc}")
-        # 3) VERSION servido desde github.com.
+        # 2) VERSION servido desde github.com.
         try:
             version = _latest_version_via_github_raw(owner, repo, timeout=20)
             if version:
@@ -289,7 +188,7 @@ def _get_latest_release() -> tuple[str | None, dict]:
                 return version, _assets_for_version(version)
         except Exception as fallback_exc:
             _log_update(f"ERROR fallback github.com raw VERSION: {fallback_exc}")
-        # 4) VERSION en raw.githubusercontent.com.
+        # 3) VERSION en raw.githubusercontent.com.
         try:
             version = _latest_version_via_raw(owner, repo, timeout=20)
             if version:
@@ -297,14 +196,6 @@ def _get_latest_release() -> tuple[str | None, dict]:
                 return version, _assets_for_version(version)
         except Exception as fallback_exc:
             _log_update(f"ERROR fallback raw VERSION: {fallback_exc}")
-        # 5) PowerShell API (Windows trust/proxy stack).
-        try:
-            version = _latest_release_via_powershell(owner, repo, token=token, timeout=25)
-            if version:
-                _log_update(f"FALLBACK powershell api OK: v{version}")
-                return version, _assets_for_version(version)
-        except Exception as fallback_exc:
-            _log_update(f"ERROR fallback powershell api: {fallback_exc}")
         return None, {}
 
     try:
@@ -391,45 +282,10 @@ def _download_file(url: str, destination: Path, progress_callback=None) -> None:
         return
     except Exception as exc:
         _log_update(f"ERROR urllib download: {exc}")
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if progress_callback:
-        progress_callback("Descargando instalador (fallback Windows)...", 50)
-
-    url_ps = _escape_powershell_single_quoted(url)
-    out_ps = _escape_powershell_single_quoted(str(destination))
-    script = (
-        "$ErrorActionPreference='Stop';"
-        "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;"
-        f"$u='{url_ps}';"
-        f"$o='{out_ps}';"
-        "$h=@{ 'User-Agent'='reca-inclusion-laboral-updater' };"
-        "Invoke-WebRequest -Uri $u -Headers $h -OutFile $o -UseBasicParsing;"
-        "if (Test-Path $o) { [Console]::Out.Write((Get-Item $o).Length) }"
+    raise RuntimeError(
+        "No se pudo descargar el instalador. "
+        "Revisa la conexión o descarga manualmente el instalador desde el release."
     )
-    completed = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
-    _log_update(
-        "Fallback PowerShell download completed: "
-        f"returncode={completed.returncode}, stdout_len={len(completed.stdout or '')}, "
-        f"stderr_len={len(completed.stderr or '')}"
-    )
-    if completed.returncode != 0 or not destination.exists():
-        stderr = (completed.stderr or "").strip()
-        if stderr:
-            _log_update(f"ERROR fallback powershell download: {stderr}")
-        raise RuntimeError(
-            "No se pudo descargar el instalador (falló TLS de Python y fallback de Windows)."
-        )
-    if progress_callback:
-        progress_callback("Descarga completada.", 95)
-    size = destination.stat().st_size if destination.exists() else 0
-    _log_update(f"Download completed (fallback): bytes={size}, destination={destination}")
 
 
 def _verify_hash(installer_path: Path, assets: dict) -> None:
@@ -476,39 +332,44 @@ def _installer_args(installer_path: Path) -> list[str]:
     ]
 
 
-def _build_powershell_array(values: list[str] | tuple[str, ...] | None) -> str:
-    escaped_values = [
-        f"'{_escape_powershell_single_quoted(str(value))}'" for value in (values or [])
-    ]
-    return "@(" + ", ".join(escaped_values) + ")"
-
-
-def _build_post_exit_installer_script(
+def _build_post_exit_installer_cmd(
     installer_path: Path,
     current_pid: int,
     relaunch_command: list[str] | tuple[str, ...] | None = None,
-) -> str:
-    installer_args = _build_powershell_array(_installer_args(installer_path))
-    relaunch_args = _build_powershell_array(relaunch_command)
-    return (
-        "$ErrorActionPreference='Stop';"
-        f"$pidToWait={int(current_pid)};"
-        "Wait-Process -Id $pidToWait -ErrorAction SilentlyContinue;"
-        "Start-Sleep -Milliseconds 500;"
-        f"$installerArgs={installer_args};"
-        "$proc = Start-Process -FilePath $installerArgs[0] "
-        "-ArgumentList $installerArgs[1..($installerArgs.Length-1)] -Wait -PassThru;"
-        "if ($proc.ExitCode -ne 0) { throw ('Installer failed with exit code ' + $proc.ExitCode) };"
-        f"$relaunchArgs={relaunch_args};"
-        "if ($relaunchArgs.Length -gt 0) {"
-        "Start-Sleep -Seconds 1;"
-        "if ($relaunchArgs.Length -gt 1) { "
-        "Start-Process -FilePath $relaunchArgs[0] -ArgumentList $relaunchArgs[1..($relaunchArgs.Length-1)]"
-        "} else { "
-        "Start-Process -FilePath $relaunchArgs[0]"
-        " }"
-        "}"
+) -> Path:
+    installer_command = subprocess.list2cmdline(_installer_args(installer_path))
+    relaunch_command_line = subprocess.list2cmdline(list(relaunch_command or []))
+    script_path = Path(tempfile.gettempdir()) / f"reca_updater_{int(current_pid)}.cmd"
+    lines = [
+        "@echo off",
+        "setlocal",
+        ":wait_for_app",
+        f'tasklist /FI "PID eq {int(current_pid)}" /FO CSV /NH 2>nul | find /I "\\"{int(current_pid)}\\"" >nul',
+        "if not errorlevel 1 (",
+        "  timeout /t 1 /nobreak >nul",
+        "  goto wait_for_app",
+        ")",
+        "timeout /t 1 /nobreak >nul",
+        f"start \"\" /wait {installer_command}",
+        "set \"RECA_INSTALL_EXIT=%ERRORLEVEL%\"",
+    ]
+    if relaunch_command_line:
+        lines.extend(
+            [
+                "if not \"%RECA_INSTALL_EXIT%\"==\"0\" goto cleanup",
+                "timeout /t 1 /nobreak >nul",
+                f"start \"\" {relaunch_command_line}",
+            ]
+        )
+    lines.extend(
+        [
+            ":cleanup",
+            "del \"%~f0\" >nul 2>&1",
+            "exit /b",
+        ]
     )
+    script_path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
+    return script_path
 
 
 def schedule_installer_after_exit(
@@ -516,28 +377,25 @@ def schedule_installer_after_exit(
     current_pid: int,
     relaunch_command: list[str] | tuple[str, ...] | None = None,
 ) -> None:
-    script = _build_post_exit_installer_script(
+    script_path = _build_post_exit_installer_cmd(
         installer_path,
         current_pid=current_pid,
         relaunch_command=relaunch_command,
     )
-    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
     command = [
-        "powershell",
-        "-NoProfile",
-        "-NonInteractive",
-        "-WindowStyle",
-        "Hidden",
-        "-EncodedCommand",
-        encoded,
+        "cmd.exe",
+        "/c",
+        str(script_path),
     ]
     creationflags = (
         getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         | getattr(subprocess, "DETACHED_PROCESS", 0)
+        | getattr(subprocess, "CREATE_NO_WINDOW", 0)
     )
     _log_update(
         "Schedule installer after exit: "
-        f"path={installer_path}, current_pid={current_pid}, relaunch={list(relaunch_command or [])}"
+        f"path={installer_path}, current_pid={current_pid}, relaunch={list(relaunch_command or [])}, "
+        f"script={script_path}"
     )
     proc = subprocess.Popen(
         command,

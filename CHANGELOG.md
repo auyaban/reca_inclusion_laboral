@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.0.8 - 2026-04-06
+
+Esta version corrige el mecanismo de actualizacion para evitar bloqueos de antivirus durante el handoff al instalador.
+
+### Cambios principales
+
+- El `updater` deja de invocar `powershell.exe` en tiempo de ejecucion para consultar releases, descargar el instalador y esperar el cierre de la app.
+- La instalacion diferida ahora usa un helper `.cmd` temporal para esperar el cierre, ejecutar el instalador y relanzar la aplicacion.
+- Cuando falla la descarga del instalador, la app reporta un error claro y remite al release en vez de intentar fallbacks que disparaban proteccion conductual.
+
+### Como afecta a los usuarios
+
+- El flujo de actualizacion manual reduce el riesgo de ser bloqueado por soluciones como Norton.
+- La app sigue pudiendo descargar el instalador y relanzarse, pero con un mecanismo menos agresivo para antivirus corporativos.
+
 ## 2.0.5 - 2026-04-06
 
 Esta version corrige la reanudacion de formularios desde borradores y mejora la captura de detalles largos en `Evaluacion de Accesibilidad`.

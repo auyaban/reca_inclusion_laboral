@@ -79,6 +79,29 @@ class SeleccionIncluyenteUnifiedTests(unittest.TestCase):
             "Oferente 2",
         )
 
+    def test_comunicacion_escrita_fields_use_expected_columns(self) -> None:
+        self.assertEqual(si.OFERENTE_CELL_MAP["comunicacion_escrita_nivel_apoyo"], ("I", 51))
+        self.assertEqual(si.OFERENTE_CELL_MAP["comunicacion_escrita_apoyo"], ("N", 51))
+        self.assertEqual(si.OFERENTE_CELL_MAP["comunicacion_escrita_nota"], ("O", 52))
+
+    def test_comunicacion_escrita_note_honors_oferente_offsets(self) -> None:
+        payload = [
+            {"numero": "1", "comunicacion_escrita_nota": "Nota oferente 1"},
+            {"numero": "2", "comunicacion_escrita_nota": "Nota oferente 2"},
+        ]
+
+        writes = si._build_section_2_writes(payload)
+        mapping = {item["range"]: item["value"] for item in writes}
+
+        self.assertEqual(
+            mapping[f"'{si.SHEET_NAME}'!O52"],
+            "Nota oferente 1",
+        )
+        self.assertEqual(
+            mapping[f"'{si.SHEET_NAME}'!O{52 + si.OFERENTE_BLOCK_HEIGHT}"],
+            "Nota oferente 2",
+        )
+
     def test_section_6_group_overflow_shifts_with_oferentes_and_keeps_simple_row_contract(self) -> None:
         payload = [{"nombre": f"Asistente {idx}", "cargo": "Profesional"} for idx in range(1, 7)]
 

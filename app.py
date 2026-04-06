@@ -2686,6 +2686,107 @@ def _bind_prefixed_dropdown_fields(fields_map, preferred_suffixes=("_nivel_apoyo
     _sync_from(preferred_widget)
 
 
+def _bind_prefixed_dropdown_subset(fields_map, field_ids):
+    subset = {
+        field_id: fields_map[field_id]
+        for field_id in (field_ids or ())
+        if field_id in (fields_map or {})
+    }
+    _bind_prefixed_dropdown_fields(subset)
+
+
+def _find_dropdown_option(target_values, predicate):
+    for option in tuple(target_values or ()):
+        if predicate(_normalize_ascii_text(option).lower()):
+            return option
+    return ""
+
+
+def _resolve_yes_no_dropdown_value(target_values, desired_state):
+    normalized_desired = _normalize_ascii_text(desired_state).lower()
+    return _find_dropdown_option(
+        target_values,
+        lambda option: option == normalized_desired,
+    )
+
+
+def _bind_selection_activity_dropdown_fields(
+    fields_map,
+    *,
+    primary_field_id,
+    secondary_field_id,
+    dependent_field_ids=(),
+):
+    if not isinstance(fields_map, dict):
+        return
+    primary_widget = fields_map.get(primary_field_id)
+    secondary_widget = fields_map.get(secondary_field_id)
+    if not _is_prefixed_dropdown_widget(primary_widget) or not _is_prefixed_dropdown_widget(secondary_widget):
+        return
+
+    dependent_widgets = [
+        fields_map[field_id]
+        for field_id in (dependent_field_ids or ())
+        if field_id in fields_map
+    ]
+    sync_state = {"active": False}
+
+    def _set_widget_value(widget, value):
+        try:
+            widget.set(value)
+        except Exception:
+            return
+
+    def _sync_from_primary(_event=None):
+        if sync_state["active"]:
+            return
+        try:
+            source_value = primary_widget.get().strip()
+        except Exception:
+            return
+        if not source_value:
+            return
+
+        prefix_key = _dropdown_prefix_key(source_value)
+        if not prefix_key:
+            return
+
+        sync_state["active"] = True
+        try:
+            resolved_secondary = _resolve_prefixed_dropdown_value(
+                source_value,
+                tuple(secondary_widget.cget("values")),
+            )
+            if resolved_secondary:
+                _set_widget_value(secondary_widget, resolved_secondary)
+
+            if prefix_key == "0.":
+                dependent_value = "No"
+            elif prefix_key == "no aplica":
+                dependent_value = "No aplica"
+            else:
+                dependent_value = ""
+
+            for widget in dependent_widgets:
+                if not isinstance(widget, ttk.Combobox):
+                    continue
+                if dependent_value:
+                    resolved = _resolve_yes_no_dropdown_value(
+                        tuple(widget.cget("values")),
+                        dependent_value,
+                    )
+                    _set_widget_value(widget, resolved or dependent_value)
+                else:
+                    _set_widget_value(widget, "")
+        finally:
+            sync_state["active"] = False
+
+    primary_widget._selection_activity_sync = _sync_from_primary
+    primary_widget._nivel_apoyo_observacion_sync = _sync_from_primary
+    primary_widget.bind("<<ComboboxSelected>>", _sync_from_primary, add="+")
+    primary_widget.bind("<FocusOut>", _sync_from_primary, add="+")
+
+
 def _section_history_has_meaningful_payload(cache_snapshot, section_id):
     if not isinstance(cache_snapshot, dict):
         return False
@@ -14022,7 +14123,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             _bind_prefixed_dropdown_fields(fields)
             return fields
 
-        def _add_question_block(parent, title, field_ids, subitems=None):
+        def _add_question_block(parent, title, field_ids, subitems=None, sync_binder=None):
             frame = tk.Frame(parent, bg="white")
             frame.pack(fill="x", pady=10)
             tk.Label(
@@ -14077,10 +14178,13 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                             fields[req_id].grid(row=row_idx, column=1, sticky="w", padx=4)
                         fields[cuenta_id] = _create_widget(sub_frame, cuenta_id, width=10)
                         fields[cuenta_id].grid(row=row_idx, column=2, sticky="w", padx=4)
-            _bind_prefixed_dropdown_fields(fields)
+            if callable(sync_binder):
+                sync_binder(fields)
+            else:
+                _bind_prefixed_dropdown_fields(fields)
             return fields
 
-        def _add_activity_block(parent, title, nivel_id, observacion_id, nota_id, subitems):
+        def _add_activity_block(parent, title, nivel_id, observacion_id, nota_id, subitems, sync_binder=None):
             frame = tk.Frame(parent, bg="white")
             frame.pack(fill="x", pady=10)
             tk.Label(
@@ -14124,7 +14228,10 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             )
             fields[nota_id] = tk.Entry(sub_frame, width=30)
             fields[nota_id].grid(row=len(subitems), column=1, columnspan=3, sticky="w", pady=(4, 0))
-            _bind_prefixed_dropdown_fields(fields)
+            if callable(sync_binder):
+                sync_binder(fields)
+            else:
+                _bind_prefixed_dropdown_fields(fields)
             return fields
 
         remove_btn = None
@@ -14432,6 +14539,10 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                     section42a_body,
                     "¿Se desplaza por la ciudad de manera independiente?",
                     ["desplazamiento_nivel_apoyo", "desplazamiento_modo", "desplazamiento_transporte", "desplazamiento_nota"],
+                    sync_binder=lambda block_fields: _bind_prefixed_dropdown_subset(
+                        block_fields,
+                        ("desplazamiento_nivel_apoyo", "desplazamiento_modo"),
+                    ),
                 )
             )
             fields.update(
@@ -14439,6 +14550,10 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                     section42a_body,
                     "¿Se le facilita ubicarse dentro de la ciudad?",
                     ["ubicacion_nivel_apoyo", "ubicacion_ciudad", "ubicacion_aplicaciones", "ubicacion_nota"],
+                    sync_binder=lambda block_fields: _bind_prefixed_dropdown_subset(
+                        block_fields,
+                        ("ubicacion_nivel_apoyo", "ubicacion_ciudad"),
+                    ),
                 )
             )
             fields.update(
@@ -14501,6 +14616,19 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                         ("Uso de los sistemas de comunicacion", "aseo_comunicacion_apoyo", "Movilidad funcional", "aseo_movilidad_funcional"),
                         ("Cuidado de las ayudas tecnicas personales", "aseo_ayudas_apoyo", "Higiene personal y aseo (Control de esfinter)", "aseo_higiene_aseo"),
                     ],
+                    sync_binder=lambda block_fields: _bind_selection_activity_dropdown_fields(
+                        block_fields,
+                        primary_field_id="aseo_nivel_apoyo",
+                        secondary_field_id="alimentacion",
+                        dependent_field_ids=(
+                            "aseo_criar_apoyo",
+                            "aseo_comunicacion_apoyo",
+                            "aseo_ayudas_apoyo",
+                            "aseo_alimentacion",
+                            "aseo_movilidad_funcional",
+                            "aseo_higiene_aseo",
+                        ),
+                    ),
                 )
             )
             fields.update(
@@ -14516,6 +14644,20 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                         ("Movilidad en la comunidad", "instrumentales_movilidad_apoyo", "Crear y mantener un hogar", "instrumentales_crear_hogar"),
                         ("", None, "Cuidado de la salud y manutencion", "instrumentales_salud_cuenta_apoyo"),
                     ],
+                    sync_binder=lambda block_fields: _bind_selection_activity_dropdown_fields(
+                        block_fields,
+                        primary_field_id="instrumentales_nivel_apoyo",
+                        secondary_field_id="instrumentales_actividades",
+                        dependent_field_ids=(
+                            "instrumentales_criar_apoyo",
+                            "instrumentales_comunicacion_apoyo",
+                            "instrumentales_movilidad_apoyo",
+                            "instrumentales_finanzas",
+                            "instrumentales_cocina_limpieza",
+                            "instrumentales_crear_hogar",
+                            "instrumentales_salud_cuenta_apoyo",
+                        ),
+                    ),
                 )
             )
             fields.update(
@@ -14528,6 +14670,18 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                         ("Complementarios médicos", "actividades_complementarios_apoyo", "Actividades académicas de hijos", "actividades_complementarios_cuenta_apoyo"),
                         ("Subsidios economicos para estudio de hijos", None, "", "actividades_subsidios_cuenta_apoyo"),
                     ],
+                    sync_binder=lambda block_fields: _bind_selection_activity_dropdown_fields(
+                        block_fields,
+                        primary_field_id="actividades_nivel_apoyo",
+                        secondary_field_id="actividades_apoyo",
+                        dependent_field_ids=(
+                            "actividades_esparcimiento_apoyo",
+                            "actividades_esparcimiento_cuenta_apoyo",
+                            "actividades_complementarios_apoyo",
+                            "actividades_complementarios_cuenta_apoyo",
+                            "actividades_subsidios_cuenta_apoyo",
+                        ),
+                    ),
                 )
             )
             fields.update(
@@ -14539,6 +14693,17 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                         ("Violencia fisica", "discriminacion_violencia_apoyo", "Acoso laboral", "discriminacion_violencia_cuenta_apoyo"),
                         ("Vulneracion de derechos", "discriminacion_vulneracion_apoyo", "Violencia psicosocial", "discriminacion_vulneracion_cuenta_apoyo"),
                     ],
+                    sync_binder=lambda block_fields: _bind_selection_activity_dropdown_fields(
+                        block_fields,
+                        primary_field_id="discriminacion_nivel_apoyo",
+                        secondary_field_id="discriminacion",
+                        dependent_field_ids=(
+                            "discriminacion_violencia_apoyo",
+                            "discriminacion_violencia_cuenta_apoyo",
+                            "discriminacion_vulneracion_apoyo",
+                            "discriminacion_vulneracion_cuenta_apoyo",
+                        ),
+                    ),
                 )
             )
             self.oferente_blocks.append(fields)

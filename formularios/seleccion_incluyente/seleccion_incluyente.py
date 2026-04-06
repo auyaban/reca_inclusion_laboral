@@ -1062,7 +1062,7 @@ OFERENTE_CELL_MAP = {
     "presentacion_nota": ("O", 50),
     "comunicacion_escrita_nivel_apoyo": ("I", 51),
     "comunicacion_escrita_apoyo": ("N", 51),
-    "comunicacion_escrita_nota": ("N", 52),
+    "comunicacion_escrita_nota": ("O", 52),
     "comunicacion_verbal_nivel_apoyo": ("I", 53),
     "comunicacion_verbal_apoyo": ("N", 53),
     "comunicacion_verbal_nota": ("O", 54),

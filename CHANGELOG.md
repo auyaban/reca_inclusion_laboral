@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.0.4 - 2026-04-06
+
+Esta version ajusta la logica de dependencias en `Seleccion Incluyente` y corrige el mapeo de comunicacion escrita en la plantilla maestra.
+
+### Cambios principales
+
+- `4.2A` ahora deja independientes los terceros dropdowns de desplazamiento y ubicacion, sincronizando solo los dos primeros campos de esas preguntas.
+- `4.2B` aplica reglas especificas desde el primer dropdown: `0` replica `0` al segundo y pone `No` en los auxiliares; `No aplica` replica `No aplica` a todos; `1`, `2` y `3` solo sincronizan el segundo y dejan en blanco los auxiliares.
+- `comunicacion_escrita_nota` corrige su mapeo en Google Sheets para escribir en `O52`, conservando offsets correctos cuando hay multiples oferentes.
+- Se agregaron pruebas para la nueva logica de sincronizacion y para validar el mapeo con offsets por bloque de oferente.
+
+### Como afecta a los usuarios
+
+- La seccion `4.2` ya no sobreescribe campos que deben diligenciarse de forma independiente.
+- La nota de comunicacion escrita vuelve a caer en la celda correcta del formato maestro, tanto en procesos individuales como grupales.
+
 ## 2.0.3 - 2026-04-06
 
 Esta version amplía la generación de PDFs para más actas, corrige un desajuste en inducción organizacional y endurece la reutilización de plantillas de Google Sheets en escenarios dinámicos.

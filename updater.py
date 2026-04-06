@@ -3,6 +3,7 @@ import json
 import os
 import re
 import subprocess
+import base64
 import tempfile
 import urllib.error
 import urllib.request
@@ -465,18 +466,98 @@ def download_installer(assets: dict, progress_callback=None) -> Path:
     return installer_path
 
 
-def run_installer(installer_path: Path, wait: bool = True) -> None:
-    args = [
+def _installer_args(installer_path: Path) -> list[str]:
+    return [
         str(installer_path),
         "/VERYSILENT",
         "/CURRENTUSER",
         "/SUPPRESSMSGBOXES",
         "/NORESTART",
     ]
+
+
+def _build_powershell_array(values: list[str] | tuple[str, ...] | None) -> str:
+    escaped_values = [
+        f"'{_escape_powershell_single_quoted(str(value))}'" for value in (values or [])
+    ]
+    return "@(" + ", ".join(escaped_values) + ")"
+
+
+def _build_post_exit_installer_script(
+    installer_path: Path,
+    current_pid: int,
+    relaunch_command: list[str] | tuple[str, ...] | None = None,
+) -> str:
+    installer_args = _build_powershell_array(_installer_args(installer_path))
+    relaunch_args = _build_powershell_array(relaunch_command)
+    return (
+        "$ErrorActionPreference='Stop';"
+        f"$pidToWait={int(current_pid)};"
+        "Wait-Process -Id $pidToWait -ErrorAction SilentlyContinue;"
+        "Start-Sleep -Milliseconds 500;"
+        f"$installerArgs={installer_args};"
+        "$proc = Start-Process -FilePath $installerArgs[0] "
+        "-ArgumentList $installerArgs[1..($installerArgs.Length-1)] -Wait -PassThru;"
+        "if ($proc.ExitCode -ne 0) { throw ('Installer failed with exit code ' + $proc.ExitCode) };"
+        f"$relaunchArgs={relaunch_args};"
+        "if ($relaunchArgs.Length -gt 0) {"
+        "Start-Sleep -Seconds 1;"
+        "if ($relaunchArgs.Length -gt 1) { "
+        "Start-Process -FilePath $relaunchArgs[0] -ArgumentList $relaunchArgs[1..($relaunchArgs.Length-1)]"
+        "} else { "
+        "Start-Process -FilePath $relaunchArgs[0]"
+        " }"
+        "}"
+    )
+
+
+def schedule_installer_after_exit(
+    installer_path: Path,
+    current_pid: int,
+    relaunch_command: list[str] | tuple[str, ...] | None = None,
+) -> None:
+    script = _build_post_exit_installer_script(
+        installer_path,
+        current_pid=current_pid,
+        relaunch_command=relaunch_command,
+    )
+    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+    command = [
+        "powershell",
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+        "-EncodedCommand",
+        encoded,
+    ]
+    creationflags = (
+        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        | getattr(subprocess, "DETACHED_PROCESS", 0)
+    )
+    _log_update(
+        "Schedule installer after exit: "
+        f"path={installer_path}, current_pid={current_pid}, relaunch={list(relaunch_command or [])}"
+    )
+    proc = subprocess.Popen(
+        command,
+        close_fds=True,
+        creationflags=creationflags,
+    )
+    _log_update(f"Post-exit installer watcher started: pid={getattr(proc, 'pid', '?')}")
+
+
+def run_installer(installer_path: Path, wait: bool = True) -> None:
+    args = _installer_args(installer_path)
     _log_update(f"Run installer: path={installer_path}, wait={wait}, args={args}")
     if wait:
         completed = subprocess.run(args, check=False)
         _log_update(f"Installer process finished: returncode={completed.returncode}")
+        if completed.returncode != 0:
+            raise RuntimeError(
+                "La instalación no se completó correctamente "
+                f"(código {completed.returncode})."
+            )
     else:
         proc = subprocess.Popen(args, close_fds=True)
         _log_update(f"Installer process started: pid={getattr(proc, 'pid', '?')}")

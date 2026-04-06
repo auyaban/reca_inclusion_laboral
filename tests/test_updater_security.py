@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import updater
@@ -67,6 +69,60 @@ class UpdaterSecurityTests(unittest.TestCase):
         self.assertNotIn("ghp_secret_token", script)
         self.assertIn("$env:RECA_GITHUB_TOKEN", script)
         self.assertEqual(captured["env"]["RECA_GITHUB_TOKEN"], "ghp_secret_token")
+
+    def test_run_installer_raises_on_nonzero_exit(self) -> None:
+        class _Completed:
+            returncode = 5
+
+        with patch.object(updater.subprocess, "run", return_value=_Completed()):
+            with self.assertRaisesRegex(RuntimeError, "código 5"):
+                updater.run_installer(Path("C:/tmp/setup.exe"), wait=True)
+
+    def test_build_post_exit_installer_script_waits_and_relaunches(self) -> None:
+        script = updater._build_post_exit_installer_script(
+            Path("C:/tmp/setup.exe"),
+            current_pid=1234,
+            relaunch_command=["C:/Program Files/RECA/reca.exe", "--flag"],
+        )
+
+        self.assertIn("Wait-Process -Id $pidToWait", script)
+        self.assertIn("$pidToWait=1234", script)
+        self.assertIn("C:\\tmp\\setup.exe", script)
+        self.assertIn("C:/Program Files/RECA/reca.exe", script)
+        self.assertIn("--flag", script)
+
+    def test_schedule_installer_after_exit_launches_hidden_powershell(self) -> None:
+        captured = {}
+
+        class _Proc:
+            pid = 4321
+
+        def _fake_popen(command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            return _Proc()
+
+        with patch.object(updater.subprocess, "Popen", side_effect=_fake_popen):
+            updater.schedule_installer_after_exit(
+                Path("C:/tmp/setup.exe"),
+                current_pid=99,
+                relaunch_command=["C:/Program Files/RECA/reca.exe"],
+            )
+
+        self.assertEqual(captured["command"][:5], [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+        ])
+        self.assertEqual(captured["command"][5], "-EncodedCommand")
+        decoded = base64.b64decode(captured["command"][6]).decode("utf-16le")
+        self.assertIn("$pidToWait=99", decoded)
+        self.assertIn("C:\\tmp\\setup.exe", decoded)
+        self.assertIn("C:/Program Files/RECA/reca.exe", decoded)
+        self.assertTrue(captured["kwargs"]["close_fds"])
+        self.assertIn("creationflags", captured["kwargs"])
 
 
 if __name__ == "__main__":

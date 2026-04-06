@@ -121,7 +121,7 @@ from updater import (
     get_latest_release_assets,
     is_update_available,
     download_installer,
-    run_installer,
+    schedule_installer_after_exit,
 )
 from logging_utils import get_log_file_path, get_logs_root, log_app_event, log_labs_event
 
@@ -8401,10 +8401,8 @@ class HubWindow(tk.Tk):
                 path = download_installer(assets, progress_callback=_progress)
                 result["path"] = path
                 _log_capture(f"_start_manual_update: instalador descargado en {path}")
-                self.after(0, lambda: dialog.set_status("Instalando actualización..."))
+                self.after(0, lambda: dialog.set_status("Preparando instalación..."))
                 self.after(0, lambda: dialog.set_progress(100))
-                run_installer(path, wait=True)
-                _log_capture("_start_manual_update: run_installer finalizado")
             except Exception as exc:
                 result["error"] = str(exc)
                 _log_capture(f"_start_manual_update error: {exc}")
@@ -8421,14 +8419,35 @@ class HubWindow(tk.Tk):
                 _log_capture(f"_start_manual_update resultado error: {result['error']}")
                 messagebox.showerror("Actualización", f"No se pudo actualizar: {result['error']}")
                 return
-            _log_capture("_start_manual_update resultado OK: mostrando countdown")
-            self._show_restart_countdown()
+            _log_capture("_start_manual_update resultado OK: programando instalador post-cierre")
+            self._handoff_to_installer(result["path"])
 
         self.after(300, _check_done)
 
-    def _show_restart_countdown(self, seconds=5):
+    def _handoff_to_installer(self, installer_path):
+        try:
+            if getattr(sys, "frozen", False):
+                relaunch_args = [sys.executable]
+            else:
+                relaunch_args = [sys.executable, os.path.abspath(__file__)]
+            schedule_installer_after_exit(
+                installer_path,
+                current_pid=os.getpid(),
+                relaunch_command=relaunch_args,
+            )
+            _log_capture(
+                "_handoff_to_installer: watcher programado "
+                f"installer={installer_path} relaunch={relaunch_args}"
+            )
+        except Exception as exc:
+            _log_capture(f"_handoff_to_installer error: {exc}")
+            messagebox.showerror("Actualización", f"No se pudo iniciar el instalador: {exc}")
+            return
+        self._show_restart_countdown()
+
+    def _show_restart_countdown(self, seconds=3):
         modal = tk.Toplevel(self)
-        modal.title("Actualización completada")
+        modal.title("Actualización")
         modal.configure(bg=COLOR_LIGHT_BG)
         modal.transient(self)
         modal.grab_set()
@@ -8438,14 +8457,14 @@ class HubWindow(tk.Tk):
         body.pack(fill="both", expand=True)
         tk.Label(
             body,
-            text="Instalación terminada",
+            text="Cerrando para instalar",
             font=("Arial", 12, "bold"),
             fg=COLOR_PURPLE,
             bg=COLOR_LIGHT_BG,
         ).pack(anchor="w", pady=(0, 6))
         countdown = tk.Label(
             body,
-            text="Reiniciando en 5 segundos...",
+            text="La aplicación se cerrará en 3 segundos...",
             font=("Arial", 10),
             fg=COLOR_TEAL,
             bg=COLOR_LIGHT_BG,
@@ -8464,25 +8483,12 @@ class HubWindow(tk.Tk):
                     modal.destroy()
                 except Exception:
                     pass
-                self._restart_app()
+                self.after(200, self.destroy)
                 return
-            countdown.config(text=f"Reiniciando en {remaining} segundos...")
+            countdown.config(text=f"La aplicación se cerrará en {remaining} segundos...")
             modal.after(1000, lambda: _tick(remaining - 1))
 
         _tick(seconds)
-
-    def _restart_app(self):
-        try:
-            if getattr(sys, "frozen", False):
-                args = [sys.executable]
-            else:
-                args = [sys.executable, os.path.abspath(__file__)]
-            _log_capture(f"_restart_app: relanzando con args={args}")
-            subprocess.Popen(args, close_fds=True)
-        except Exception:
-            _log_capture("_restart_app: fallo al relanzar app")
-            pass
-        self.after(200, self.destroy)
 
     def _build_header(self):
         self.header = tk.Frame(self, bg=COLOR_LIGHT_BG)

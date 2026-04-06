@@ -337,6 +337,13 @@ def validate_before_finalize(cache=None):
     section_1 = cache_data.get("section_1", {})
     require_value(issues, "section_1", section_1, "fecha_visita", "Fecha del servicio")
     require_value(issues, "section_1", section_1, "modalidad_interprete", "Modalidad del intérprete")
+    require_value(
+        issues,
+        "section_1",
+        section_1,
+        "modalidad_profesional_reca",
+        "Modalidad del profesional RECA",
+    )
 
     oferentes = cache_data.get("section_2", [])
     if not isinstance(oferentes, list) or not oferentes:

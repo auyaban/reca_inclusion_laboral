@@ -4302,14 +4302,10 @@ def _build_lsc_context(window, *, module, source_form, oferentes=None):
 
     fields = getattr(window, "fields", {}) or {}
     fecha_visita = ""
-    modalidad = ""
     if isinstance(section_1, dict):
         fecha_visita = section_1.get("fecha_visita") or ""
-        modalidad = section_1.get("modalidad") or ""
     if not fecha_visita and fields.get("fecha_visita") is not None:
         fecha_visita = ui_feedback.get_widget_value(fields.get("fecha_visita"))
-    if not modalidad and fields.get("modalidad") is not None:
-        modalidad = ui_feedback.get_widget_value(fields.get("modalidad"))
 
     context = {
         "empresa": empresa,
@@ -4318,10 +4314,6 @@ def _build_lsc_context(window, *, module, source_form, oferentes=None):
     }
     if fecha_visita not in (None, ""):
         context["fecha_visita"] = fecha_visita
-    modalidad = str(modalidad or "").strip()
-    if modalidad:
-        context["modalidad_interprete"] = modalidad
-        context["modalidad_profesional_reca"] = modalidad
     return context
 
 
@@ -21660,27 +21652,44 @@ class LSCWindow(tk.Toplevel, FormMousewheelMixin):
         _section1_build_search(self, parent)
 
     def _build_groups(self, parent):
-        groups = [
-            (
-                "Información de Empresa",
-                COLOR_GROUP_EMPRESA,
-                [
-                    "nombre_empresa",
-                    "ciudad_empresa",
-                    "direccion_empresa",
-                    "contacto_empresa",
-                    "cargo",
-                ],
-            ),
-        ]
+        container = tk.Frame(parent, bg=COLOR_LIGHT_BG)
+        container.pack(fill="both", expand=True)
         labels = {
-            "nombre_empresa":    "Nombre de la empresa",
-            "ciudad_empresa":    "Ciudad/Municipio",
+            "nombre_empresa": "Nombre de la empresa",
+            "ciudad_empresa": "Ciudad/Municipio",
             "direccion_empresa": "Dirección",
-            "contacto_empresa":  "Contacto en la empresa",
-            "cargo":             "Cargo",
+            "contacto_empresa": "Contacto en la empresa",
+            "cargo": "Cargo",
         }
-        _section1_build_groups(self, parent, groups, labels)
+        self._section1_labels = labels
+
+        group_label = tk.Label(
+            container,
+            text="Información de Empresa",
+            bg=COLOR_GROUP_EMPRESA,
+            fg=COLOR_PURPLE,
+            font=FONT_LABEL,
+            anchor="w",
+        )
+        group_label.pack(fill="x", padx=FORM_PADX, pady=(0, 0))
+
+        box = tk.Frame(container, bg="#EAF5ED", bd=1, relief="solid")
+        box.pack(fill="x", padx=FORM_PADX, pady=(0, FORM_PADY))
+
+        for row_idx, field_id in enumerate(
+            ["nombre_empresa", "ciudad_empresa", "direccion_empresa", "contacto_empresa", "cargo"]
+        ):
+            tk.Label(
+                box,
+                text=labels.get(field_id, field_id),
+                font=FONT_LABEL,
+                bg="#EAF5ED",
+                anchor="w",
+            ).grid(row=row_idx, column=0, sticky="w", padx=20, pady=8)
+            entry = tk.Entry(box, width=ENTRY_W_XL)
+            entry.grid(row=row_idx, column=1, sticky="w", padx=(12, 20), pady=8)
+            entry.configure(state="readonly")
+            self.fields[field_id] = entry
 
     def _label_for_field(self, field_id):
         return getattr(self, "_section1_labels", {}).get(field_id, field_id)
@@ -21750,16 +21759,6 @@ class LSCWindow(tk.Toplevel, FormMousewheelMixin):
                 _set_input_value(self.fields.get("fecha_visita"), fecha_val)
             restored = True
 
-        modalidad_interprete = str(context.get("modalidad_interprete") or "").strip()
-        if modalidad_interprete and "modalidad_interprete" in self.fields:
-            self.fields["modalidad_interprete"].set(modalidad_interprete)
-            restored = True
-
-        modalidad_profesional = str(context.get("modalidad_profesional_reca") or "").strip()
-        if modalidad_profesional and "modalidad_profesional_reca" in self.fields:
-            self.fields["modalidad_profesional_reca"].set(modalidad_profesional)
-            restored = True
-
         if restored:
             _refresh_section1_continue_button(self)
         return restored
@@ -21790,6 +21789,9 @@ class LSCWindow(tk.Toplevel, FormMousewheelMixin):
         fecha_entry = DateEntry(row1, width=ENTRY_W_MED, date_pattern="yyyy-mm-dd")
         fecha_entry.pack(side="left")
         self.fields["fecha_visita"] = fecha_entry
+        fecha_error = _build_inline_error_label(extra, wraplength=260)
+        fecha_error.pack(anchor="w", padx=(160, 0), pady=(0, 4))
+        ui_feedback.register_field(self, "fecha_visita", fecha_entry, error_label=fecha_error)
 
         row2 = tk.Frame(extra, bg=COLOR_LIGHT_BG)
         row2.pack(fill="x", pady=4)
@@ -21803,6 +21805,7 @@ class LSCWindow(tk.Toplevel, FormMousewheelMixin):
             width=20,
         )
         mod_interp.pack(side="left", padx=(0, 20))
+        mod_interp.set("")
         self.fields["modalidad_interprete"] = mod_interp
 
         tk.Label(row2, text="Modalidad profesional RECA:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(
@@ -21815,7 +21818,24 @@ class LSCWindow(tk.Toplevel, FormMousewheelMixin):
             width=20,
         )
         mod_prof.pack(side="left")
+        mod_prof.set("")
         self.fields["modalidad_profesional_reca"] = mod_prof
+        modalidad_interp_error = _build_inline_error_label(extra, wraplength=260)
+        modalidad_interp_error.pack(anchor="w", padx=(160, 0), pady=(0, 2))
+        modalidad_prof_error = _build_inline_error_label(extra, wraplength=260)
+        modalidad_prof_error.pack(anchor="w", padx=(160, 0), pady=(0, 6))
+        ui_feedback.register_field(
+            self,
+            "modalidad_interprete",
+            mod_interp,
+            error_label=modalidad_interp_error,
+        )
+        ui_feedback.register_field(
+            self,
+            "modalidad_profesional_reca",
+            mod_prof,
+            error_label=modalidad_prof_error,
+        )
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
@@ -22140,6 +22160,7 @@ class LSCWindow(tk.Toplevel, FormMousewheelMixin):
         def _add_asistente_row(nombre="", cargo=""):
             if len(self._asistente_rows) >= interprete_lsc.MAX_ASISTENTES:
                 return
+            use_catalog = len(self._asistente_rows) == 0
             row = tk.Frame(asist_content, bg=COLOR_LIGHT_BG)
             row.pack(fill="x", pady=4)
             tk.Label(row, text="Nombre completo:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(
@@ -22148,7 +22169,7 @@ class LSCWindow(tk.Toplevel, FormMousewheelMixin):
             nombre_entry, cargo_entry = _create_asistente_inputs(
                 row,
                 50,
-                use_catalog=True,
+                use_catalog=use_catalog,
                 catalog=catalog,
             )
             nombre_entry.pack(side="left", padx=(0, 12))
@@ -22156,6 +22177,8 @@ class LSCWindow(tk.Toplevel, FormMousewheelMixin):
                 side="left", padx=(0, 6)
             )
             cargo_entry.pack(side="left")
+            if not use_catalog:
+                _bind_name_entry(nombre_entry)
             if nombre:
                 _set_input_value(nombre_entry, _normalize_person_name(nombre))
             if cargo:
@@ -22196,17 +22219,65 @@ class LSCWindow(tk.Toplevel, FormMousewheelMixin):
     # ── Confirmaciones ────────────────────────────────────────────────────────
 
     def _confirm_section_1(self):
-        user_inputs = {
-            "fecha_visita": self.fields.get("fecha_visita") and self.fields["fecha_visita"].get(),
-            "modalidad_interprete": self.fields.get("modalidad_interprete") and self.fields["modalidad_interprete"].get(),
-            "modalidad_profesional_reca": self.fields.get("modalidad_profesional_reca") and self.fields["modalidad_profesional_reca"].get(),
-        }
-        _confirm_section1_and_continue(
+        ui_feedback.clear_field_errors(
             self,
-            confirm_fn=interprete_lsc.confirm_section_1,
-            next_step=self._show_section_2,
-            extra_inputs=user_inputs,
+            ["nit_empresa", "nombre_busqueda", "fecha_visita", "modalidad_interprete", "modalidad_profesional_reca"],
         )
+        _clear_inline_feedback(self)
+        if not getattr(self, "company_data", None):
+            _show_inline_feedback(self, "Busca una empresa antes de continuar.", state="error")
+            ui_feedback.focus_first_invalid_field(self, ["nit_empresa", "nombre_busqueda"])
+            return
+
+        fecha_visita = _get_required_fecha_visita(self)
+        modalidad_interprete = str(_get_input_value(self.fields.get("modalidad_interprete")) or "").strip()
+        modalidad_profesional = str(_get_input_value(self.fields.get("modalidad_profesional_reca")) or "").strip()
+
+        has_error = False
+        if not modalidad_interprete:
+            ui_feedback.set_field_error(
+                self,
+                "modalidad_interprete",
+                "Selecciona la modalidad del intérprete.",
+            )
+            has_error = True
+        else:
+            ui_feedback.clear_field_error(self, "modalidad_interprete")
+
+        if not modalidad_profesional:
+            ui_feedback.set_field_error(
+                self,
+                "modalidad_profesional_reca",
+                "Selecciona la modalidad del profesional RECA.",
+            )
+            has_error = True
+        else:
+            ui_feedback.clear_field_error(self, "modalidad_profesional_reca")
+
+        if not fecha_visita or has_error:
+            _show_inline_feedback(
+                self,
+                "Completa la fecha del servicio y las dos modalidades para continuar.",
+                state="error",
+            )
+            ui_feedback.focus_first_invalid_field(
+                self,
+                ["fecha_visita", "modalidad_interprete", "modalidad_profesional_reca"],
+            )
+            return
+
+        user_inputs = {
+            "fecha_visita": fecha_visita,
+            "modalidad_interprete": modalidad_interprete,
+            "modalidad_profesional_reca": modalidad_profesional,
+        }
+        try:
+            interprete_lsc.confirm_section_1(self.company_data, user_inputs)
+        except Exception as exc:
+            _show_inline_feedback(self, _log_user_error("section_confirm", exc), state="error")
+            return
+        _clear_inline_feedback(self)
+        self._show_section_2()
 
     def _confirm_section_2(self):
         payload = []

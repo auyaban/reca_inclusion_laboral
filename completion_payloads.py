@@ -452,6 +452,48 @@ def _normalize_sensibilizacion(
     }
 
 
+def _normalize_interprete_lsc(
+    form_name: str,
+    cache_snapshot: dict[str, Any],
+    *,
+    output_path: str,
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    del context
+    section_1 = _section_dict(cache_snapshot, "section_1")
+    section_2 = _section_list(cache_snapshot, "section_2")
+    section_3 = _section_dict(cache_snapshot, "section_3")
+    asistentes = _normalize_asistentes(cache_snapshot.get("section_4"))
+    participants = _normalize_participants(section_2)
+    interpretes_raw = section_3.get("interpretes") if isinstance(section_3.get("interpretes"), list) else []
+    interprete_names: list[str] = []
+    for interp in interpretes_raw:
+        if not isinstance(interp, dict):
+            continue
+        nombre = _clean_text(interp.get("nombre_interprete") or interp.get("nombre"))
+        if nombre and nombre not in interprete_names:
+            interprete_names.append(nombre)
+    return {
+        "attachment": _build_attachment(
+            output_path=output_path,
+            form_name=form_name,
+            document_kind="lsc_interpretation",
+            document_label="Servicio de Interpretacion LSC",
+        ),
+        "parsed_raw": _build_base_parsed(
+            section_1,
+            asistentes=asistentes,
+            participantes=participants,
+            extra_fields={
+                "modalidad_interprete": _clean_text(section_1.get("modalidad_interprete")),
+                "modalidad_profesional_reca": _clean_text(section_1.get("modalidad_profesional_reca")),
+                "interpretes": interprete_names,
+                "sumatoria_horas": _clean_text(section_3.get("sumatoria_horas")),
+            },
+        ),
+    }
+
+
 _STANDARD_NORMALIZERS: dict[str, Callable[..., dict[str, Any]]] = {
     "presentacion_programa": _normalize_presentacion,
     "evaluacion_accesibilidad": _normalize_evaluacion,
@@ -462,6 +504,7 @@ _STANDARD_NORMALIZERS: dict[str, Callable[..., dict[str, Any]]] = {
     "induccion_organizacional": _normalize_induccion_organizacional,
     "induccion_operativa": _normalize_induccion_operativa,
     "sensibilizacion": _normalize_sensibilizacion,
+    "interprete_lsc": _normalize_interprete_lsc,
 }
 
 _NORMALIZER_FORM_ALIASES = {

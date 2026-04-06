@@ -788,6 +788,7 @@ def publish_sheet_from_template(
     sheet_writes,
     base_name=None,
     folder_name=None,
+    reuse_existing=True,
     clear_ranges=None,
     unmerge_areas=None,
     row_insertions=None,
@@ -883,7 +884,11 @@ def publish_sheet_from_template(
             target_folder_id = root_folder_id
 
     # --- Reuse existing spreadsheet or copy template -------------------
-    existing_id = _find_existing_spreadsheet(service, target_folder_id, requested_filename)
+    existing_id = (
+        _find_existing_spreadsheet(service, target_folder_id, requested_filename)
+        if reuse_existing
+        else ""
+    )
     is_reuse = bool(existing_id)
     spreadsheet_id = existing_id or ""
     file_name = requested_filename
@@ -1248,6 +1253,7 @@ def get_acta_pdf_name(tipo_acta: str, fecha_servicio: date, extra: str | None = 
         "presentacion_programa": f"PRESENTACIÓN DEL PROGRAMA DE INCLUSIÓN LABORAL- {fecha_str}",
         "reactivacion_programa": f"REACTIVACIÓN DEL PROGRAMA DE INCLUSIÓN LABORAL- {fecha_str}",
         "evaluacion_accesibilidad": f"EVALUACIÓN DE ACCESIBILIDAD- {fecha_str}",
+        "interprete_lsc": f"SERVICIO DE INTERPRETACIÓN LSC- {fecha_str}",
         "condiciones_vacante": (
             f"REVISIÓN DE LAS CONDICIONES DE LA VACANTE- {extra_clean}- {fecha_str}"
             if extra_clean

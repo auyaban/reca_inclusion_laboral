@@ -78,6 +78,7 @@ from formularios.induccion_organizacional import induccion_organizacional
 from formularios.induccion_operativa import induccion_operativa
 from formularios.sensibilizacion import sensibilizacion
 from formularios.seguimientos import seguimientos
+from formularios.interprete_lsc import interprete_lsc
 import drive_upload
 from dictation import (
     attach_dictation,
@@ -259,6 +260,7 @@ WINDOW_CLASS_FORM_ID_MAP = {
     "InduccionOperativaWindow": "induccion_operativa",
     "SensibilizacionWindow": "sensibilizacion",
     "SeguimientosWindow": "seguimientos",
+    "LSCWindow": "interprete_lsc",
 }
 
 
@@ -550,7 +552,7 @@ def _collect_asistente_rows(rows):
         else:
             continue
         try:
-            nombre = nombre_widget.get().strip()
+            nombre = _normalize_person_name(nombre_widget.get())
         except Exception:
             nombre = ""
         try:
@@ -1236,6 +1238,7 @@ def _drive_upload_operation_label(job):
 _PDF_EXPORT_ENABLED_TIPOS = {
     "presentacion_programa",
     "reactivacion_programa",
+    "interprete_lsc",
     "condiciones_vacante",
     "seleccion_individual",
     "seleccion_grupal",
@@ -2831,6 +2834,37 @@ def _run_pending_section_autosave(window):
 
 
 def _guard_form_action(window, *, action_label):
+    if str(action_label or "").strip().lower() == "cerrar":
+        linked_state = getattr(window, "_linked_interpreter_state", None)
+        if isinstance(linked_state, dict):
+            status = str(linked_state.get("status") or "idle").strip().lower()
+            show_section = linked_state.get("show_final_section")
+            if status == "running":
+                if callable(show_section):
+                    try:
+                        show_section()
+                    except Exception:
+                        pass
+                messagebox.showerror(
+                    "Acta de intérprete en proceso",
+                    "No se puede cerrar esta acta mientras se está creando el acta de intérprete.\n\n"
+                    "Espera a que termine o vuelve a la última sección para corregir antes de cerrar.",
+                    parent=window,
+                )
+                return True
+            if status == "failed":
+                if callable(show_section):
+                    try:
+                        show_section()
+                    except Exception:
+                        pass
+                messagebox.showerror(
+                    "Acta de intérprete pendiente",
+                    "No se puede cerrar esta acta porque falló la creación del acta de intérprete.\n\n"
+                    "Corrige o vuelve a intentar el acta de intérprete antes de cerrar.",
+                    parent=window,
+                )
+                return True
     form_id = getattr(window, "_form_id", "") or WINDOW_CLASS_FORM_ID_MAP.get(window.__class__.__name__, "")
     module = FORM_MODULE_MAP.get(form_id)
     if not module or not hasattr(module, "get_form_cache"):
@@ -3122,6 +3156,18 @@ def _bind_name_entry(entry):
 
     entry.bind("<KeyRelease>", _on_key_release)
     entry.bind("<FocusOut>", _on_focus_out)
+
+
+def _bind_lsc_time_entry(entry, on_change=None):
+    def _normalize_time(_event=None):
+        normalized = interprete_lsc.normalize_time_value(entry.get())
+        entry.delete(0, tk.END)
+        if normalized:
+            entry.insert(0, normalized)
+        if callable(on_change):
+            on_change()
+
+    entry.bind("<FocusOut>", _normalize_time, add="+")
 
 
 def _set_readonly_entry_value(entry, value):
@@ -3623,8 +3669,17 @@ def _focus_window(window):
         return
 
 
+def _resolve_hub_window(window):
+    current = getattr(window, "master", None)
+    while current is not None:
+        if isinstance(current, HubWindow):
+            return current
+        current = getattr(current, "master", None)
+    return None
+
+
 def _return_to_hub(window):
-    hub = window.master if isinstance(window.master, HubWindow) else None
+    hub = _resolve_hub_window(window)
     if not hub:
         return
     try:
@@ -3778,7 +3833,7 @@ def _finalize_export_flow(window, loading, completion_result):
     output_path = str(result.get("output_path") or "").strip()
     remote_url = str(result.get("remote_url") or "").strip()
     error = str(result.get("error") or "").strip()
-    hub = window.master if isinstance(window.master, HubWindow) else None
+    hub = _resolve_hub_window(window)
 
     if hub and status in {"synced", "pending", "failed", "local"}:
         try:
@@ -4225,6 +4280,275 @@ def _confirm_section1_and_continue(window, *, confirm_fn, next_step, extra_input
         return
     _clear_inline_feedback(window)
     next_step()
+
+
+def _build_lsc_context(window, *, module, source_form, oferentes=None):
+    cache = {}
+    if module is not None and hasattr(module, "get_form_cache"):
+        try:
+            cache = module.get_form_cache() or {}
+        except Exception:
+            cache = {}
+
+    section_1 = cache.get("section_1", {}) if isinstance(cache, dict) else {}
+    company_data = getattr(window, "company_data", None)
+    empresa = (
+        copy.deepcopy(section_1)
+        if isinstance(section_1, dict) and section_1.get("nombre_empresa")
+        else copy.deepcopy(company_data)
+        if isinstance(company_data, dict)
+        else {}
+    )
+
+    fields = getattr(window, "fields", {}) or {}
+    fecha_visita = ""
+    modalidad = ""
+    if isinstance(section_1, dict):
+        fecha_visita = section_1.get("fecha_visita") or ""
+        modalidad = section_1.get("modalidad") or ""
+    if not fecha_visita and fields.get("fecha_visita") is not None:
+        fecha_visita = ui_feedback.get_widget_value(fields.get("fecha_visita"))
+    if not modalidad and fields.get("modalidad") is not None:
+        modalidad = ui_feedback.get_widget_value(fields.get("modalidad"))
+
+    context = {
+        "empresa": empresa,
+        "oferentes": list(oferentes or []),
+        "source_form": source_form,
+    }
+    if fecha_visita not in (None, ""):
+        context["fecha_visita"] = fecha_visita
+    modalidad = str(modalidad or "").strip()
+    if modalidad:
+        context["modalidad_interprete"] = modalidad
+        context["modalidad_profesional_reca"] = modalidad
+    return context
+
+
+def _get_linked_interpreter_state(window):
+    state = getattr(window, "_linked_interpreter_state", None)
+    if isinstance(state, dict):
+        return state
+    state = {
+        "status": "idle",
+        "result": None,
+        "error_message": "",
+        "show_final_section": None,
+        "main_finish_action": None,
+        "pending_main_finalize": False,
+        "pending_export_action": None,
+        "wait_loading": None,
+    }
+    window._linked_interpreter_state = state
+    return state
+
+
+def _close_linked_interpreter_wait_dialog(window):
+    state = _get_linked_interpreter_state(window)
+    loading = state.get("wait_loading")
+    state["wait_loading"] = None
+    if loading is not None:
+        _close_loading_async(loading)
+
+
+def _show_linked_interpreter_wait_dialog(window):
+    state = _get_linked_interpreter_state(window)
+    loading = state.get("wait_loading")
+    if loading is None or not loading.exists():
+        loading = LoadingDialog(window, title="Esperando acta de intérprete")
+        state["wait_loading"] = loading
+    loading.set_status("Se está terminando de crear el acta de intérprete...")
+    loading.set_progress(55)
+    return loading
+
+
+def _restore_linked_parent_final_section(window):
+    state = _get_linked_interpreter_state(window)
+    show_section = state.get("show_final_section")
+    if callable(show_section):
+        try:
+            show_section()
+        except Exception:
+            pass
+    _focus_window(window)
+
+
+def _ask_linked_interpreter_next_action(parent):
+    dialog = tk.Toplevel(parent)
+    dialog.title("Acta de intérprete")
+    dialog.configure(bg=COLOR_LIGHT_BG)
+    dialog.resizable(False, False)
+    dialog.transient(parent)
+    dialog.grab_set()
+
+    result = {"value": "correct"}
+
+    body = tk.Frame(dialog, bg=COLOR_LIGHT_BG, padx=24, pady=20)
+    body.pack(fill="both", expand=True)
+
+    tk.Label(
+        body,
+        text="Se está creando el acta de intérprete.",
+        font=FONT_SECTION,
+        fg=COLOR_PURPLE,
+        bg=COLOR_LIGHT_BG,
+        anchor="w",
+    ).pack(fill="x")
+    tk.Label(
+        body,
+        text="¿Deseas terminar esta acta o corregirla?",
+        font=FONT_LABEL,
+        bg=COLOR_LIGHT_BG,
+        fg="#333333",
+        justify="left",
+        wraplength=380,
+        anchor="w",
+    ).pack(fill="x", pady=(8, 0))
+
+    actions = tk.Frame(body, bg=COLOR_LIGHT_BG)
+    actions.pack(fill="x", pady=(18, 0))
+
+    def _choose(value):
+        result["value"] = value
+        dialog.destroy()
+
+    ttk.Button(actions, text="Corregir", command=lambda: _choose("correct")).pack(side="right")
+    ttk.Button(actions, text="Terminar acta", command=lambda: _choose("finish")).pack(
+        side="right",
+        padx=(0, 8),
+    )
+
+    dialog.protocol("WM_DELETE_WINDOW", lambda: _choose("correct"))
+    dialog.update_idletasks()
+    width = max(dialog.winfo_reqwidth(), 430)
+    height = dialog.winfo_reqheight()
+    x = parent.winfo_rootx() + max(0, (parent.winfo_width() - width) // 2)
+    y = parent.winfo_rooty() + max(0, (parent.winfo_height() - height) // 2)
+    dialog.geometry(f"{width}x{height}+{x}+{y}")
+    dialog.lift()
+    dialog.focus_force()
+    dialog.wait_window()
+    return result["value"]
+
+
+def _queue_or_run_main_form_export(window, export_action):
+    state = _get_linked_interpreter_state(window)
+    status = str(state.get("status") or "idle").strip().lower()
+    if status == "failed":
+        _restore_linked_parent_final_section(window)
+        message = str(state.get("error_message") or "").strip() or (
+            "No se pudo crear el acta de intérprete. Corrige o vuelve a intentar antes de finalizar esta acta."
+        )
+        _show_inline_feedback(window, message, state="error")
+        messagebox.showerror("Acta de intérprete", message, parent=window)
+        state["pending_main_finalize"] = False
+        state["pending_export_action"] = None
+        return False
+    if status == "running":
+        state["pending_main_finalize"] = True
+        state["pending_export_action"] = export_action
+        _show_linked_interpreter_wait_dialog(window)
+        return False
+    state["pending_main_finalize"] = False
+    state["pending_export_action"] = None
+    export_action()
+    return True
+
+
+def _handle_linked_interpreter_finished(window, *, status, result=None, error_message=""):
+    state = _get_linked_interpreter_state(window)
+    state["status"] = status
+    state["result"] = result
+    state["error_message"] = str(error_message or "").strip()
+
+    pending_finalize = bool(state.get("pending_main_finalize"))
+    export_action = state.get("pending_export_action")
+    _close_linked_interpreter_wait_dialog(window)
+
+    if status == "success":
+        if pending_finalize and callable(export_action):
+            state["pending_main_finalize"] = False
+            state["pending_export_action"] = None
+            _clear_inline_feedback(window)
+            _safe_widget_after(window, export_action)
+            return
+        _show_inline_feedback(
+            window,
+            "El acta de intérprete quedó creada. Puedes terminar esta acta cuando quieras.",
+            state="success",
+        )
+        return
+
+    state["pending_main_finalize"] = False
+    state["pending_export_action"] = None
+    _restore_linked_parent_final_section(window)
+    message = state["error_message"] or (
+        "No se pudo crear el acta de intérprete. Corrige o vuelve a intentar antes de finalizar esta acta."
+    )
+    _show_inline_feedback(window, message, state="error")
+    messagebox.showerror("Acta de intérprete", message, parent=window)
+
+
+def _launch_linked_lsc_window(window, *, context, return_to_final_section, main_finish_action):
+    state = _get_linked_interpreter_state(window)
+    if str(state.get("status") or "").strip().lower() == "running":
+        messagebox.showinfo(
+            "Acta de intérprete",
+            "Ya hay un acta de intérprete en proceso para esta acta.",
+            parent=window,
+        )
+        return None
+
+    _run_pending_section_autosave(window)
+    form_id = getattr(window, "_form_id", "") or WINDOW_CLASS_FORM_ID_MAP.get(window.__class__.__name__, "")
+    module = FORM_MODULE_MAP.get(form_id)
+    if module is not None and hasattr(module, "save_cache_to_file"):
+        try:
+            module.save_cache_to_file()
+        except Exception:
+            pass
+
+    _close_linked_interpreter_wait_dialog(window)
+    state["status"] = "idle"
+    state["result"] = None
+    state["error_message"] = ""
+    state["show_final_section"] = return_to_final_section
+    state["main_finish_action"] = main_finish_action
+    state["pending_main_finalize"] = False
+    state["pending_export_action"] = None
+
+    def _on_started():
+        state["status"] = "running"
+        state["result"] = None
+        state["error_message"] = ""
+        _restore_linked_parent_final_section(window)
+        _clear_inline_feedback(window)
+        choice = _ask_linked_interpreter_next_action(window)
+        if choice == "finish" and callable(main_finish_action):
+            main_finish_action()
+            return
+        _show_inline_feedback(
+            window,
+            "La acta de intérprete sigue en creación. Puedes corregir esta acta y finalizar después.",
+            state="info",
+        )
+
+    def _on_finished(*, status, result=None, error_message=""):
+        _handle_linked_interpreter_finished(
+            window,
+            status=status,
+            result=result,
+            error_message=error_message,
+        )
+
+    return LSCWindow(
+        window,
+        context=context,
+        linked_mode=True,
+        parent_form=window,
+        on_linked_export_started=_on_started,
+        on_linked_export_finished=_on_finished,
+    )
 
 
 # ── HELPERS: Labs / funciones experimentales ────────────────────────────────
@@ -5011,6 +5335,10 @@ _ASISTENTES_PROF_CACHE = {
     "cargos": [],
     "name_to_cargo": {},
 }
+_INTERPRETES_CACHE = {
+    "loaded_at": 0.0,
+    "nombres": [],
+}
 _ASESORES_AGENCIA_CACHE = {
     "loaded_at": 0.0,
     "nombres": [],
@@ -5126,6 +5454,62 @@ def _get_asesores_agencia_catalog(force=False):
     return _ASESORES_AGENCIA_CACHE
 
 
+def _get_interpretes_catalog(force=False):
+    global _INTERPRETES_CACHE
+    now = time.time()
+    cached = _INTERPRETES_CACHE
+    if (
+        not force
+        and cached.get("nombres")
+        and (now - float(cached.get("loaded_at") or 0.0)) < _ASISTENTES_PROF_CACHE_TTL
+    ):
+        return cached
+
+    rows = None
+    for select_clause in ("nombre", "nombre_interprete"):
+        try:
+            rows = _supabase_get_paged(
+                "interpretes",
+                {
+                    "select": select_clause,
+                    "order": f"{select_clause}.asc",
+                },
+                env_path=".env",
+                page_size=500,
+                max_pages=20,
+            )
+            if rows is not None:
+                break
+        except Exception:
+            rows = None
+            continue
+
+    if rows is None:
+        _log_capture("[INTERPRETES] no se pudo leer catalogo de interpretes.")
+        return cached
+
+    nombres = []
+    for row in rows or []:
+        nombre = str((row or {}).get("nombre") or (row or {}).get("nombre_interprete") or "").strip()
+        if nombre:
+            nombres.append(_normalize_person_name(nombre))
+
+    _INTERPRETES_CACHE = {
+        "loaded_at": now,
+        "nombres": _dedupe_keep_order(nombres),
+    }
+    return _INTERPRETES_CACHE
+
+
+def _normalize_person_widget(widget):
+    if widget is None:
+        return ""
+    normalized = _normalize_person_name(_get_input_value(widget))
+    if normalized != _get_input_value(widget):
+        _set_input_value(widget, normalized)
+    return normalized
+
+
 def _create_asistente_inputs(parent, width, use_catalog=False, catalog=None):
     if use_catalog:
         nombre_widget = ttk.Combobox(parent, width=width, state="normal")
@@ -5202,6 +5586,7 @@ def _configure_asistente_widgets(nombre_widget, cargo_widget, catalog=None):
     _bind_editable_combobox_filter(cargo_widget, cargos)
 
     def _sync_cargo(_event=None):
+        _normalize_person_widget(nombre_widget)
         selected_name = _asistentes_norm(nombre_widget.get())
         suggested = name_to_cargo.get(selected_name)
         if suggested:
@@ -5209,6 +5594,16 @@ def _configure_asistente_widgets(nombre_widget, cargo_widget, catalog=None):
 
     nombre_widget.bind("<<ComboboxSelected>>", _sync_cargo, add="+")
     nombre_widget.bind("<FocusOut>", _sync_cargo, add="+")
+
+
+def _create_interprete_name_input(parent, width, catalog=None):
+    nombre_widget = ttk.Combobox(parent, width=width, state="normal")
+    nombres = list((catalog or _get_interpretes_catalog()).get("nombres") or [])
+    nombre_widget.configure(values=nombres)
+    _bind_editable_combobox_filter(nombre_widget, nombres)
+    nombre_widget.bind("<<ComboboxSelected>>", lambda _e=None: _normalize_person_widget(nombre_widget), add="+")
+    nombre_widget.bind("<FocusOut>", lambda _e=None: _normalize_person_widget(nombre_widget), add="+")
+    return nombre_widget
 
 
 # ── CLASES BASE: FormMousewheelMixin, LoadingDialog, Labs dialogs ─────────────
@@ -5841,6 +6236,12 @@ def _start_background_finalization(
     form_id,
     worker_fn,
     post_delivery_fn=None,
+    on_success=None,
+    on_error=None,
+    close_window_on_success=True,
+    return_to_hub_on_success=True,
+    show_completion_ui=True,
+    show_error_dialog=True,
 ):
     if getattr(window, "_finalize_in_progress", False):
         messagebox.showinfo(
@@ -5848,23 +6249,33 @@ def _start_background_finalization(
             "Ya hay una finalización en curso para este formulario.",
             parent=window,
         )
-        return
+        return False
 
     window._finalize_in_progress = True
 
     def _finish_success(completion_result):
         try:
-            _finalize_export_flow(
-                window,
-                loading,
-                completion_result,
-            )
-            _return_to_hub(window)
-            try:
-                window._skip_close_guard = True
-                window.destroy()
-            except tk.TclError:
-                pass
+            if show_completion_ui:
+                _finalize_export_flow(
+                    window,
+                    loading,
+                    completion_result,
+                )
+            else:
+                _close_loading_async(loading)
+            if callable(on_success):
+                try:
+                    on_success(completion_result)
+                except Exception as callback_exc:
+                    _log_capture(f"finalization_on_success_callback_failed form={form_id} err={callback_exc}")
+            if return_to_hub_on_success:
+                _return_to_hub(window)
+            if close_window_on_success:
+                try:
+                    window._skip_close_guard = True
+                    window.destroy()
+                except tk.TclError:
+                    pass
         finally:
             try:
                 window._finalize_in_progress = False
@@ -5876,8 +6287,14 @@ def _start_background_finalization(
             stage = exc.stage if isinstance(exc, FinalizeProcessError) else "finalizando el formulario"
             detail = exc.cause if isinstance(exc, FinalizeProcessError) else exc
             message = _build_finalize_error_message(form_name, stage, detail)
-            loading.close()
-            messagebox.showerror("Finalización", message, parent=window)
+            _close_loading_async(loading)
+            if show_error_dialog:
+                messagebox.showerror("Finalización", message, parent=window)
+            if callable(on_error):
+                try:
+                    on_error(exc, message)
+                except Exception as callback_exc:
+                    _log_capture(f"finalization_on_error_callback_failed form={form_id} err={callback_exc}")
         finally:
             try:
                 window._finalize_in_progress = False
@@ -5967,7 +6384,7 @@ def _start_background_finalization(
                     export_cache_snapshot = copy.deepcopy(getattr(review_result, "cache", {}) or {})
                 else:
                     export_cache_snapshot = copy.deepcopy(original_cache_snapshot or {})
-            hub = window.master if isinstance(window.master, HubWindow) else None
+            hub = _resolve_hub_window(window)
             if hub and form_id:
                 hub.track_form_finished(form_id)
             if hub:
@@ -6091,6 +6508,7 @@ def _start_background_finalization(
                     pass
 
     threading.Thread(target=_worker, daemon=True).start()
+    return True
 
 
 _original_start_background_finalization = _start_background_finalization
@@ -6105,15 +6523,22 @@ def _start_background_finalization(
     form_id,
     worker_fn,
     post_delivery_fn=None,
+    on_success=None,
+    on_error=None,
+    close_window_on_success=True,
+    return_to_hub_on_success=True,
+    show_completion_ui=True,
+    show_error_dialog=True,
 ):
     if _guard_form_action(window, action_label="finalizar"):
         try:
-            loading.close()
+            if loading is not None:
+                loading.close()
         except Exception:
             pass
-        return
+        return False
     if _guard_form_finalization(window, loading=loading):
-        return
+        return False
     return _original_start_background_finalization(
         window,
         loading,
@@ -6122,6 +6547,12 @@ def _start_background_finalization(
         form_id=form_id,
         worker_fn=worker_fn,
         post_delivery_fn=post_delivery_fn,
+        on_success=on_success,
+        on_error=on_error,
+        close_window_on_success=close_window_on_success,
+        return_to_hub_on_success=return_to_hub_on_success,
+        show_completion_ui=show_completion_ui,
+        show_error_dialog=show_error_dialog,
     )
 
 
@@ -6140,6 +6571,7 @@ def get_forms():
         induccion_operativa.register_form(),
         sensibilizacion.register_form(),
         seguimientos.register_form(),
+        interprete_lsc.register_form(),
     ]
 
 
@@ -6499,6 +6931,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             back_command=self._show_section_4,
             primary_command=self._confirm_section_5,
             primary_text="Finalizar",
+            left_buttons=[("📞 Solicitar Intérprete LSC", self._open_lsc_window)],
         )
 
     def _insert_section4_template(self, template_key):
@@ -6535,6 +6968,9 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         except Exception as exc:
             messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
+        _queue_or_run_main_form_export(self, self._export_form)
+
+    def _export_form(self):
         loading = LoadingDialog(self, title="Guardando")
         loading.set_status("Preparando acta...")
         loading.set_progress(30)
@@ -6556,6 +6992,19 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
                 "preparando el acta",
                 presentacion_programa.export_to_excel,
             ),
+        )
+
+    def _open_lsc_window(self):
+        ctx = _build_lsc_context(
+            self,
+            module=presentacion_programa,
+            source_form="presentacion_programa",
+        )
+        _launch_linked_lsc_window(
+            self,
+            context=ctx,
+            return_to_final_section=self._show_section_5,
+            main_finish_action=self._confirm_section_5,
         )
 
     def _add_asistente_row(self):
@@ -10286,6 +10735,9 @@ class HubWindow(tk.Tk):
         if form_meta["id"] == "seguimientos":
             window = SeguimientosWindow(self)
             return _finalize_window(window)
+        if form_meta["id"] == "interprete_lsc":
+            window = LSCWindow(self)
+            return _finalize_window(window)
         messagebox.showinfo("Formulario", f"Abrir formulario: {form_meta['name']}")
         return None
 
@@ -11994,6 +12446,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         _pack_actions(actions)
         self._pending_autosave = lambda: _autosave_section(evaluacion_accesibilidad, "section_8", lambda: [{"nombre": n.get().strip(), "cargo": c.get().strip()} for n, c in self.section8_entries])
         ttk.Button(actions, text="Regresar", command=self._show_section_7).pack(side="left")
+        ttk.Button(actions, text="📞 Solicitar Intérprete LSC", command=self._open_lsc_window).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Finalizar", command=self._confirm_section_8).pack(side="right")
 
     def _get_section8_asistentes_values(self):
@@ -12075,6 +12528,9 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         except Exception as exc:
             messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
+        _queue_or_run_main_form_export(self, self._export_form)
+
+    def _export_form(self):
         loading = LoadingDialog(self, title="Guardando")
         loading.set_status("Preparando exportación...")
         loading.set_progress(5)
@@ -12110,6 +12566,19 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
             company_name=company_name,
             form_id="evaluacion_accesibilidad",
             worker_fn=_worker,
+        )
+
+    def _open_lsc_window(self):
+        ctx = _build_lsc_context(
+            self,
+            module=evaluacion_accesibilidad,
+            source_form="evaluacion_accesibilidad",
+        )
+        _launch_linked_lsc_window(
+            self,
+            context=ctx,
+            return_to_final_section=self._show_section_8,
+            main_finish_action=self._confirm_section_8,
         )
 
 
@@ -13502,6 +13971,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             lambda: self._get_section8_asistentes_values(),
         )
         ttk.Button(actions, text="Regresar", command=self._show_section_7).pack(side="left")
+        ttk.Button(actions, text="📞 Solicitar Intérprete LSC", command=self._open_lsc_window).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Finalizar", command=self._confirm_section_8).pack(side="right")
 
     def _get_section8_asistentes_values(self):
@@ -13586,6 +14056,9 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         except Exception as exc:
             messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
+        _queue_or_run_main_form_export(self, self._export_form)
+
+    def _export_form(self):
         loading = LoadingDialog(self, title="Guardando")
         loading.set_status("Preparando acta...")
         loading.set_progress(30)
@@ -13603,6 +14076,19 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
                 "preparando el acta",
                 condiciones_vacante.export_to_excel,
             ),
+        )
+
+    def _open_lsc_window(self):
+        ctx = _build_lsc_context(
+            self,
+            module=condiciones_vacante,
+            source_form="condiciones_vacante",
+        )
+        _launch_linked_lsc_window(
+            self,
+            context=ctx,
+            return_to_final_section=self._show_section_8,
+            main_finish_action=self._confirm_section_8,
         )
 
 
@@ -15047,6 +15533,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             back_command=self._show_section_5,
             primary_command=self._confirm_section_6,
             primary_text="Finalizar",
+            left_buttons=[("📞 Solicitar Intérprete LSC", self._open_lsc_window)],
         )
 
     def _confirm_section_6(self):
@@ -15063,6 +15550,9 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         except Exception as exc:
             messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
+        _queue_or_run_main_form_export(self, self._export_form)
+
+    def _export_form(self):
         loading = LoadingDialog(self, title="Guardando")
         loading.set_status("Preparando acta...")
         loading.set_progress(40)
@@ -15110,6 +15600,35 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _apply_numeric_entry(self, entry, max_len=None):
         _bind_numeric_entry(entry, max_len=max_len)
+
+    def _open_lsc_window(self):
+        cache = self._seleccion_module.get_form_cache()
+        section_1 = cache.get("section_1", {})
+        empresa = section_1 if section_1.get("nombre_empresa") else (
+            self.company_data if isinstance(getattr(self, "company_data", None), dict) else None
+        )
+        raw = cache.get("section_2", [])
+        oferentes = [
+            {
+                "nombre_oferente": (c.get("nombre_oferente") or "").strip(),
+                "cedula": (c.get("cedula") or c.get("cedula_oferente") or "").strip(),
+                "proceso": "Selección incluyente",
+            }
+            for c in (raw if isinstance(raw, list) else [])
+            if c.get("nombre_oferente") or c.get("cedula")
+        ]
+        ctx = _build_lsc_context(
+            self,
+            module=self._seleccion_module,
+            source_form="seleccion_incluyente",
+            oferentes=oferentes,
+        )
+        _launch_linked_lsc_window(
+            self,
+            context=ctx,
+            return_to_final_section=self._show_section_6,
+            main_finish_action=self._confirm_section_6,
+        )
 
     def _apply_decimal_entry(self, entry):
         _bind_decimal_entry(entry)
@@ -16224,7 +16743,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             back_command=self._show_section_6,
             primary_command=self._confirm_section_7,
             primary_text="Finalizar",
-            left_buttons=[("Agregar asistente", _add_asistente_row)],
+            left_buttons=[("📞 Solicitar Intérprete LSC", self._open_lsc_window), ("Agregar asistente", _add_asistente_row)],
         )
 
     def _confirm_section_7(self):
@@ -16238,6 +16757,9 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         except Exception as exc:
             messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
+        _queue_or_run_main_form_export(self, self._export_form)
+
+    def _export_form(self):
         loading = LoadingDialog(self, title="Guardando")
         loading.set_status("Preparando acta...")
         loading.set_progress(40)
@@ -16317,6 +16839,35 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             mode=mode,
             lookup=contratacion_incluyente,
             button=target_button,
+        )
+
+    def _open_lsc_window(self):
+        cache = contratacion_incluyente.get_form_cache()
+        section_1 = cache.get("section_1", {})
+        empresa = section_1 if section_1.get("nombre_empresa") else (
+            self.company_data if isinstance(getattr(self, "company_data", None), dict) else None
+        )
+        raw = cache.get("section_2", [])
+        oferentes = [
+            {
+                "nombre_oferente": (c.get("nombre_oferente") or "").strip(),
+                "cedula": (c.get("cedula") or c.get("cedula_oferente") or "").strip(),
+                "proceso": "Contratación incluyente",
+            }
+            for c in (raw if isinstance(raw, list) else [])
+            if c.get("nombre_oferente") or c.get("cedula")
+        ]
+        ctx = _build_lsc_context(
+            self,
+            module=contratacion_incluyente,
+            source_form="contratacion_incluyente",
+            oferentes=oferentes,
+        )
+        _launch_linked_lsc_window(
+            self,
+            context=ctx,
+            return_to_final_section=self._show_section_7,
+            main_finish_action=self._confirm_section_7,
         )
 
     def _confirm_and_continue(self):
@@ -16862,6 +17413,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
             lambda: _collect_asistente_rows(self.section6_rows),
         )
         ttk.Button(actions, text="Regresar", command=self._show_section_5).pack(side="left")
+        ttk.Button(actions, text="📞 Solicitar Intérprete LSC", command=self._open_lsc_window).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Agregar asistente", command=_add_row).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Eliminar ultimo", command=_remove_last).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Finalizar", command=self._confirm_section_6).pack(side="right")
@@ -17033,6 +17585,35 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
         if hasattr(self, "continue_btn"):
             self.continue_btn.config(state="normal")
 
+    def _open_lsc_window(self):
+        cache = induccion_organizacional.get_form_cache()
+        section_1 = cache.get("section_1", {})
+        empresa = section_1 if section_1.get("nombre_empresa") else (
+            self.company_data if isinstance(getattr(self, "company_data", None), dict) else None
+        )
+        raw = cache.get("section_2", [])
+        oferentes = [
+            {
+                "nombre_oferente": (c.get("nombre_oferente") or "").strip(),
+                "cedula": (c.get("cedula") or c.get("cedula_oferente") or "").strip(),
+                "proceso": "Inducción organizacional",
+            }
+            for c in (raw if isinstance(raw, list) else [])
+            if c.get("nombre_oferente") or c.get("cedula")
+        ]
+        ctx = _build_lsc_context(
+            self,
+            module=induccion_organizacional,
+            source_form="induccion_organizacional",
+            oferentes=oferentes,
+        )
+        _launch_linked_lsc_window(
+            self,
+            context=ctx,
+            return_to_final_section=self._show_section_6,
+            main_finish_action=self._confirm_section_6,
+        )
+
     def _confirm_and_continue(self):
         _confirm_section1_and_continue(
             self,
@@ -17126,7 +17707,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
         except Exception as exc:
             messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
-        self._export_form()
+        _queue_or_run_main_form_export(self, self._export_form)
 
     def _export_form(self):
         loading = LoadingDialog(self, title="Guardando")
@@ -17929,9 +18510,39 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
             lambda: _collect_asistente_rows(self.section9_rows),
         )
         ttk.Button(actions, text="Regresar", command=self._show_section_8).pack(side="left")
+        ttk.Button(actions, text="📞 Solicitar Intérprete LSC", command=self._open_lsc_window).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Agregar asistente", command=_add_row).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Eliminar ultimo", command=_remove_last).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Finalizar", command=self._confirm_section_9).pack(side="right")
+
+    def _open_lsc_window(self):
+        cache = induccion_operativa.get_form_cache()
+        section_1 = cache.get("section_1", {})
+        empresa = section_1 if section_1.get("nombre_empresa") else (
+            self.company_data if isinstance(getattr(self, "company_data", None), dict) else None
+        )
+        raw = cache.get("section_2", [])
+        oferentes = [
+            {
+                "nombre_oferente": (c.get("nombre_oferente") or "").strip(),
+                "cedula": (c.get("cedula") or c.get("cedula_oferente") or "").strip(),
+                "proceso": "Inducción operativa",
+            }
+            for c in (raw if isinstance(raw, list) else [])
+            if c.get("nombre_oferente") or c.get("cedula")
+        ]
+        ctx = _build_lsc_context(
+            self,
+            module=induccion_operativa,
+            source_form="induccion_operativa",
+            oferentes=oferentes,
+        )
+        _launch_linked_lsc_window(
+            self,
+            context=ctx,
+            return_to_final_section=self._show_section_9,
+            main_finish_action=self._confirm_section_9,
+        )
 
     def _confirm_and_continue(self):
         _confirm_section1_and_continue(
@@ -18059,7 +18670,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         except Exception as exc:
             messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
-        self._export_form()
+        _queue_or_run_main_form_export(self, self._export_form)
 
     def _export_form(self):
         loading = LoadingDialog(self, title="Guardando")
@@ -18443,9 +19054,39 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
             lambda: _collect_asistente_rows(self.section5_rows),
         )
         ttk.Button(actions, text="Regresar", command=self._show_section_4).pack(side="left")
+        ttk.Button(actions, text="📞 Solicitar Intérprete LSC", command=self._open_lsc_window).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Agregar asistente", command=_add_row).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Eliminar ultimo", command=_remove_last).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Finalizar", command=self._confirm_section_5).pack(side="right")
+
+    def _open_lsc_window(self):
+        cache = sensibilizacion.get_form_cache()
+        section_1 = cache.get("section_1", {})
+        empresa = section_1 if section_1.get("nombre_empresa") else (
+            self.company_data if isinstance(getattr(self, "company_data", None), dict) else None
+        )
+        raw = cache.get("section_2", [])
+        oferentes = [
+            {
+                "nombre_oferente": (c.get("nombre_oferente") or "").strip(),
+                "cedula": (c.get("cedula") or c.get("cedula_oferente") or "").strip(),
+                "proceso": "Sensibilización",
+            }
+            for c in (raw if isinstance(raw, list) else [])
+            if c.get("nombre_oferente") or c.get("cedula")
+        ]
+        ctx = _build_lsc_context(
+            self,
+            module=sensibilizacion,
+            source_form="sensibilizacion",
+            oferentes=oferentes,
+        )
+        _launch_linked_lsc_window(
+            self,
+            context=ctx,
+            return_to_final_section=self._show_section_5,
+            main_finish_action=self._confirm_section_5,
+        )
 
     def _confirm_section_1(self):
         _confirm_section1_and_continue(
@@ -18494,7 +19135,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         except Exception as exc:
             messagebox.showerror("Error", _log_user_error("ui_error", exc))
             return
-        self._export_form()
+        _queue_or_run_main_form_export(self, self._export_form)
 
     def _export_form(self):
         loading = LoadingDialog(self, title="Guardando")
@@ -18600,6 +19241,11 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             fg="#333333",
             bg=COLOR_LIGHT_BG,
         ).pack(anchor="w", pady=(2, 0))
+        ttk.Button(
+            header,
+            text="📞 Solicitar Intérprete LSC",
+            command=self._open_lsc_window,
+        ).pack(anchor="e", pady=(6, 0))
 
     def _build_body(self):
         container = tk.Frame(self, bg=COLOR_LIGHT_BG)
@@ -19563,6 +20209,21 @@ class _SeguimientoDateField(tk.Frame):
 
         if result["value"] is not None:
             self.var.set(result["value"].strftime("%Y-%m-%d"))
+
+    def _open_lsc_window(self):
+        empresa = self.linked_company if isinstance(self.linked_company, dict) and self.linked_company.get("nombre_empresa") else None
+        oferentes = []
+        if self.user_row and isinstance(self.user_row, dict):
+            nombre = (self.user_row.get("nombre_completo") or "").strip()
+            cedula = (self.user_row.get("cedula") or "").strip()
+            if nombre or cedula:
+                oferentes.append({
+                    "nombre_oferente": nombre,
+                    "cedula": cedula,
+                    "proceso": "Seguimiento",
+                })
+        ctx = {"empresa": empresa, "oferentes": oferentes, "source_form": "seguimientos"} if empresa else None
+        LSCWindow(self, context=ctx)
 
 
 # ── VENTANA: SeguimientoEditorWindow — editor de un seguimiento individual ───
@@ -20888,6 +21549,805 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
                 raise RuntimeError("No hay ruta o link del caso para abrir.")
         except Exception as exc:
             messagebox.showerror("Error", f"No se pudo abrir el archivo.\n{exc}")
+
+
+# ── VENTANA: LSCWindow ───────────────────────────────────────────────────────
+
+
+class LSCWindow(tk.Toplevel, FormMousewheelMixin):
+    """Ventana para el Servicio de Interpretación LSC.
+
+    Soporta dos rutas de apertura:
+      Ruta A (Hub): context=None → búsqueda normal de empresa, oferentes vacíos.
+      Ruta B (desde proceso): context={empresa, oferentes, source_form} →
+          empresa y oferentes pre-cargados desde el formulario activo.
+    """
+
+    def __init__(
+        self,
+        parent,
+        context=None,
+        *,
+        linked_mode=False,
+        parent_form=None,
+        on_linked_export_started=None,
+        on_linked_export_finished=None,
+    ):
+        super().__init__(parent)
+        self.title("Servicio de Interpretación LSC")
+        self.configure(bg=COLOR_LIGHT_BG)
+        self.geometry("1000x700")
+        _maximize_window(self)
+
+        self._empresa_lookup = interprete_lsc
+        self.company_data = None
+        self.fields = {}
+        self._context = context or interprete_lsc.consume_pending_context()
+        self._linked_mode = bool(linked_mode)
+        self._parent_form = parent_form
+        self._on_linked_export_started = on_linked_export_started
+        self._on_linked_export_finished = on_linked_export_finished
+
+        # Si viene con contexto (Ruta B), pre-cargar empresa en cache
+        if self._context.get("empresa"):
+            self.company_data = dict(self._context["empresa"])
+            interprete_lsc.SECTION_1_CACHE.update(self.company_data)
+
+        self._build_header()
+        self._build_section_container()
+        if self._maybe_resume_form():
+            return
+        self._show_section_1()
+
+    # ── Header ───────────────────────────────────────────────────────────────
+
+    def _build_header(self):
+        header = tk.Frame(self, bg=COLOR_LIGHT_BG)
+        header.pack(fill="x", padx=FORM_PADX, pady=(24, 8))
+        self.header_title = tk.Label(
+            header,
+            text="1. DATOS DE LA EMPRESA",
+            font=FONT_TITLE,
+            fg=COLOR_PURPLE,
+            bg=COLOR_LIGHT_BG,
+        )
+        self.header_title.pack(anchor="w")
+        self.header_subtitle = tk.Label(
+            header,
+            text="Busca empresa por NIT y confirma datos.",
+            font=FONT_SUBTITLE,
+            fg="#333333",
+            bg=COLOR_LIGHT_BG,
+        )
+        self.header_subtitle.pack(anchor="w", pady=(4, 0))
+
+    def _build_section_container(self):
+        self.section_container = tk.Frame(self, bg=COLOR_LIGHT_BG)
+        self.section_container.pack(fill="both", expand=True, padx=FORM_PADX, pady=8)
+
+    def _clear_section_container(self):
+        _fn = getattr(self, "_pending_autosave", None)
+        if callable(_fn):
+            try:
+                _fn()
+            except Exception:
+                pass
+            self._pending_autosave = None
+        for child in self.section_container.winfo_children():
+            child.destroy()
+
+    def _maybe_resume_form(self):
+        if _consume_pending_draft_restore(
+            self,
+            "interprete_lsc",
+            interprete_lsc,
+            {
+                "section_1": self._show_section_1,
+                "section_2": self._show_section_2,
+                "section_3": self._show_section_3,
+                "section_4": self._show_section_4,
+            },
+            self._show_section_1,
+        ):
+            return True
+        if interprete_lsc.cache_file_exists():
+            _clear_local_resume_state(interprete_lsc)
+        return False
+
+    # ── Helpers de sección 1 (empresa) ───────────────────────────────────────
+
+    def _build_search(self, parent):
+        _section1_build_search(self, parent)
+
+    def _build_groups(self, parent):
+        groups = [
+            (
+                "Información de Empresa",
+                COLOR_GROUP_EMPRESA,
+                [
+                    "nombre_empresa",
+                    "ciudad_empresa",
+                    "direccion_empresa",
+                    "contacto_empresa",
+                    "cargo",
+                ],
+            ),
+        ]
+        labels = {
+            "nombre_empresa":    "Nombre de la empresa",
+            "ciudad_empresa":    "Ciudad/Municipio",
+            "direccion_empresa": "Dirección",
+            "contacto_empresa":  "Contacto en la empresa",
+            "cargo":             "Cargo",
+        }
+        _section1_build_groups(self, parent, groups, labels)
+
+    def _label_for_field(self, field_id):
+        return getattr(self, "_section1_labels", {}).get(field_id, field_id)
+
+    def _set_readonly_value(self, field_id, value):
+        entry = self.fields.get(field_id)
+        if not entry:
+            return
+        entry.configure(state="normal")
+        entry.delete(0, tk.END)
+        entry.insert(0, value if value is not None else "")
+        entry.configure(state="readonly")
+
+    def _search_company(self, mode="nit"):
+        target_button = self.search_name_btn if mode == "nombre" else self.search_nit_btn
+        _run_section1_company_search(
+            self,
+            mode=mode,
+            lookup=interprete_lsc,
+            button=target_button,
+        )
+
+    def _prefill_section_1(self):
+        cache = interprete_lsc.get_form_cache().get("section_1", {})
+        if not cache:
+            return
+        self.company_data = cache
+        self.fields["nit_empresa"].delete(0, tk.END)
+        self.fields["nit_empresa"].insert(0, cache.get("nit_empresa", ""))
+        fecha_val = cache.get("fecha_visita")
+        if fecha_val and "fecha_visita" in self.fields:
+            try:
+                self.fields["fecha_visita"].set_date(fecha_val)
+            except Exception:
+                pass
+        if "modalidad_interprete" in self.fields:
+            self.fields["modalidad_interprete"].set(cache.get("modalidad_interprete", ""))
+        if "modalidad_profesional_reca" in self.fields:
+            self.fields["modalidad_profesional_reca"].set(cache.get("modalidad_profesional_reca", ""))
+        for key in interprete_lsc.SECTION_1_SUPABASE_MAP.keys():
+            self._set_readonly_value(key, cache.get(key, ""))
+
+    def _prefill_section_1_from_context(self):
+        context = self._context if isinstance(self._context, dict) else {}
+        if not context:
+            return False
+
+        restored = False
+        empresa = context.get("empresa") if isinstance(context.get("empresa"), dict) else {}
+        if empresa:
+            self.company_data = dict(empresa)
+            nit_widget = self.fields.get("nit_empresa")
+            if nit_widget is not None:
+                _set_input_value(nit_widget, empresa.get("nit_empresa", ""))
+            search_widget = self.fields.get("nombre_busqueda")
+            if search_widget is not None:
+                _set_input_value(search_widget, empresa.get("nombre_empresa", ""))
+            for key in interprete_lsc.SECTION_1_SUPABASE_MAP.keys():
+                self._set_readonly_value(key, empresa.get(key, ""))
+            restored = True
+
+        fecha_val = context.get("fecha_visita")
+        if fecha_val not in (None, "") and "fecha_visita" in self.fields:
+            try:
+                self.fields["fecha_visita"].set_date(fecha_val)
+            except Exception:
+                _set_input_value(self.fields.get("fecha_visita"), fecha_val)
+            restored = True
+
+        modalidad_interprete = str(context.get("modalidad_interprete") or "").strip()
+        if modalidad_interprete and "modalidad_interprete" in self.fields:
+            self.fields["modalidad_interprete"].set(modalidad_interprete)
+            restored = True
+
+        modalidad_profesional = str(context.get("modalidad_profesional_reca") or "").strip()
+        if modalidad_profesional and "modalidad_profesional_reca" in self.fields:
+            self.fields["modalidad_profesional_reca"].set(modalidad_profesional)
+            restored = True
+
+        if restored:
+            _refresh_section1_continue_button(self)
+        return restored
+
+    # ── Sección 1: Empresa ────────────────────────────────────────────────────
+
+    def _show_section_1(self):
+        self._clear_section_container()
+        self.header_title.config(text="1. DATOS DE LA EMPRESA")
+        self.header_subtitle.config(text="Busca empresa por NIT y confirma datos del servicio.")
+
+        section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
+        section_frame.pack(fill="both", expand=True)
+        content = _build_scrollable_content(section_frame, self)
+
+        self._build_search(content)
+        self._build_groups(content)
+
+        # Campos de input adicionales: fecha + modalidades
+        extra = tk.Frame(content, bg=COLOR_LIGHT_BG)
+        extra.pack(fill="x", padx=FORM_PADX, pady=(8, 4))
+
+        row1 = tk.Frame(extra, bg=COLOR_LIGHT_BG)
+        row1.pack(fill="x", pady=4)
+        tk.Label(row1, text="Fecha del servicio:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(
+            side="left", padx=(0, 8)
+        )
+        fecha_entry = DateEntry(row1, width=ENTRY_W_MED, date_pattern="yyyy-mm-dd")
+        fecha_entry.pack(side="left")
+        self.fields["fecha_visita"] = fecha_entry
+
+        row2 = tk.Frame(extra, bg=COLOR_LIGHT_BG)
+        row2.pack(fill="x", pady=4)
+        tk.Label(row2, text="Modalidad intérprete:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(
+            side="left", padx=(0, 8)
+        )
+        mod_interp = ttk.Combobox(
+            row2,
+            values=["Presencial", "Virtual", "Mixta"],
+            state="readonly",
+            width=20,
+        )
+        mod_interp.pack(side="left", padx=(0, 20))
+        self.fields["modalidad_interprete"] = mod_interp
+
+        tk.Label(row2, text="Modalidad profesional RECA:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(
+            side="left", padx=(0, 8)
+        )
+        mod_prof = ttk.Combobox(
+            row2,
+            values=["Presencial", "Virtual", "No aplica"],
+            state="readonly",
+            width=20,
+        )
+        mod_prof.pack(side="left")
+        self.fields["modalidad_profesional_reca"] = mod_prof
+
+        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
+        _pack_actions(actions)
+        ttk.Button(actions, text="Regresar", command=self._close_to_hub).pack(side="left")
+        self.continue_btn = ttk.Button(actions, text="Continuar", command=self._confirm_section_1)
+        self.continue_btn.pack(side="right")
+
+        restored = _restore_section1_cached_state(self, interprete_lsc)
+        if not restored:
+            self._prefill_section_1_from_context()
+
+    # ── Sección 2: Oferentes / Vinculados ────────────────────────────────────
+
+    def _show_section_2(self):
+        self._clear_section_container()
+        self.header_title.config(text="2. OFERENTES / VINCULADOS")
+        self.header_subtitle.config(
+            text=f"Registra los candidatos acompañados (máx. {interprete_lsc.MAX_OFERENTES})."
+        )
+
+        section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
+        section_frame.pack(fill="both", expand=True)
+        content = _build_scrollable_content(section_frame, self)
+
+        # Encabezado de tabla
+        hdr = tk.Frame(content, bg=COLOR_LIGHT_BG)
+        hdr.pack(fill="x", padx=FORM_PADX, pady=(8, 2))
+        for col, w in [("No.", 4), ("Nombre completo", 38), ("Cédula", 16), ("Proceso / Observaciones", 38)]:
+            tk.Label(hdr, text=col, font=FONT_LABEL, bg=COLOR_LIGHT_BG, width=w, anchor="w").pack(
+                side="left", padx=2
+            )
+
+        rows_frame = tk.Frame(content, bg=COLOR_LIGHT_BG)
+        rows_frame.pack(fill="x", padx=FORM_PADX)
+        self._oferente_rows = []
+
+        def _add_oferente_row(nombre="", cedula="", proceso=""):
+            idx = len(self._oferente_rows) + 1
+            if idx > interprete_lsc.MAX_OFERENTES:
+                return
+            row = tk.Frame(rows_frame, bg=COLOR_LIGHT_BG)
+            row.pack(fill="x", pady=2)
+            tk.Label(row, text=str(idx), bg=COLOR_LIGHT_BG, width=4, anchor="w").pack(side="left", padx=2)
+            e_nombre = tk.Entry(row, width=38)
+            e_nombre.pack(side="left", padx=2)
+            e_cedula = tk.Entry(row, width=16)
+            e_cedula.pack(side="left", padx=2)
+            e_proceso = tk.Entry(row, width=38)
+            e_proceso.pack(side="left", padx=2)
+            if nombre:
+                e_nombre.insert(0, nombre)
+            if cedula:
+                e_cedula.insert(0, cedula)
+            if proceso:
+                e_proceso.insert(0, proceso)
+            self._oferente_rows.append((row, e_nombre, e_cedula, e_proceso))
+
+        def _remove_last_oferente():
+            if len(self._oferente_rows) <= 1:
+                return
+            row, *_ = self._oferente_rows.pop()
+            row.destroy()
+
+        # Pre-cargar desde cache o contexto
+        cached = interprete_lsc.get_form_cache().get("section_2", [])
+        if not cached and self._context.get("oferentes"):
+            cached = self._context["oferentes"]
+        if cached:
+            for of in cached:
+                _add_oferente_row(
+                    nombre=of.get("nombre_oferente") or of.get("nombre", ""),
+                    cedula=of.get("cedula") or of.get("cedula_oferente", ""),
+                    proceso=of.get("proceso") or of.get("proceso_observaciones", ""),
+                )
+        else:
+            _add_oferente_row()
+
+        self._pending_autosave = lambda: _autosave_section(
+            interprete_lsc,
+            "section_2",
+            lambda: [
+                {
+                    "nombre_oferente": _normalize_person_name(r[1].get()),
+                    "cedula": r[2].get().strip(),
+                    "proceso": r[3].get().strip(),
+                }
+                for r in self._oferente_rows
+                if r[1].get().strip() or r[2].get().strip()
+            ],
+        )
+
+        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
+        _pack_actions(actions)
+        ttk.Button(actions, text="Regresar", command=self._show_section_1).pack(side="left")
+        ttk.Button(actions, text="+ Agregar", command=_add_oferente_row).pack(
+            side="left", padx=(8, 0)
+        )
+        ttk.Button(actions, text="- Eliminar último", command=_remove_last_oferente).pack(
+            side="left", padx=(8, 0)
+        )
+        ttk.Button(actions, text="Continuar", command=self._confirm_section_2).pack(side="right")
+
+    # ── Sección 3: Intérpretes ────────────────────────────────────────────────
+
+    def _show_section_3(self):
+        self._clear_section_container()
+        self.header_title.config(text="3. INTÉRPRETES")
+        self.header_subtitle.config(
+            text=f"Registra los intérpretes LSC (máx. {interprete_lsc.MAX_INTERPRETES}). "
+            "Los tiempos totales se calculan automáticamente. Acepta horas como 9 30 am, 9:30 pm o 14:30."
+        )
+
+        section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
+        section_frame.pack(fill="both", expand=True)
+        content = _build_scrollable_content(section_frame, self)
+
+        interp_frame = tk.Frame(content, bg=COLOR_LIGHT_BG)
+        interp_frame.pack(fill="x", padx=FORM_PADX, pady=(8, 4))
+        self._interprete_rows = []
+        interpretes_catalog = _get_interpretes_catalog()
+
+        def _recalc_sumatoria(*_):
+            """Recalcula sumatoria cada vez que cambia un campo de hora."""
+            try:
+                sab = _sabana_var.get()
+                hs = float(_sabana_horas_var.get() or 1.0)
+                interps = []
+                for _, e_nom, e_ini, e_fin, lbl_tot in self._interprete_rows:
+                    ini = e_ini.get().strip()
+                    fin = e_fin.get().strip()
+                    tot = interprete_lsc.calc_total_tiempo(ini, fin)
+                    lbl_tot.config(text=tot or "—")
+                    if tot:
+                        interps.append({"total_tiempo": tot})
+                sumatoria = interprete_lsc.calc_sumatoria(interps, sab, hs)
+                _sumatoria_var.set(sumatoria)
+            except Exception:
+                pass
+
+        def _add_interprete_row(nombre="", hora_ini="", hora_fin="", total=""):
+            idx = len(self._interprete_rows) + 1
+            if idx > interprete_lsc.MAX_INTERPRETES:
+                return
+            row = tk.Frame(interp_frame, bg=COLOR_LIGHT_BG)
+            row.pack(fill="x", pady=4)
+            tk.Label(row, text=f"Intérprete {idx}:", font=FONT_LABEL, bg=COLOR_LIGHT_BG, width=12).pack(
+                side="left"
+            )
+            e_nom = _create_interprete_name_input(row, 28, catalog=interpretes_catalog)
+            e_nom.pack(side="left", padx=(0, 8))
+            if nombre:
+                e_nom.set(_normalize_person_name(nombre))
+
+            tk.Label(row, text="Hora inicial:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(
+                side="left", padx=(0, 4)
+            )
+            e_ini = tk.Entry(row, width=8)
+            e_ini.pack(side="left", padx=(0, 8))
+            if hora_ini:
+                e_ini.insert(0, interprete_lsc.normalize_time_value(hora_ini) or hora_ini)
+
+            tk.Label(row, text="Hora final:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(
+                side="left", padx=(0, 4)
+            )
+            e_fin = tk.Entry(row, width=8)
+            e_fin.pack(side="left", padx=(0, 8))
+            if hora_fin:
+                e_fin.insert(0, interprete_lsc.normalize_time_value(hora_fin) or hora_fin)
+
+            tk.Label(row, text="Total:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(
+                side="left", padx=(0, 4)
+            )
+            lbl_tot = tk.Label(row, text=total or "—", font=FONT_LABEL, bg=COLOR_LIGHT_BG, width=7)
+            lbl_tot.pack(side="left")
+
+            _bind_lsc_time_entry(e_ini, on_change=_recalc_sumatoria)
+            _bind_lsc_time_entry(e_fin, on_change=_recalc_sumatoria)
+            self._interprete_rows.append((row, e_nom, e_ini, e_fin, lbl_tot))
+
+        def _remove_last_interprete():
+            if len(self._interprete_rows) <= 1:
+                return
+            row, *_ = self._interprete_rows.pop()
+            row.destroy()
+            _recalc_sumatoria()
+
+        # Pre-cargar desde cache
+        cached_s3 = interprete_lsc.get_form_cache().get("section_3") or {}
+        cached_interps = cached_s3.get("interpretes", []) if isinstance(cached_s3, dict) else []
+        if cached_interps:
+            for it in cached_interps:
+                _add_interprete_row(
+                    nombre=it.get("nombre", ""),
+                    hora_ini=it.get("hora_inicial", ""),
+                    hora_fin=it.get("hora_final", ""),
+                    total=it.get("total_tiempo", ""),
+                )
+        else:
+            _add_interprete_row()
+
+        # ── Sabana ────────────────────────────────────────────────────────────
+        sep = tk.Frame(content, bg="#CCCCCC", height=1)
+        sep.pack(fill="x", padx=FORM_PADX, pady=(10, 6))
+
+        sabana_frame = tk.Frame(content, bg=COLOR_LIGHT_BG)
+        sabana_frame.pack(fill="x", padx=FORM_PADX, pady=(0, 4))
+
+        _sabana_var = tk.BooleanVar(value=False)
+        _sabana_horas_var = tk.StringVar(value="1.0")
+        _sumatoria_var = tk.StringVar(value="—")
+
+        cached_sab = cached_s3.get("sabana", {}) if isinstance(cached_s3, dict) else {}
+        if cached_sab.get("activo"):
+            _sabana_var.set(True)
+            _sabana_horas_var.set(str(cached_sab.get("horas", 1.0)))
+        if isinstance(cached_s3, dict) and cached_s3.get("sumatoria_horas"):
+            _sumatoria_var.set(cached_s3["sumatoria_horas"])
+
+        def _toggle_sabana_entry(*_):
+            if _sabana_var.get():
+                _sabana_horas_entry.configure(state="normal")
+            else:
+                _sabana_horas_entry.configure(state="disabled")
+            _recalc_sumatoria()
+
+        sab_chk = tk.Checkbutton(
+            sabana_frame,
+            text="Servicio realizado en Sabana (sumar horas adicionales):",
+            variable=_sabana_var,
+            bg=COLOR_LIGHT_BG,
+            font=FONT_LABEL,
+            command=_toggle_sabana_entry,
+        )
+        sab_chk.pack(side="left", padx=(0, 8))
+        _sabana_horas_entry = tk.Entry(sabana_frame, textvariable=_sabana_horas_var, width=8)
+        _sabana_horas_entry.pack(side="left", padx=(0, 4))
+        _sabana_horas_entry.configure(state="disabled" if not _sabana_var.get() else "normal")
+        tk.Label(sabana_frame, text="horas", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(side="left")
+        _sabana_horas_entry.bind("<FocusOut>", _recalc_sumatoria)
+
+        # ── Sumatoria ─────────────────────────────────────────────────────────
+        sum_frame = tk.Frame(content, bg=COLOR_LIGHT_BG)
+        sum_frame.pack(fill="x", padx=FORM_PADX, pady=(4, 8))
+        tk.Label(sum_frame, text="Sumatoria total de horas:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(
+            side="left", padx=(0, 8)
+        )
+        tk.Label(sum_frame, textvariable=_sumatoria_var, font=FONT_TITLE, fg=COLOR_PURPLE, bg=COLOR_LIGHT_BG).pack(
+            side="left"
+        )
+        ttk.Button(sum_frame, text="↺ Recalcular", command=_recalc_sumatoria).pack(
+            side="left", padx=(12, 0)
+        )
+
+        _recalc_sumatoria()
+
+        self._pending_autosave = lambda: _autosave_section(
+            interprete_lsc,
+            "section_3",
+            lambda: self._collect_section_3(
+                _sabana_var, _sabana_horas_var, _sumatoria_var
+            ),
+        )
+
+        self._s3_sabana_var = _sabana_var
+        self._s3_sabana_horas_var = _sabana_horas_var
+        self._s3_sumatoria_var = _sumatoria_var
+
+        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
+        _pack_actions(actions)
+        ttk.Button(actions, text="Regresar", command=self._show_section_2).pack(side="left")
+        ttk.Button(
+            actions,
+            text="+ Agregar intérprete",
+            command=lambda: [_add_interprete_row(), _recalc_sumatoria()],
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="- Eliminar último", command=_remove_last_interprete).pack(
+            side="left", padx=(8, 0)
+        )
+        ttk.Button(actions, text="Continuar", command=self._confirm_section_3).pack(side="right")
+
+    def _collect_section_3(self, sabana_var, sabana_horas_var, sumatoria_var):
+        interpretes = []
+        for _, e_nom, e_ini, e_fin, lbl_tot in self._interprete_rows:
+            nombre = _normalize_person_name(e_nom.get())
+            hora_ini = interprete_lsc.normalize_time_value(e_ini.get())
+            hora_fin = interprete_lsc.normalize_time_value(e_fin.get())
+            total = interprete_lsc.calc_total_tiempo(hora_ini, hora_fin)
+            if nombre or hora_ini or hora_fin:
+                interpretes.append({
+                    "nombre": nombre,
+                    "hora_inicial": hora_ini,
+                    "hora_final": hora_fin,
+                    "total_tiempo": total,
+                })
+        return {
+            "interpretes": interpretes,
+            "sabana": {
+                "activo": bool(sabana_var.get()),
+                "horas": float(sabana_horas_var.get() or 1.0),
+            },
+            "sumatoria_horas": sumatoria_var.get(),
+        }
+
+    # ── Sección 4: Asistentes ─────────────────────────────────────────────────
+
+    def _show_section_4(self):
+        self._clear_section_container()
+        self.header_title.config(text="4. ASISTENTES")
+        self.header_subtitle.config(
+            text=f"Registra los asistentes al servicio (máx. {interprete_lsc.MAX_ASISTENTES})."
+        )
+
+        section_frame = tk.Frame(self.section_container, bg=COLOR_LIGHT_BG)
+        section_frame.pack(fill="both", expand=True)
+        content = _build_scrollable_content(section_frame, self)
+
+        asist_content = tk.Frame(content, bg=COLOR_LIGHT_BG)
+        asist_content.pack(fill="x", padx=FORM_PADX, pady=(8, 8))
+        self._asistente_rows = []
+        catalog = _get_asistentes_profesionales_catalog()
+
+        def _add_asistente_row(nombre="", cargo=""):
+            if len(self._asistente_rows) >= interprete_lsc.MAX_ASISTENTES:
+                return
+            row = tk.Frame(asist_content, bg=COLOR_LIGHT_BG)
+            row.pack(fill="x", pady=4)
+            tk.Label(row, text="Nombre completo:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(
+                side="left", padx=(0, 6)
+            )
+            nombre_entry, cargo_entry = _create_asistente_inputs(
+                row,
+                50,
+                use_catalog=True,
+                catalog=catalog,
+            )
+            nombre_entry.pack(side="left", padx=(0, 12))
+            tk.Label(row, text="Cargo:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(
+                side="left", padx=(0, 6)
+            )
+            cargo_entry.pack(side="left")
+            if nombre:
+                _set_input_value(nombre_entry, _normalize_person_name(nombre))
+            if cargo:
+                _set_input_value(cargo_entry, cargo)
+            self._asistente_rows.append((row, nombre_entry, cargo_entry))
+
+        def _remove_last_asistente():
+            if len(self._asistente_rows) <= 1:
+                return
+            row, *_ = self._asistente_rows.pop()
+            row.destroy()
+
+        cached_asist = interprete_lsc.get_form_cache().get("section_4", [])
+        if cached_asist:
+            for a in cached_asist:
+                _add_asistente_row(a.get("nombre", ""), a.get("cargo", ""))
+        else:
+            for _ in range(2):
+                _add_asistente_row()
+
+        self._pending_autosave = lambda: _autosave_section(
+            interprete_lsc,
+            "section_4",
+            lambda: _collect_asistente_rows(self._asistente_rows),
+        )
+
+        actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
+        _pack_actions(actions)
+        ttk.Button(actions, text="Regresar", command=self._show_section_3).pack(side="left")
+        ttk.Button(actions, text="Agregar asistente", command=_add_asistente_row).pack(
+            side="left", padx=(8, 0)
+        )
+        ttk.Button(actions, text="Eliminar último", command=_remove_last_asistente).pack(
+            side="left", padx=(8, 0)
+        )
+        ttk.Button(actions, text="Finalizar", command=self._confirm_section_4).pack(side="right")
+
+    # ── Confirmaciones ────────────────────────────────────────────────────────
+
+    def _confirm_section_1(self):
+        user_inputs = {
+            "fecha_visita": self.fields.get("fecha_visita") and self.fields["fecha_visita"].get(),
+            "modalidad_interprete": self.fields.get("modalidad_interprete") and self.fields["modalidad_interprete"].get(),
+            "modalidad_profesional_reca": self.fields.get("modalidad_profesional_reca") and self.fields["modalidad_profesional_reca"].get(),
+        }
+        _confirm_section1_and_continue(
+            self,
+            confirm_fn=interprete_lsc.confirm_section_1,
+            next_step=self._show_section_2,
+            extra_inputs=user_inputs,
+        )
+
+    def _confirm_section_2(self):
+        payload = []
+        for _row, e_nom, e_ced, e_proc in self._oferente_rows:
+            nombre = _normalize_person_name(e_nom.get())
+            cedula = e_ced.get().strip()
+            proceso = e_proc.get().strip()
+            if nombre or cedula:
+                payload.append({
+                    "nombre_oferente": nombre,
+                    "cedula": cedula,
+                    "proceso": proceso,
+                })
+        if not payload:
+            messagebox.showerror("Error", "Registra al menos un oferente/vinculado.")
+            return
+        if len(payload) > interprete_lsc.MAX_OFERENTES:
+            messagebox.showerror(
+                "Error", f"Máximo {interprete_lsc.MAX_OFERENTES} oferentes permitidos."
+            )
+            return
+        try:
+            interprete_lsc.confirm_section_2(payload)
+        except Exception as exc:
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
+            return
+        self._show_section_3()
+
+    def _confirm_section_3(self):
+        if not hasattr(self, "_s3_sabana_var"):
+            messagebox.showerror("Error", "Error interno: recarga la sección.")
+            return
+        payload = self._collect_section_3(
+            self._s3_sabana_var,
+            self._s3_sabana_horas_var,
+            self._s3_sumatoria_var,
+        )
+        interpretes = payload.get("interpretes", [])
+        if not interpretes:
+            messagebox.showerror("Error", "Registra al menos un intérprete.")
+            return
+        if len(interpretes) > interprete_lsc.MAX_INTERPRETES:
+            messagebox.showerror(
+                "Error", f"Máximo {interprete_lsc.MAX_INTERPRETES} intérpretes permitidos."
+            )
+            return
+        try:
+            interprete_lsc.confirm_section_3(payload)
+        except Exception as exc:
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
+            return
+        self._show_section_4()
+
+    def _confirm_section_4(self):
+        payload = _collect_asistente_rows(self._asistente_rows)
+        try:
+            interprete_lsc.confirm_section_4(payload)
+        except Exception as exc:
+            messagebox.showerror("Error", _log_user_error("ui_error", exc))
+            return
+        self._export_form()
+
+    # ── Exportación ───────────────────────────────────────────────────────────
+
+    def _export_form(self):
+        cache_snapshot = interprete_lsc.get_form_cache()
+        company_name = cache_snapshot.get("section_1", {}).get("nombre_empresa")
+
+        def _worker():
+            return _raise_finalize_stage(
+                "preparando el acta LSC",
+                lambda: interprete_lsc.export_to_excel(clear_cache=False),
+            )
+
+        if self._linked_mode and self._parent_form is not None:
+            started = _start_background_finalization(
+                self,
+                None,
+                form_name="Servicio de Interpretación LSC",
+                company_name=company_name,
+                form_id="interprete_lsc",
+                worker_fn=_worker,
+                post_delivery_fn=lambda: _clear_form_cache_safe(interprete_lsc),
+                close_window_on_success=False,
+                return_to_hub_on_success=False,
+                show_completion_ui=False,
+                show_error_dialog=False,
+                on_success=lambda result: self._on_linked_export_success(result),
+                on_error=lambda exc, message: self._on_linked_export_error(message),
+            )
+            if not started:
+                return
+            try:
+                self.grab_release()
+            except tk.TclError:
+                pass
+            self.withdraw()
+            _focus_window(self._parent_form)
+            if callable(self._on_linked_export_started):
+                self._on_linked_export_started()
+            return
+
+        loading = LoadingDialog(self, title="Guardando")
+        loading.set_status("Preparando acta LSC...")
+        loading.set_progress(35)
+
+        _start_background_finalization(
+            self,
+            loading,
+            form_name="Servicio de Interpretación LSC",
+            company_name=company_name,
+            form_id="interprete_lsc",
+            worker_fn=_worker,
+            post_delivery_fn=lambda: _clear_form_cache_safe(interprete_lsc),
+        )
+
+    def _on_linked_export_success(self, result):
+        try:
+            if callable(self._on_linked_export_finished):
+                self._on_linked_export_finished(status="success", result=result, error_message="")
+        finally:
+            try:
+                self._skip_close_guard = True
+                self.destroy()
+            except tk.TclError:
+                pass
+
+    def _on_linked_export_error(self, message):
+        try:
+            if callable(self._on_linked_export_finished):
+                self._on_linked_export_finished(status="failed", result=None, error_message=message)
+        finally:
+            try:
+                self._skip_close_guard = True
+                self.destroy()
+            except tk.TclError:
+                pass
+
+    def _close_to_hub(self):
+        _return_to_hub(self)
+        self.destroy()
 
 
 if __name__ == "__main__":

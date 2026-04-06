@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.0.9 - 2026-04-06
+
+Esta version incorpora el ajuste del formato maestro de `Condiciones de Vacante` despues de eliminar filas en la plantilla.
+
+### Cambios principales
+
+- Se corrige el mapeo de `section_2` para `herramientas_equipos`.
+- Se recorren las referencias de `section_3`, `section_4`, `section_5`, `section_6`, `section_7` y `section_8` para alinearlas con el nuevo layout del Google Sheet.
+- Se actualizan `SECTION_7_TITLE_ROW`, `SECTION_8_TITLE_ROW` y los offsets dinamicos usados al exportar observaciones y asistentes.
+
+### Como afecta a los usuarios
+
+- `Condiciones de Vacante` vuelve a escribir en las filas correctas del formato maestro actual.
+- Las observaciones finales y la lista de asistentes ya no quedan desplazadas despues del cambio de plantilla.
+
 ## 2.0.8 - 2026-04-06
 
 Esta version corrige el mecanismo de actualizacion para evitar bloqueos de antivirus durante el handoff al instalador.

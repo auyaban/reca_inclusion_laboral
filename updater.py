@@ -337,7 +337,9 @@ def _build_post_exit_installer_cmd(
     current_pid: int,
     relaunch_command: list[str] | tuple[str, ...] | None = None,
 ) -> Path:
-    installer_command = subprocess.list2cmdline(_installer_args(installer_path))
+    installer_log_path = Path(tempfile.gettempdir()) / f"reca_installer_{int(current_pid)}.log"
+    installer_args = _installer_args(installer_path) + [f"/LOG={installer_log_path}"]
+    installer_command = subprocess.list2cmdline(installer_args)
     relaunch_command_line = subprocess.list2cmdline(list(relaunch_command or []))
     script_path = Path(tempfile.gettempdir()) / f"reca_updater_{int(current_pid)}.cmd"
     lines = [
@@ -350,7 +352,7 @@ def _build_post_exit_installer_cmd(
         "  goto wait_for_app",
         ")",
         "timeout /t 1 /nobreak >nul",
-        f"start \"\" /wait {installer_command}",
+        f"{installer_command}",
         "set \"RECA_INSTALL_EXIT=%ERRORLEVEL%\"",
     ]
     if relaunch_command_line:

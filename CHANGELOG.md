@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.0.11 - 2026-04-07
+
+Esta version corrige un fallo del actualizador que podia descargar el instalador correcto pero relanzar la app sin aplicar realmente la actualizacion.
+
+### Cambios principales
+
+- El watcher post-cierre del `updater` deja de ejecutar el instalador con `start /wait` y ahora lo invoca de forma directa desde el script temporal, evitando carreras con el relanzamiento.
+- El handoff agrega un log del instalador en `%TEMP%` para facilitar diagnostico si Inno Setup vuelve a fallar en equipos de usuario final.
+- Se agregan pruebas unitarias para validar el contenido del script post-cierre y asegurar que el instalador se ejecute sin `start /wait`.
+
+### Como afecta a los usuarios
+
+- Cuando aceptan actualizar, la instalacion ya no deberia volver a abrir la app antigua antes de terminar el setup.
+- La version instalada deberia quedar realmente actualizada despues del relanzamiento.
+
 ## 2.0.10 - 2026-04-07
 
 Esta version agrega un aviso automatico de actualizacion en el HUB para que los usuarios finales no pasen por alto que existe una version nueva.

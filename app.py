@@ -11441,6 +11441,8 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
                     self.section2_3_fields[field_id][key] = combo
                     current_row += 1
 
+        self._prefill_section_fields("section_2_3", self.section2_3_fields)
+
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
         self._pending_autosave = lambda f=self.section2_3_fields: _autosave_section(evaluacion_accesibilidad, "section_2_3", lambda: self._collect_section_fields(f))

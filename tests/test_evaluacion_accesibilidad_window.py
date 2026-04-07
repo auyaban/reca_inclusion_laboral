@@ -92,6 +92,27 @@ class EvaluacionAccesibilidadWindowTests(_TkTestCase):
             "Primera linea.\nSegunda linea.",
         )
 
+    def test_section_2_3_rehydrates_cached_values_when_reopened(self) -> None:
+        window = self._create_window()
+
+        window._show_section_2_3()
+        widgets = window.section2_3_fields["entrada_salida"]
+        widgets["accesible"].set("Si")
+        widgets["observaciones"].insert("1.0", "Entrada principal habilitada.")
+
+        payload = window._collect_section_fields(window.section2_3_fields)
+        app.evaluacion_accesibilidad.confirm_section_2_3(payload)
+
+        window._show_section_2_4()
+        window._show_section_2_3()
+
+        reopened = window.section2_3_fields["entrada_salida"]
+        self.assertEqual(reopened["accesible"].get(), "Si")
+        self.assertEqual(
+            reopened["observaciones"].get("1.0", "end-1c"),
+            "Entrada principal habilitada.",
+        )
+
     def test_section_2_free_text_fields_use_multiline_text_widgets(self) -> None:
         window = self._create_window()
 

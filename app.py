@@ -121,15 +121,11 @@ from formularios.user_messages import map_exception_to_user_message
 from version_info import get_version
 from updater import (
     _repo_config as _updater_repo_config,
-    clear_pending_update_session,
-    create_update_session_dir,
     download_installer,
     get_latest_release_assets,
     get_release_page_url,
-    inspect_pending_update,
-    is_self_update_supported,
     is_update_available,
-    start_update_handoff,
+    run_installer,
 )
 from logging_utils import get_log_file_path, get_logs_root, log_app_event, log_labs_event
 
@@ -7494,13 +7490,11 @@ class HubWindow(tk.Tk):
         self._auto_login_thread = None
         self._open_form_windows = {}
         self._form_action_buttons = {}
-        self._pending_update_recovery_shown = False
 
         _ensure_drive_upload_worker()
         self._configure_input_styles()
         self.protocol("WM_DELETE_WINDOW", self._on_app_close)
         self.after(0, self._build_login)
-        self.after(250, self._check_pending_update_status)
 
     def _configure_input_styles(self):
         try:
@@ -8766,18 +8760,6 @@ class HubWindow(tk.Tk):
             _log_capture(f"_get_expected_update_installer_asset_name error: {exc}")
             return ""
 
-    def _supports_self_update(self):
-        try:
-            return bool(
-                is_self_update_supported(
-                    app_executable=sys.executable,
-                    frozen=getattr(sys, "frozen", False),
-                )
-            )
-        except Exception as exc:
-            _log_capture(f"_supports_self_update error: {exc}")
-            return False
-
     def _open_release_page(self, version=None):
         try:
             url = get_release_page_url(version)
@@ -8788,125 +8770,6 @@ class HubWindow(tk.Tk):
             _log_capture(f"_open_release_page error: {exc}")
             messagebox.showerror("Actualización", f"No se pudo abrir el release: {exc}")
             return False
-
-    def _check_pending_update_status(self):
-        if self._pending_update_recovery_shown:
-            return
-        try:
-            pending = inspect_pending_update(current_version=get_version() or "0.0.0")
-        except Exception as exc:
-            _log_capture(f"_check_pending_update_status error: {exc}")
-            return
-        if not pending:
-            return
-        outcome = str(pending.get("outcome") or "").strip().lower()
-        if outcome == "succeeded":
-            _log_capture(
-                "_check_pending_update_status: actualización confirmada "
-                f"expected={pending.get('expected_version')}"
-            )
-            clear_pending_update_session(pending, remove_session_dir=True)
-            return
-        self._pending_update_recovery_shown = True
-        clear_pending_update_session(pending, remove_session_dir=False)
-        self._show_update_recovery_dialog(pending)
-
-    def _show_update_recovery_dialog(self, pending):
-        details = []
-        expected_version = str((pending or {}).get("expected_version") or "").strip()
-        if expected_version:
-            details.append(f"Versión esperada: {expected_version}")
-        detected_version = str((pending or {}).get("detected_installed_version") or "").strip()
-        if detected_version:
-            details.append(f"Versión detectada: {detected_version}")
-        installer_log_path = str((pending or {}).get("installer_log_path") or "").strip()
-        if installer_log_path:
-            details.append(f"Log instalador: {installer_log_path}")
-        status_text = str((pending or {}).get("message") or "").strip()
-        outcome = str((pending or {}).get("outcome") or "").strip().lower()
-        title_text = (
-            "La actualización anterior no terminó correctamente."
-            if outcome == "failed"
-            else "La actualización anterior quedó interrumpida."
-        )
-
-        modal = tk.Toplevel(self)
-        modal.title("Recuperar actualización")
-        modal.configure(bg=COLOR_LIGHT_BG)
-        modal.transient(self)
-        modal.resizable(False, False)
-        modal.grab_set()
-
-        body = tk.Frame(modal, bg=COLOR_LIGHT_BG, padx=18, pady=16)
-        body.pack(fill="both", expand=True)
-        tk.Label(
-            body,
-            text="Actualizar aplicación",
-            font=("Arial", 12, "bold"),
-            fg=COLOR_PURPLE,
-            bg=COLOR_LIGHT_BG,
-        ).pack(anchor="w", pady=(0, 6))
-        tk.Label(
-            body,
-            text=title_text,
-            justify="left",
-            wraplength=420,
-            font=("Arial", 10),
-            fg=COLOR_TEXT_PRIMARY,
-            bg=COLOR_LIGHT_BG,
-        ).pack(anchor="w")
-        if status_text:
-            tk.Label(
-                body,
-                text=status_text,
-                justify="left",
-                wraplength=420,
-                font=("Arial", 10),
-                fg=COLOR_TEXT_SECONDARY,
-                bg=COLOR_LIGHT_BG,
-            ).pack(anchor="w", pady=(8, 0))
-        if details:
-            tk.Label(
-                body,
-                text="\n".join(details),
-                justify="left",
-                wraplength=420,
-                font=("Arial", 9),
-                fg=COLOR_TEXT_SECONDARY,
-                bg=COLOR_LIGHT_BG,
-            ).pack(anchor="w", pady=(10, 0))
-
-        actions = tk.Frame(body, bg=COLOR_LIGHT_BG)
-        actions.pack(fill="x", pady=(14, 0))
-
-        def _close():
-            try:
-                modal.grab_release()
-            except Exception:
-                pass
-            try:
-                modal.destroy()
-            except Exception:
-                pass
-
-        ttk.Button(
-            actions,
-            text="Reintentar actualización",
-            command=lambda: (_close(), self._open_update_page()),
-        ).pack(side="left")
-        ttk.Button(
-            actions,
-            text="Abrir release",
-            command=lambda: (_close(), self._open_release_page((pending or {}).get("expected_version"))),
-        ).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="Cerrar", command=_close).pack(side="right")
-
-        modal.protocol("WM_DELETE_WINDOW", _close)
-        modal.update_idletasks()
-        width, height = 480, 240
-        x = (modal.winfo_screenwidth() // 2) - (width // 2)
-        y = (modal.winfo_screenheight() // 2) - (height // 2)
-        modal.geometry(f"{width}x{height}+{x}+{y}")
 
     def _update_assets_are_usable(self, assets):
         installer_asset = self._get_expected_update_installer_asset_name()
@@ -8925,8 +8788,7 @@ class HubWindow(tk.Tk):
         error = str(error_raw).strip() if error_raw else ""
         update_available = is_update_available(local, remote or None)
         has_installer_asset = self._update_assets_are_usable(assets)
-        supports_self_update = self._supports_self_update()
-        can_start_update = bool(update_available and has_installer_asset and supports_self_update)
+        can_start_update = bool(update_available and has_installer_asset)
         return {
             "local_version": local,
             "remote_version": remote or None,
@@ -8934,7 +8796,6 @@ class HubWindow(tk.Tk):
             "error": error or None,
             "update_available": update_available,
             "has_installer_asset": has_installer_asset,
-            "supports_self_update": supports_self_update,
             "can_start_update": can_start_update,
         }
 
@@ -9011,9 +8872,6 @@ class HubWindow(tk.Tk):
         if not normalized["has_installer_asset"]:
             _log_capture("_maybe_prompt_startup_update omitido: release sin instalador válido")
             return False
-        if not normalized["supports_self_update"]:
-            _log_capture("_maybe_prompt_startup_update omitido: runtime sin soporte de auto-update")
-            return False
         self._startup_update_prompt_shown = True
         _log_capture(
             "_maybe_prompt_startup_update: actualización disponible "
@@ -9047,16 +8905,6 @@ class HubWindow(tk.Tk):
                 f"({normalized['remote_version']}), pero el release no incluye el instalador "
                 f"esperado ({installer_asset}).",
             )
-            return False
-        if not normalized["supports_self_update"]:
-            _log_capture("_handle_manual_update_snapshot: runtime sin soporte de auto-update")
-            open_release = messagebox.askyesno(
-                "Actualización",
-                "Esta ejecución no admite auto-actualización porque no corresponde a una instalación empaquetada.\n"
-                "¿Deseas abrir el release en GitHub?",
-            )
-            if open_release:
-                self._open_release_page(normalized["remote_version"])
             return False
         _log_capture(
             "_handle_manual_update_snapshot: actualización disponible "
@@ -9106,42 +8954,28 @@ class HubWindow(tk.Tk):
     def _start_manual_update(self, snapshot):
         normalized = self._normalize_update_snapshot(snapshot)
         assets = dict(normalized.get("assets") or {})
-        remote_version = str(normalized.get("remote_version") or "").strip()
         _log_capture(
             "_start_manual_update: inicio "
-            f"remote={remote_version or '?'} assets={list(assets.keys())}"
+            f"remote={normalized.get('remote_version') or '?'} assets={list(assets.keys())}"
         )
         dialog = LoadingDialog(self, title="Descargando instalador")
         dialog.set_status("Preparando descarga...")
         dialog.set_progress(5)
-        result = {"error": None, "path": None, "session_dir": None}
-        progress_state = {"last": -1, "last_msg": ""}
+        result = {"error": None, "path": None}
 
         def _progress(message, value):
-            try:
-                value_int = int(value)
-            except Exception:
-                value_int = -1
-            if (
-                message != progress_state["last_msg"]
-                or value_int >= progress_state["last"] + 10
-                or value_int in {0, 100}
-            ):
-                _log_capture(f"_start_manual_update progress: {message} ({value_int})")
-                progress_state["last"] = value_int
-                progress_state["last_msg"] = message
             self.after(0, lambda: dialog.set_status(message))
             self.after(0, lambda: dialog.set_progress(value))
 
         def _worker():
             try:
-                session_dir = create_update_session_dir()
-                result["session_dir"] = session_dir
-                path = download_installer(assets, progress_callback=_progress, target_dir=session_dir)
+                path = download_installer(assets, progress_callback=_progress)
                 result["path"] = path
                 _log_capture(f"_start_manual_update: instalador descargado en {path}")
-                self.after(0, lambda: dialog.set_status("Preparando instalación..."))
+                self.after(0, lambda: dialog.set_status("Instalando actualización..."))
                 self.after(0, lambda: dialog.set_progress(100))
+                run_installer(path, wait=True)
+                _log_capture("_start_manual_update: instalador completado")
             except Exception as exc:
                 result["error"] = str(exc)
                 _log_capture(f"_start_manual_update error: {exc}")
@@ -9156,51 +8990,14 @@ class HubWindow(tk.Tk):
             dialog.close()
             if result["error"]:
                 _log_capture(f"_start_manual_update resultado error: {result['error']}")
-                session_dir = result.get("session_dir")
-                if session_dir:
-                    try:
-                        shutil.rmtree(session_dir, ignore_errors=True)
-                    except Exception:
-                        pass
                 messagebox.showerror("Actualización", f"No se pudo actualizar: {result['error']}")
                 return
-            _log_capture("_start_manual_update resultado OK: programando instalador post-cierre")
-            self._handoff_to_installer(
-                result["path"],
-                expected_version=remote_version,
-                session_dir=result.get("session_dir"),
-            )
+            _log_capture("_start_manual_update resultado OK: iniciando reinicio")
+            self._show_restart_countdown()
 
         self.after(300, _check_done)
 
-    def _handoff_to_installer(self, installer_path, *, expected_version, session_dir=None):
-        try:
-            relaunch_args = [sys.executable]
-            session_info = start_update_handoff(
-                installer_path=installer_path,
-                expected_version=expected_version,
-                current_pid=os.getpid(),
-                relaunch_command=relaunch_args,
-                app_executable=sys.executable,
-                release_url=get_release_page_url(expected_version),
-            )
-            _log_capture(
-                "_handoff_to_installer: helper confirmado "
-                f"installer={installer_path} session={session_info.get('session_dir')} "
-                f"helper_pid={session_info.get('helper_pid')}"
-            )
-        except Exception as exc:
-            _log_capture(f"_handoff_to_installer error: {exc}")
-            if session_dir:
-                try:
-                    shutil.rmtree(session_dir, ignore_errors=True)
-                except Exception:
-                    pass
-            messagebox.showerror("Actualización", f"No se pudo iniciar el instalador: {exc}")
-            return
-        self._show_restart_countdown()
-
-    def _show_restart_countdown(self, seconds=3):
+    def _show_restart_countdown(self, seconds=5):
         modal = tk.Toplevel(self)
         modal.title("Actualización")
         modal.configure(bg=COLOR_LIGHT_BG)
@@ -9212,14 +9009,14 @@ class HubWindow(tk.Tk):
         body.pack(fill="both", expand=True)
         tk.Label(
             body,
-            text="Cerrando para instalar",
+            text="Actualización instalada",
             font=("Arial", 12, "bold"),
             fg=COLOR_PURPLE,
             bg=COLOR_LIGHT_BG,
         ).pack(anchor="w", pady=(0, 6))
         countdown = tk.Label(
             body,
-            text="La aplicación se cerrará en 3 segundos...",
+            text=f"Reiniciando en {seconds} segundos...",
             font=("Arial", 10),
             fg=COLOR_TEAL,
             bg=COLOR_LIGHT_BG,
@@ -9238,12 +9035,24 @@ class HubWindow(tk.Tk):
                     modal.destroy()
                 except Exception:
                     pass
-                self.after(200, self.destroy)
+                self.after(200, self._restart_app)
                 return
-            countdown.config(text=f"La aplicación se cerrará en {remaining} segundos...")
+            countdown.config(text=f"Reiniciando en {remaining} segundos...")
             modal.after(1000, lambda: _tick(remaining - 1))
 
         _tick(seconds)
+
+    def _restart_app(self):
+        try:
+            subprocess.Popen([sys.executable], close_fds=True)
+            _log_capture("_restart_app: nueva instancia lanzada")
+        except Exception as exc:
+            _log_capture(f"_restart_app: error al relanzar: {exc}")
+        try:
+            self.destroy()
+        except Exception:
+            pass
+        sys.exit(0)
 
     def _build_header(self):
         self.header = tk.Frame(self, bg=COLOR_LIGHT_BG)
@@ -19509,10 +19318,12 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         self._case_cache_key = ""
         self._buscar_vinculado_busy = False
         self._cedula_load_busy = False
+        self._case_bootstrap_busy = False
         self._cedula_lookup_hint_id = "seguimientos_cedula_lookup"
         self._company_lookup_hint_id = "seguimientos_company_lookup"
         self._compensar_hint_id = "seguimientos_compensar"
         self.status_label_widget = None
+        self._pending_case_bootstrap = None
 
         self._build_header()
         self._build_body()
@@ -19527,7 +19338,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             == seguimientos.GOOGLE_SHEETS_MIME
         ):
             return self.case_record
-        return self.case_path
+        return None
 
     def _build_header(self):
         header = tk.Frame(self, bg=COLOR_LIGHT_BG)
@@ -19544,8 +19355,8 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         tk.Label(
             header,
             text=(
-                "Busca a la persona por cédula, confirma la empresa del caso "
-                "y abre la hoja correcta para continuar."
+                "Busca a la persona por cédula, deja listo su Google Sheet "
+                "y luego continúa en la hoja sugerida."
             ),
             font=FONT_SUBTITLE,
             fg="#333333",
@@ -19608,6 +19419,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             width=30,
         )
         self.compensar_combo.grid(row=2, column=1, sticky="w", pady=4)
+        self.compensar_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_compensar_choice_changed())
         compensar_hint = tk.Label(search, text="", font=("Arial", 9), fg="#6B6B6B", bg=COLOR_LIGHT_BG)
         compensar_hint.grid(row=3, column=1, columnspan=2, sticky="w", pady=(2, 0))
         ui_feedback.register_group_hint(self, self._compensar_hint_id, compensar_hint)
@@ -19717,9 +19529,9 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         ttk.Button(actions, text="Regresar", style="Secondary.TButton", command=self._close_to_hub).pack(side="left")
         self.create_btn = ttk.Button(
             actions,
-            text="Abrir / Preparar Caso",
+            text="Continuar",
             style="Primary.TButton",
-            command=self._abrir_preparar_caso,
+            command=self._continue_case_flow,
             state="disabled",
         )
         self.create_btn.pack(side="right")
@@ -19868,6 +19680,119 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             return f"file:{file_id}"
         return f"path:{str(path or '').strip()}"
 
+    def _compensar_choice_is_resolved(self, value=None):
+        choice = str(value if value is not None else self.compensar_var.get()).strip()
+        return choice.startswith("Si") or choice.startswith("No")
+
+    def _build_case_user_row_snapshot(self, *, row=None, linked_company=None):
+        user_row = dict(row or self.user_row or {})
+        company = dict(linked_company or self.linked_company or {})
+        if company.get("nit_empresa"):
+            user_row["empresa_nit"] = str(company.get("nit_empresa") or "").strip()
+        if company.get("nombre_empresa"):
+            user_row["empresa_nombre"] = str(company.get("nombre_empresa") or "").strip()
+        return user_row
+
+    def _clear_case_state(self):
+        self.case_record = None
+        self.case_path = None
+        self._case_suggestion_cache = None
+        self._case_summary_cache = None
+        self._case_cache_key = ""
+        self.path_var.set("(Sin Google Sheet aún)")
+        self.open_btn.config(state="disabled")
+        self.create_btn.config(state="disabled")
+
+    def _set_pending_case_bootstrap(self, *, row, normalized_cedula, linked_company=None):
+        self._pending_case_bootstrap = {
+            "row": dict(row or {}),
+            "cedula": str(normalized_cedula or "").strip(),
+            "linked_company": dict(linked_company or {}),
+        }
+        self._clear_case_state()
+        self.suggestion_var.set("Hoja 9 - Se creará el caso para iniciar desde la hoja 9.")
+        self.followups_var.set("Sin hojas completadas")
+
+    def _finalize_case_bootstrap_result(self, data):
+        result = dict((data or {}).get("result") or {})
+        self.case_record = result.get("record") or {}
+        self.case_path = None
+        self._pending_case_bootstrap = None
+        self.path_var.set((self.case_record or {}).get("webViewLink") or "")
+        self.open_btn.config(state="normal" if self.case_record else "disabled")
+        self.create_btn.config(state="normal" if self.case_record else "disabled")
+        self._case_suggestion_cache = data.get("suggestion")
+        self._case_summary_cache = data.get("summary")
+        self._case_cache_key = self._current_case_cache_key(self.case_record, self.case_path)
+
+        state_error = data.get("state_error")
+        if state_error is not None:
+            self._case_suggestion_cache = None
+            self._case_summary_cache = None
+            self.suggestion_var.set("No fue posible leer sugerencia.")
+            self.followups_var.set("")
+            self.status_var.set(_format_followup_case_state_error(state_error))
+            return
+
+        self._apply_summary_result(
+            suggestion=data.get("suggestion"),
+            summary=data.get("summary"),
+        )
+        created = bool(result.get("created"))
+        if created:
+            self.status_var.set(
+                "La cédula existe, pero no tenía caso en seguimientos; se creó carpeta y Google Sheet."
+            )
+        else:
+            self.status_var.set("La persona ya existe en seguimientos.")
+
+    def _maybe_start_pending_case_bootstrap(self):
+        pending = dict(self._pending_case_bootstrap or {})
+        if not pending or bool(getattr(self, "_case_bootstrap_busy", False)):
+            return False
+        if not self._compensar_choice_is_resolved():
+            return False
+        row = dict(pending.get("row") or {})
+        normalized_cedula = str(pending.get("cedula") or "").strip()
+        linked_company = dict(self.linked_company or pending.get("linked_company") or {})
+        user_row = self._build_case_user_row_snapshot(row=row, linked_company=linked_company)
+        is_compensar = self.compensar_var.get().startswith("Si")
+
+        def _worker(progress):
+            progress("Creando el Google Sheet del caso...", 28)
+            result = seguimientos.ensure_case_record(
+                normalized_cedula,
+                user_row,
+                is_compensar=is_compensar,
+            )
+            record = result.get("record") or {}
+            progress("Leyendo el estado actual del caso...", 74)
+            state_snapshot = _read_followup_case_state(record)
+            progress("Organizando la información del caso...", 100)
+            return {
+                "result": result,
+                "suggestion": state_snapshot.get("suggestion"),
+                "summary": state_snapshot.get("summary"),
+                "state_error": state_snapshot.get("error"),
+            }
+
+        def _on_success(data):
+            self._finalize_case_bootstrap_result(data)
+
+        return self._run_loading_job(
+            title="Creando caso",
+            initial_status="Creando carpeta y Google Sheet del caso...",
+            worker=_worker,
+            on_success=_on_success,
+            on_error_context="followup_case",
+            busy_attr="_case_bootstrap_busy",
+            busy_widgets=[self.cedula_combo, getattr(self, "buscar_vinculado_btn", None), getattr(self, "create_btn", None)],
+        )
+
+    def _on_compensar_choice_changed(self):
+        if self._pending_case_bootstrap and self._compensar_choice_is_resolved():
+            self._maybe_start_pending_case_bootstrap()
+
     def _update_company_name_suggestions(self, _event=None):
         combo = self.company_name_entry
         if not combo:
@@ -19936,6 +19861,8 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         self.compensar_var.set(compensar_choice)
         self._set_company_lookup_enabled(not bool(linked_name or linked_nit))
         self._set_compensar_choice_enabled(bool(linked_name or linked_nit) and not compensar_choice)
+        if self._pending_case_bootstrap and self._compensar_choice_is_resolved(compensar_choice):
+            self._maybe_start_pending_case_bootstrap()
 
     def _buscar_empresa_manual_por_nit(self, _event=None):
         raw_nit = ui_feedback.get_widget_value(self.company_nit_entry)
@@ -19956,6 +19883,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             self.linked_company = company
             self._apply_linked_company_to_ui()
             _show_inline_feedback(self, "Empresa encontrada por NIT.", state="success")
+            self._maybe_start_pending_case_bootstrap()
 
         def _on_error(exc):
             _show_inline_feedback(self, _log_user_error("followup_case", exc), state="error")
@@ -19998,6 +19926,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             self.linked_company = company
             self._apply_linked_company_to_ui()
             _show_inline_feedback(self, "Empresa encontrada por nombre.", state="success")
+            self._maybe_start_pending_case_bootstrap()
 
         def _on_error(exc):
             _show_inline_feedback(self, _log_user_error("followup_case", exc), state="error")
@@ -20090,12 +20019,15 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             else:
                 company_text = linked_name
         self.company_var.set(company_text or "(Sin empresa cargada)")
-        followups = summary.get("seguimientos") or []
-        self.followups_var.set(", ".join(followups) if followups else "Sin seguimientos con fecha registrada")
+        completed = list(summary.get("completed_sheets") or [])
+        if completed:
+            self.followups_var.set(", ".join(completed))
+        else:
+            self.followups_var.set("Sin hojas completadas")
         if missing_case_status:
             self.status_var.set(missing_case_status)
         else:
-            self.status_var.set("Archivo encontrado y estado calculado correctamente.")
+            self.status_var.set("La persona ya existe en seguimientos.")
 
     def _load_cedulas(self):
         try:
@@ -20157,29 +20089,21 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
                 linked_company = {}
             progress("Buscando el caso...", 60)
             case_record = seguimientos.find_case_record(normalized, row.get("nombre_usuario"))
-            case_path = (case_record or {}).get("local_path") if case_record else None
-            case_target = (
-                case_record
-                if case_record
-                and str((case_record or {}).get("source") or "").strip() == "drive"
-                and str((case_record or {}).get("mime_type") or "").strip() == seguimientos.GOOGLE_SHEETS_MIME
-                else case_path
-            )
             suggestion = None
             summary = None
             state_error = None
-            if case_target:
+            if case_record:
                 progress("Leyendo el estado actual del caso...", 82)
-                state_snapshot = _read_followup_case_state(case_target)
+                state_snapshot = _read_followup_case_state(case_record)
                 suggestion = state_snapshot.get("suggestion")
                 summary = state_snapshot.get("summary")
                 state_error = state_snapshot.get("error")
             progress("Organizando la información del caso...", 100)
             return {
                 "row": row,
+                "normalized_cedula": normalized,
                 "linked_company": linked_company,
                 "case_record": case_record,
-                "case_path": case_path,
                 "suggestion": suggestion,
                 "summary": summary,
                 "state_error": state_error,
@@ -20197,30 +20121,32 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             self._apply_linked_company_to_ui()
             if not (self.linked_company or {}).get("nombre_empresa") and not (self.linked_company or {}).get("nit_empresa"):
                 self.compensar_var.set("")
-                self._set_compensar_choice_enabled(False)
+                self._set_compensar_choice_enabled(True)
             self.case_record = data.get("case_record")
-            self.case_path = data.get("case_path")
+            self.case_path = None
             self._case_suggestion_cache = data.get("suggestion")
             self._case_summary_cache = data.get("summary")
             self._case_cache_key = self._current_case_cache_key(self.case_record, self.case_path)
             self.path_var.set(
-                ((self.case_record or {}).get("webViewLink") or self.case_path)
+                ((self.case_record or {}).get("webViewLink") or "")
                 if self.case_record
-                else "(No existe archivo aún)"
+                else "(Sin Google Sheet aún)"
             )
-            self.create_btn.config(state="normal")
+            self.create_btn.config(state="normal" if self.case_record else "disabled")
             self.open_btn.config(state="normal" if self.case_record else "disabled")
             if not self._get_case_target():
-                linked_name = str((self.linked_company or {}).get("nombre_empresa") or "").strip()
-                if linked_name:
-                    status_text = "No existe archivo para este vinculado. La empresa se resolvió desde contratación."
-                else:
-                    status_text = "No existe archivo para este vinculado. Busca la empresa por NIT o nombre para confirmar si es Compensar."
-                self._apply_summary_result(
-                    suggestion={"sheet": "", "message": "Se sugiere crear caso y empezar por hoja base (9...)"},
-                    summary={"empresa": "", "seguimientos": []},
-                    missing_case_status=status_text,
+                self._set_pending_case_bootstrap(
+                    row=row,
+                    normalized_cedula=data.get("normalized_cedula"),
+                    linked_company=self.linked_company,
                 )
+                status_text = (
+                    "La cédula existe, pero no tiene caso en seguimientos. "
+                    "Confirma si la empresa es Compensar para crear carpeta y Google Sheet."
+                )
+                self.status_var.set(status_text)
+                if self._compensar_choice_is_resolved():
+                    self._maybe_start_pending_case_bootstrap()
                 return
             state_error = data.get("state_error")
             if state_error is not None:
@@ -20248,14 +20174,13 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
     def _refresh_suggestion(self):
         case_target = self._get_case_target()
         if not case_target:
-            self.suggestion_var.set("Se sugiere crear caso y empezar por hoja base (9...)")
+            self.suggestion_var.set("Hoja 9 - Se creará el caso para iniciar desde la hoja 9.")
             self._apply_linked_company_to_ui()
-            self.followups_var.set("")
-            linked_name = str((self.linked_company or {}).get("nombre_empresa") or "").strip()
-            if linked_name:
-                self.status_var.set("No existe archivo para este vinculado. La empresa se resolvió desde contratación.")
-            else:
-                self.status_var.set("No existe archivo para este vinculado. Busca la empresa por NIT o nombre para confirmar si es Compensar.")
+            self.followups_var.set("Sin hojas completadas")
+            self.status_var.set(
+                "La cédula existe, pero no tiene caso en seguimientos. "
+                "Confirma si la empresa es Compensar para crear carpeta y Google Sheet."
+            )
             return
         state_snapshot = _read_followup_case_state(case_target)
         suggestion = state_snapshot.get("suggestion")
@@ -20275,12 +20200,22 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             self.company_var.set(company_text)
         else:
             self._apply_linked_company_to_ui()
-        followups = summary.get("seguimientos") or []
-        if followups:
-            self.followups_var.set(", ".join(followups))
+        completed = summary.get("completed_sheets") or []
+        if completed:
+            self.followups_var.set(", ".join(completed))
         else:
-            self.followups_var.set("Sin seguimientos con fecha registrada")
-        self.status_var.set("Archivo encontrado y estado calculado correctamente.")
+            self.followups_var.set("Sin hojas completadas")
+        self.status_var.set("La persona ya existe en seguimientos.")
+
+    def _continue_case_flow(self):
+        if not self._get_case_target():
+            _show_inline_feedback(
+                self,
+                "Todavía no existe el Google Sheet del caso. Confirma si la empresa es Compensar para crearlo.",
+                state="warning",
+            )
+            return
+        self._open_editor()
 
     def _crear_o_actualizar_caso(self):
         if not self.user_row:
@@ -20408,19 +20343,10 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             messagebox.showerror("Error", "No hay archivo para abrir.")
             return
         try:
-            open_target = self.case_record.get("webViewLink") or self.case_path
-            if open_target and str(open_target).startswith("http"):
-                _open_url_prefer_chrome(open_target)
-            elif self.case_path and os.path.exists(self.case_path):
-                _open_local_file_safely(
-                    self.case_path,
-                    allowed_roots=[
-                        seguimientos._get_shared_root(),
-                        os.path.join(tempfile.gettempdir(), "reca_seguimientos_drive"),
-                    ],
-                )
-            else:
-                raise RuntimeError("No se encontró una ruta o link válido del caso.")
+            open_target = str((self.case_record or {}).get("webViewLink") or "").strip()
+            if not open_target:
+                raise RuntimeError("No se encontró el enlace del Google Sheet del caso.")
+            _open_url_prefer_chrome(open_target)
         except Exception as exc:
             messagebox.showerror("Error", f"No se pudo abrir el archivo.\n{exc}")
 
@@ -20430,56 +20356,18 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             messagebox.showerror("Error", "No hay archivo de seguimiento para diligenciar.")
             return
         case_record_snapshot = dict(self.case_record or {})
-        case_path_snapshot = self.case_path
-        raw_cedula = self.cedula_combo.get().strip()
-        is_compensar = self.compensar_var.get().startswith("Si")
-        user_row_snapshot = dict(self.user_row or {})
-        linked_company_snapshot = dict(self.linked_company or {})
 
         def _worker(progress):
             case_record = dict(case_record_snapshot or {})
-            case_path = case_path_snapshot
             progress("Preparando el editor del caso...", 18)
-            if case_record and (
-                str((case_record or {}).get("source") or "").strip() != "drive"
-                or str((case_record or {}).get("mime_type") or "").strip()
-                != seguimientos.GOOGLE_SHEETS_MIME
-            ):
-                progress("Migrando el caso a Google Sheets...", 52)
-                cedula = re.sub(r"\D+", "", raw_cedula)
-                user_row = dict(user_row_snapshot or {})
-                if linked_company_snapshot.get("nit_empresa"):
-                    user_row["empresa_nit"] = str(linked_company_snapshot.get("nit_empresa") or "").strip()
-                if linked_company_snapshot.get("nombre_empresa"):
-                    user_row["empresa_nombre"] = str(linked_company_snapshot.get("nombre_empresa") or "").strip()
-                try:
-                    result = seguimientos.ensure_case_record(
-                        cedula,
-                        user_row,
-                        is_compensar=is_compensar,
-                    )
-                except Exception as exc:
-                    raise RuntimeError(f"No se pudo migrar el caso a Google Sheets.\n{exc}") from exc
-                case_record = result.get("record") or case_record
-                case_path = (case_record or {}).get("local_path")
-            case_target = (
-                case_record
-                if (
-                    case_record
-                    and str((case_record or {}).get("source") or "").strip() == "drive"
-                    and str((case_record or {}).get("mime_type") or "").strip()
-                    == seguimientos.GOOGLE_SHEETS_MIME
-                )
-                else case_path
-            )
-            if not case_target:
+            if not case_record:
                 raise RuntimeError("No hay archivo de seguimiento para diligenciar.")
             progress("Leyendo la estructura del caso...", 82)
-            bootstrap = _load_followup_editor_bootstrap(case_target)
+            bootstrap = _load_followup_editor_bootstrap(case_record)
             progress("Abriendo el editor...", 100)
             return {
                 "case_record": case_record,
-                "case_path": case_path,
+                "case_path": None,
                 "bootstrap": bootstrap,
             }
 
@@ -20714,6 +20602,13 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         self.follow_asistentes = []
         self.current_followup_index = None
         self.save_button = None
+        self._rendered_sheet_name = ""
+        self._sheet_autosave_after_id = None
+        self._sheet_autosave_trace_tokens = []
+        self._sheet_autosave_suspend = False
+        self._sheet_autosave_busy = False
+        self._sheet_autosave_pending_request = None
+        self._sheet_autosave_last_fingerprint = ""
 
         self._build_header()
         self._build_controls()
@@ -20808,6 +20703,267 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
     def _clear_content(self):
         for child in self.content_frame.winfo_children():
             child.destroy()
+
+    def _cancel_sheet_autosave_timer(self):
+        after_id = getattr(self, "_sheet_autosave_after_id", None)
+        if not after_id:
+            return
+        try:
+            self.after_cancel(after_id)
+        except Exception:
+            pass
+        self._sheet_autosave_after_id = None
+
+    def _clear_sheet_autosave_traces(self):
+        for var, token in list(getattr(self, "_sheet_autosave_trace_tokens", []) or []):
+            try:
+                var.trace_remove("write", token)
+            except Exception:
+                continue
+        self._sheet_autosave_trace_tokens = []
+
+    def _bind_sheet_autosave_var(self, var):
+        if not isinstance(var, tk.Variable):
+            return
+        try:
+            token = var.trace_add("write", lambda *_args, w=self: w._schedule_sheet_autosave())
+        except Exception:
+            return
+        self._sheet_autosave_trace_tokens.append((var, token))
+
+    def _bind_sheet_autosave_widget(self, widget, *, include_key_release=True, include_focus_out=True):
+        if widget is None or getattr(widget, "_seguimiento_autosave_bound", False):
+            return
+        if include_key_release:
+            try:
+                widget.bind(
+                    "<KeyRelease>",
+                    lambda _event=None, w=self: w._schedule_sheet_autosave(),
+                    add="+",
+                )
+            except Exception:
+                pass
+        if include_focus_out:
+            try:
+                widget.bind(
+                    "<FocusOut>",
+                    lambda _event=None, w=self: w._schedule_sheet_autosave(delay_ms=250),
+                    add="+",
+                )
+            except Exception:
+                pass
+        widget._seguimiento_autosave_bound = True
+
+    def _install_sheet_autosave_bindings(self):
+        self._clear_sheet_autosave_traces()
+
+        for var in list(self.base_vars.values()) + list(self.follow_vars.values()):
+            self._bind_sheet_autosave_var(var)
+        for var in list(self.follow_item_auto) + list(self.follow_item_emp) + list(self.follow_emp_eval):
+            self._bind_sheet_autosave_var(var)
+
+        for widget in list(self.base_text.values()) + list(self.follow_text.values()):
+            self._bind_sheet_autosave_widget(widget)
+        for widget in (
+            list(self.base_func_entries_1)
+            + list(self.base_func_entries_2)
+            + list(self.follow_item_obs)
+            + list(self.follow_emp_obs)
+        ):
+            self._bind_sheet_autosave_widget(widget)
+        for name_entry, cargo_entry in list(self.follow_asistentes):
+            self._bind_sheet_autosave_widget(name_entry)
+            self._bind_sheet_autosave_widget(cargo_entry)
+        for field in list(self.base_date_widgets.values()) + list(self.base_dates_1) + list(self.base_dates_2):
+            if hasattr(field, "var"):
+                self._bind_sheet_autosave_var(field.var)
+
+    def _build_sheet_save_request(self, *, sheet_name=None, validate_base=False):
+        sheet = str(sheet_name or self._rendered_sheet_name or self.sheet_var.get() or "").strip()
+        if not sheet or sheet == seguimientos.SHEET_FINAL:
+            return None
+        if sheet != self.base_sheet_name and not self._is_sheet_editable(sheet):
+            return None
+        if sheet == self.base_sheet_name:
+            payload = self._collect_base_payload()
+            if validate_base and not self._validate_base_payload(payload):
+                return None
+            request = {
+                "sheet": sheet,
+                "save_kind": "base",
+                "payload": payload,
+                "followup_index": None,
+            }
+        elif sheet.startswith(seguimientos.SHEET_PREFIX):
+            match = re.search(r"(\d+)$", sheet)
+            if not match:
+                return None
+            idx = int(match.group(1))
+            request = {
+                "sheet": sheet,
+                "save_kind": "followup",
+                "payload": self._collect_followup_payload(idx),
+                "followup_index": idx,
+            }
+        else:
+            return None
+        request["fingerprint"] = self._fingerprint_sheet_request(request)
+        return request
+
+    def _fingerprint_sheet_request(self, request):
+        if not isinstance(request, dict):
+            return ""
+        payload = {
+            "sheet": str(request.get("sheet") or "").strip(),
+            "save_kind": str(request.get("save_kind") or "").strip(),
+            "followup_index": request.get("followup_index"),
+            "payload": request.get("payload"),
+        }
+        try:
+            encoded = json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        except Exception:
+            return ""
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _schedule_sheet_autosave(self, delay_ms=700):
+        if self._sheet_autosave_suspend:
+            return False
+        try:
+            request = self._build_sheet_save_request()
+        except Exception:
+            return False
+        if not request:
+            return False
+        fingerprint = str(request.get("fingerprint") or "")
+        if fingerprint and fingerprint == str(self._sheet_autosave_last_fingerprint or ""):
+            self._sheet_autosave_pending_request = None
+            self._cancel_sheet_autosave_timer()
+            return False
+        self._sheet_autosave_pending_request = request
+        self._cancel_sheet_autosave_timer()
+        if self._sheet_autosave_busy:
+            return True
+
+        def _run():
+            self._sheet_autosave_after_id = None
+            self._flush_pending_sheet_autosave()
+
+        try:
+            if int(delay_ms or 0) <= 0:
+                self._sheet_autosave_after_id = self.after_idle(_run)
+            else:
+                self._sheet_autosave_after_id = self.after(int(delay_ms), _run)
+        except Exception:
+            self._sheet_autosave_after_id = None
+            return False
+        return True
+
+    def _flush_pending_sheet_autosave(self):
+        self._cancel_sheet_autosave_timer()
+        request = dict(self._sheet_autosave_pending_request or {})
+        if not request or self._sheet_autosave_busy:
+            return False
+        fingerprint = str(request.get("fingerprint") or "")
+        if fingerprint and fingerprint == str(self._sheet_autosave_last_fingerprint or ""):
+            self._sheet_autosave_pending_request = None
+            return False
+
+        sheet_label = str(request.get("sheet") or "").strip()
+        self.status_var.set(f"Autoguardando hoja: {sheet_label}...")
+
+        def _worker():
+            return self._execute_sheet_save_worker(request, trigger="autosave")
+
+        def _on_success(result):
+            saved_fingerprint = str((result or {}).get("fingerprint") or fingerprint or "")
+            if saved_fingerprint:
+                self._sheet_autosave_last_fingerprint = saved_fingerprint
+            current_fingerprint = str((self._sheet_autosave_pending_request or {}).get("fingerprint") or "")
+            if current_fingerprint == saved_fingerprint:
+                self._sheet_autosave_pending_request = None
+            self.status_var.set(f"Autoguardado en hoja: {sheet_label}")
+            next_fingerprint = str((self._sheet_autosave_pending_request or {}).get("fingerprint") or "")
+            if next_fingerprint and next_fingerprint != str(self._sheet_autosave_last_fingerprint or ""):
+                self._schedule_sheet_autosave(delay_ms=250)
+
+        def _on_error(exc):
+            self.status_var.set(f"No se pudo autoguardar la hoja: {sheet_label}")
+            _show_inline_feedback(self, _log_user_error("save_sheet", exc), state="warning")
+
+        return _run_async_ui_task(
+            self,
+            busy_attr="_sheet_autosave_busy",
+            worker=_worker,
+            on_success=_on_success,
+            on_error=_on_error,
+        )
+
+    def _execute_sheet_save_worker(self, request, *, trigger, progress=None):
+        request = dict(request or {})
+        sheet = str(request.get("sheet") or "").strip()
+        save_kind = str(request.get("save_kind") or "").strip()
+        payload = dict(request.get("payload") or {})
+        idx = request.get("followup_index")
+
+        def _progress(status, percent):
+            if callable(progress):
+                progress(status, percent)
+
+        _progress("Preparando los datos de la hoja...", 12)
+        if save_kind == "base":
+            _progress("Guardando la hoja base...", 42)
+            try:
+                seguimientos.save_base_payload(self.case_target, payload)
+            except PermissionError as exc:
+                raise RuntimeError(
+                    "No se pudo guardar porque el Excel está abierto en otra aplicación."
+                ) from exc
+        elif save_kind == "followup":
+            _progress(f"Guardando seguimiento {idx}...", 42)
+            try:
+                seguimientos.save_followup_payload(self.case_target, idx, payload)
+            except PermissionError as exc:
+                raise RuntimeError(
+                    "No se pudo guardar porque el Excel está abierto en otra aplicación."
+                ) from exc
+        else:
+            raise RuntimeError("No se pudo identificar la hoja que se intenta guardar.")
+
+        sync_warning = ""
+        if str(trigger or "").strip().lower() == "manual":
+            _progress("Sincronizando el caso con Drive...", 72)
+            if self.case_record and self.case_path:
+                try:
+                    seguimientos.sync_case_record_from_local(self.case_record, self.case_path)
+                except Exception as exc:
+                    sync_warning = str(exc)
+            if save_kind == "followup":
+                _progress("Actualizando el estado del seguimiento...", 88)
+                hub = self._get_hub_window()
+                if hub:
+                    try:
+                        hub.record_followup_completion(
+                            case_target=self.case_target,
+                            case_path=self.case_path,
+                            case_record=self.case_record,
+                            followup_index=idx,
+                        )
+                    except Exception as exc:
+                        _log_capture(
+                            f"record_followup_completion failed case={self.case_target!r} idx={idx} err={exc}"
+                        )
+            _progress("Actualizando la pantalla...", 96)
+
+        return {
+            "sheet": sheet,
+            "sync_warning": sync_warning,
+            "fingerprint": str(request.get("fingerprint") or ""),
+        }
 
     def _add_labeled_entry(self, parent, row, label, var, width=40, readonly=False):
         tk.Label(parent, text=label, font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
@@ -20919,8 +21075,15 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         return "break"
 
     def _render_selected_sheet(self):
+        previous_sheet = str(self._rendered_sheet_name or "").strip()
+        target_sheet = str(self.sheet_var.get() or "").strip()
+        if previous_sheet and previous_sheet != target_sheet:
+            self._schedule_sheet_autosave(delay_ms=0)
+            self._flush_pending_sheet_autosave()
+        self._sheet_autosave_suspend = True
+        self._clear_sheet_autosave_traces()
         self._clear_content()
-        sheet = self.sheet_var.get()
+        sheet = target_sheet
         if sheet == self.base_sheet_name:
             self._render_sheet_base()
         elif sheet.startswith(seguimientos.SHEET_PREFIX):
@@ -20932,6 +21095,15 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         else:
             self._render_sheet_final()
         self._apply_sheet_access_rules()
+        self._rendered_sheet_name = sheet
+        self._install_sheet_autosave_bindings()
+        self._sheet_autosave_pending_request = None
+        try:
+            current_request = self._build_sheet_save_request(sheet_name=sheet, validate_base=False)
+        except Exception:
+            current_request = None
+        self._sheet_autosave_last_fingerprint = self._fingerprint_sheet_request(current_request)
+        self._sheet_autosave_suspend = False
         self.canvas.yview_moveto(0)
 
     def _refresh_workflow_state(self, preferred_sheet=None):
@@ -21020,9 +21192,9 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _is_sheet_editable(self, sheet_name):
         current = str(sheet_name or "").strip()
-        if current == str(self.base_sheet_name or "").strip():
-            return True
-        return current == str((self.workflow or {}).get("editable_sheet") or "").strip()
+        if not current or current == seguimientos.SHEET_FINAL:
+            return False
+        return current in list(self.sheet_options or [])
 
     def _set_single_widget_edit_state(self, widget, editable):
         if isinstance(widget, _SeguimientoDateField):
@@ -21062,11 +21234,11 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _apply_base_followup_date_states(self, active_followup):
         try:
-            active_idx = int(active_followup or 1)
+            active_idx = int(active_followup or 0)
         except Exception:
-            active_idx = 1
+            active_idx = 0
         for idx, widget in enumerate(list(self.base_dates_1) + list(self.base_dates_2), start=1):
-            self._set_single_widget_edit_state(widget, idx == active_idx)
+            self._set_single_widget_edit_state(widget, bool(active_idx > 0 and idx == active_idx))
 
     def _set_widget_edit_state(self, widget, editable):
         if isinstance(widget, _SeguimientoDateField):
@@ -21097,36 +21269,31 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         editable = self._is_sheet_editable(self.sheet_var.get())
         self._set_widget_edit_state(self.content_frame, editable)
         current_sheet = self.sheet_var.get().strip()
-        next_followup = int((self.workflow or {}).get("next_followup") or 0)
+        suggested_sheet = str((self.workflow or {}).get("suggested_sheet") or "").strip()
+
         if current_sheet == str(self.base_sheet_name or "").strip():
-            if next_followup <= 1:
-                self._set_widget_edit_state(self.content_frame, True)
-                self._apply_base_followup_date_states(1)
-                if self.save_button is not None:
-                    self.save_button.config(state="normal")
-                self.status_var.set("Hoja base y seguimiento 1 habilitados hasta diligenciar el seguimiento 1.")
-                return
-            self._set_widget_edit_state(self.content_frame, False)
-            self._apply_base_followup_date_states(next_followup)
-            if self.save_button is not None:
-                self.save_button.config(state="normal")
-            self.status_var.set(
-                f"Hoja base bloqueada. Solo puedes editar la fecha del seguimiento {next_followup}."
-            )
-            return
+            self._apply_base_followup_date_states(0)
         if self.save_button is not None:
             self.save_button.config(state="normal" if editable else "disabled")
         if not editable:
             if current_sheet == seguimientos.SHEET_FINAL:
                 self.status_var.set("Ponderado final es de solo revisión.")
-            elif current_sheet == self.base_sheet_name:
-                self.status_var.set("Editando hoja base.")
-            elif current_sheet.startswith(seguimientos.SHEET_PREFIX):
+            return
+        if current_sheet == str(self.base_sheet_name or "").strip():
+            if suggested_sheet == current_sheet:
+                self.status_var.set(str((self.workflow or {}).get("message") or "Editando hoja 9."))
+            else:
                 self.status_var.set(
-                    f"{current_sheet} ya fue diligenciado. Solo puedes revisarlo; el siguiente habilitado es "
-                    f"{(self.workflow or {}).get('editable_sheet') or seguimientos.SHEET_FINAL}."
+                    f"Editando hoja 9. Las fechas de seguimiento se alimentan desde cada seguimiento. "
+                    f"Siguiente sugerida: {suggested_sheet}."
                 )
-        elif (self.workflow or {}).get("message"):
+            return
+        if current_sheet != suggested_sheet and suggested_sheet:
+            self.status_var.set(
+                f"Editando {current_sheet}. Sugerida actual: {suggested_sheet}. Puedes continuar aquí si lo necesitas."
+            )
+            return
+        if (self.workflow or {}).get("message"):
             self.status_var.set(str((self.workflow or {}).get("message")))
 
     def _render_sheet_base(self):
@@ -21334,7 +21501,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
 
         dates = tk.LabelFrame(
             self.content_frame,
-            text="Fechas de seguimiento",
+            text="Fechas de seguimiento (automáticas)",
             bg=COLOR_LIGHT_BG,
             font=FONT_LABEL,
             padx=12,
@@ -21354,6 +21521,8 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             e1 = _SeguimientoDateField(dates, host=self, textvariable=e1_var, width=14)
             e1.grid(row=i, column=1, sticky="w", padx=(0, 24), pady=2)
             e1.set(d1[i] if i < len(d1) else "")
+            e1.always_disabled = True
+            e1.set_enabled(False)
             self.base_dates_1.append(e1)
 
             tk.Label(
@@ -21363,12 +21532,11 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             e2 = _SeguimientoDateField(dates, host=self, textvariable=e2_var, width=14)
             e2.grid(row=i, column=3, sticky="w", pady=2)
             e2.set(d2[i] if i < len(d2) else "")
-            if self.max_seg <= 3:
-                e2.always_disabled = True
-                e2.set_enabled(False)
+            e2.always_disabled = True
+            e2.set_enabled(False)
             self.base_dates_2.append(e2)
 
-        self.status_var.set("Editando hoja base.")
+        self.status_var.set("Editando hoja 9.")
 
     def _build_followup_eval_actions(self, parent, specs, *, row, columnspan):
         actions = tk.LabelFrame(
@@ -21436,8 +21604,10 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         self.follow_vars = {
             "modalidad": tk.StringVar(value=str(payload.get("modalidad") or "")),
             "seguimiento_numero": tk.StringVar(value=str(idx)),
+            "fecha_seguimiento": tk.StringVar(value=str(payload.get("fecha_seguimiento") or "")),
             "tipo_apoyo": tk.StringVar(value=str(payload.get("tipo_apoyo") or "")),
         }
+        self.follow_date_widget = None
         top = tk.LabelFrame(
             self.content_frame,
             text=f"SEGUIMIENTO PROCESO IL {idx}",
@@ -21469,6 +21639,13 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             width=8,
             anchor="w",
         ).grid(row=0, column=3, sticky="w")
+        self.follow_date_widget = self._add_labeled_date(
+            top,
+            1,
+            "Fecha seguimiento:",
+            self.follow_vars["fecha_seguimiento"],
+            width=18,
+        )
         if idx > 1:
             ttk.Button(
                 top,
@@ -21694,6 +21871,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             f"Se copiaron dropdowns y observaciones desde el seguimiento {idx - 1}. "
             "No se copiaron situación, estrategias ni asistentes."
         )
+        self._schedule_sheet_autosave(delay_ms=250)
 
     def _render_sheet_final(self):
         card = tk.LabelFrame(
@@ -21728,6 +21906,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         text_widget.insert(tk.END, SEGUIMIENTO_NORMATIVA_TEMPLATE_TEXT)
         text_widget.focus_set()
         text_widget.see(tk.END)
+        self._schedule_sheet_autosave(delay_ms=250)
 
     def _buscar_empresa_por_nit(self):
         nit = self.base_vars.get("nit_empresa").get().strip() if self.base_vars.get("nit_empresa") else ""
@@ -21832,6 +22011,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         payload = {
             "modalidad": self.follow_vars["modalidad"].get().strip(),
             "seguimiento_numero": str(idx),
+            "fecha_seguimiento": self.follow_vars["fecha_seguimiento"].get().strip(),
             "item_observaciones": [e.get().strip() for e in self.follow_item_obs],
             "item_autoevaluacion": [v.get().strip() for v in self.follow_item_auto],
             "item_eval_empresa": [v.get().strip() for v in self.follow_item_emp],
@@ -21848,6 +22028,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _save_current_sheet(self):
         sheet = self.sheet_var.get()
+        previous_base_completed = bool((self.workflow or {}).get("base_completed"))
         if sheet == seguimientos.SHEET_FINAL:
             _show_inline_feedback(self, "Esta hoja no se diligencia manualmente.", state="warning")
             try:
@@ -21866,68 +22047,25 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             except Exception:
                 pass
             return
+        self._cancel_sheet_autosave_timer()
+        self._sheet_autosave_pending_request = None
         try:
-            if sheet == self.base_sheet_name:
-                payload = self._collect_base_payload()
-                if not self._validate_base_payload(payload):
-                    return
-                idx = None
-                save_kind = "base"
-            elif sheet.startswith(seguimientos.SHEET_PREFIX):
-                idx = int(re.search(r"(\d+)$", sheet).group(1))
-                payload = self._collect_followup_payload(idx)
-                save_kind = "followup"
+            request = self._build_sheet_save_request(sheet_name=sheet, validate_base=True)
+            if not request:
+                return
         except Exception as exc:
             _show_inline_feedback(self, _log_user_error("save_sheet", exc), state="error")
             return
+
+        request_fingerprint = str(request.get("fingerprint") or "")
+
         def _worker(progress):
-            progress("Preparando los datos de la hoja...", 12)
-            if save_kind == "base":
-                progress("Guardando la hoja base...", 42)
-                try:
-                    seguimientos.save_base_payload(self.case_target, payload)
-                except PermissionError as exc:
-                    raise RuntimeError(
-                        "No se pudo guardar porque el Excel está abierto en otra aplicación."
-                    ) from exc
-            else:
-                progress(f"Guardando seguimiento {idx}...", 42)
-                try:
-                    seguimientos.save_followup_payload(self.case_target, idx, payload)
-                except PermissionError as exc:
-                    raise RuntimeError(
-                        "No se pudo guardar porque el Excel está abierto en otra aplicación."
-                    ) from exc
-            sync_warning = ""
-            progress("Sincronizando el caso con Drive...", 72)
-            if self.case_record and self.case_path:
-                try:
-                    seguimientos.sync_case_record_from_local(self.case_record, self.case_path)
-                except Exception as exc:
-                    sync_warning = str(exc)
-            if save_kind == "followup":
-                progress("Actualizando el estado del seguimiento...", 88)
-                hub = self._get_hub_window()
-                if hub:
-                    try:
-                        hub.record_followup_completion(
-                            case_target=self.case_target,
-                            case_path=self.case_path,
-                            case_record=self.case_record,
-                            followup_index=idx,
-                        )
-                    except Exception as exc:
-                        _log_capture(
-                            f"record_followup_completion failed case={self.case_target!r} idx={idx} err={exc}"
-                        )
-            progress("Actualizando la pantalla...", 96)
-            return {
-                "sheet": sheet,
-                "sync_warning": sync_warning,
-            }
+            return self._execute_sheet_save_worker(request, trigger="manual", progress=progress)
 
         def _on_success(result):
             sync_warning = str((result or {}).get("sync_warning") or "").strip()
+            self._sheet_autosave_last_fingerprint = request_fingerprint
+            self._sheet_autosave_pending_request = None
             if sync_warning:
                 _log_capture(f"[UI] context=sync_case_record err={sync_warning}")
                 _show_inline_feedback(
@@ -21946,6 +22084,21 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
                 self.owner._refresh_suggestion()
             self._refresh_workflow_state(preferred_sheet=sheet)
             self._render_selected_sheet()
+            if (
+                sheet == str(self.base_sheet_name or "").strip()
+                and not previous_base_completed
+                and bool((self.workflow or {}).get("base_completed"))
+            ):
+                followup_1 = f"{seguimientos.SHEET_PREFIX}1"
+                if followup_1 in list(self.sheet_options or []):
+                    move_next = messagebox.askyesno(
+                        "Seguimientos",
+                        "La hoja 9 alcanzó el 90% de completitud. ¿Deseas continuar con Seguimiento 1?",
+                        parent=self,
+                    )
+                    if move_next:
+                        self.sheet_var.set(followup_1)
+                        self._render_selected_sheet()
 
         self._run_loading_job(
             title="Guardando hoja",
@@ -21959,16 +22112,8 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         try:
             if self.case_record and str((self.case_record or {}).get("webViewLink") or "").strip():
                 _open_url_prefer_chrome(str(self.case_record.get("webViewLink")))
-            elif self.case_path:
-                _open_local_file_safely(
-                    self.case_path,
-                    allowed_roots=[
-                        seguimientos._get_shared_root(),
-                        os.path.join(tempfile.gettempdir(), "reca_seguimientos_drive"),
-                    ],
-                )
             else:
-                raise RuntimeError("No hay ruta o link del caso para abrir.")
+                raise RuntimeError("No hay enlace del Google Sheet para abrir.")
         except Exception as exc:
             messagebox.showerror("Error", f"No se pudo abrir el archivo.\n{exc}")
 

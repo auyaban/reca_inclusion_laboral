@@ -28,7 +28,6 @@ class _UpdateFlowDummy:
     _confirm_and_start_update = app.HubWindow._confirm_and_start_update
     _maybe_prompt_startup_update = app.HubWindow._maybe_prompt_startup_update
     _handle_manual_update_snapshot = app.HubWindow._handle_manual_update_snapshot
-    _check_pending_update_status = app.HubWindow._check_pending_update_status
 
 
 def _collect_label_texts(widget):
@@ -51,7 +50,6 @@ class HubWindowUiTests(unittest.TestCase):
             patch.object(app, "_ensure_drive_upload_worker", return_value=None),
             patch.object(app.HubWindow, "_build_login", return_value=None),
             patch.object(app.HubWindow, "_refresh_drafts_badge", return_value=None),
-            patch.object(app, "inspect_pending_update", return_value=None),
         ]
         for patcher in patchers:
             patcher.start()
@@ -241,7 +239,6 @@ class HubWindowUpdateFlowTests(unittest.TestCase):
         dummy = _UpdateFlowDummy()
         dummy._startup_update_prompt_shown = False
         dummy._update_assets_are_usable = Mock(return_value=True)
-        dummy._supports_self_update = Mock(return_value=True)
         dummy._start_manual_update = Mock()
         snapshot = {
             "local_version": "1.2.3",
@@ -269,7 +266,6 @@ class HubWindowUpdateFlowTests(unittest.TestCase):
         dummy = _UpdateFlowDummy()
         dummy._startup_update_prompt_shown = False
         dummy._update_assets_are_usable = Mock(return_value=True)
-        dummy._supports_self_update = Mock(return_value=True)
         dummy._start_manual_update = Mock()
         snapshot = {
             "local_version": "1.2.3",
@@ -292,7 +288,6 @@ class HubWindowUpdateFlowTests(unittest.TestCase):
         dummy = _UpdateFlowDummy()
         dummy._startup_update_prompt_shown = False
         dummy._update_assets_are_usable = Mock(return_value=True)
-        dummy._supports_self_update = Mock(return_value=True)
         dummy._start_manual_update = Mock()
         snapshot = {
             "local_version": "1.2.3",
@@ -312,7 +307,6 @@ class HubWindowUpdateFlowTests(unittest.TestCase):
     def test_handle_manual_update_snapshot_reports_missing_installer_asset(self) -> None:
         dummy = _UpdateFlowDummy()
         dummy._update_assets_are_usable = Mock(return_value=False)
-        dummy._supports_self_update = Mock(return_value=True)
         dummy._apply_update_snapshot = Mock(
             side_effect=lambda snapshot, prompt_startup=False: app.HubWindow._normalize_update_snapshot(
                 dummy, snapshot
@@ -336,58 +330,6 @@ class HubWindowUpdateFlowTests(unittest.TestCase):
         dummy._confirm_and_start_update.assert_not_called()
         showerror.assert_called_once()
         self.assertIn("RECA_INCLUSION_LABORAL_Setup.exe", showerror.call_args.args[1])
-
-    def test_handle_manual_update_snapshot_offers_release_when_runtime_is_not_supported(self) -> None:
-        dummy = _UpdateFlowDummy()
-        dummy._update_assets_are_usable = Mock(return_value=True)
-        dummy._supports_self_update = Mock(return_value=False)
-        dummy._apply_update_snapshot = Mock(
-            side_effect=lambda snapshot, prompt_startup=False: app.HubWindow._normalize_update_snapshot(
-                dummy, snapshot
-            )
-        )
-        dummy._confirm_and_start_update = Mock()
-        dummy._open_release_page = Mock()
-        snapshot = {
-            "local_version": "1.2.3",
-            "remote_version": "1.2.4",
-            "assets": {"RECA_INCLUSION_LABORAL_Setup.exe": "https://example.com/setup.exe"},
-            "error": None,
-        }
-
-        with patch.object(app.messagebox, "askyesno", return_value=True) as askyesno:
-            result = app.HubWindow._handle_manual_update_snapshot(dummy, snapshot)
-
-        self.assertFalse(result)
-        dummy._confirm_and_start_update.assert_not_called()
-        askyesno.assert_called_once()
-        dummy._open_release_page.assert_called_once_with("1.2.4")
-
-    def test_check_pending_update_status_cleans_confirmed_success(self) -> None:
-        dummy = _UpdateFlowDummy()
-        dummy._pending_update_recovery_shown = False
-        dummy._show_update_recovery_dialog = Mock()
-
-        with patch.object(app, "inspect_pending_update", return_value={"outcome": "succeeded", "session_dir": "tmp"}):
-            with patch.object(app, "clear_pending_update_session") as clear_pending:
-                app.HubWindow._check_pending_update_status(dummy)
-
-        clear_pending.assert_called_once_with({"outcome": "succeeded", "session_dir": "tmp"}, remove_session_dir=True)
-        dummy._show_update_recovery_dialog.assert_not_called()
-
-    def test_check_pending_update_status_shows_recovery_dialog_for_failure(self) -> None:
-        dummy = _UpdateFlowDummy()
-        dummy._pending_update_recovery_shown = False
-        dummy._show_update_recovery_dialog = Mock()
-        pending = {"outcome": "failed", "session_dir": "tmp", "message": "fallo"}
-
-        with patch.object(app, "inspect_pending_update", return_value=pending):
-            with patch.object(app, "clear_pending_update_session") as clear_pending:
-                app.HubWindow._check_pending_update_status(dummy)
-
-        clear_pending.assert_called_once_with(pending, remove_session_dir=False)
-        dummy._show_update_recovery_dialog.assert_called_once_with(pending)
-        self.assertTrue(dummy._pending_update_recovery_shown)
 
 
 if __name__ == "__main__":

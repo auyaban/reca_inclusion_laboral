@@ -23,6 +23,13 @@ class _ImmediateThread:
         return False
 
 
+class _UpdateFlowDummy:
+    _normalize_update_snapshot = app.HubWindow._normalize_update_snapshot
+    _confirm_and_start_update = app.HubWindow._confirm_and_start_update
+    _maybe_prompt_startup_update = app.HubWindow._maybe_prompt_startup_update
+    _handle_manual_update_snapshot = app.HubWindow._handle_manual_update_snapshot
+
+
 def _collect_label_texts(widget):
     texts = []
     for child in widget.winfo_children():
@@ -207,6 +214,117 @@ class HubWindowUiTests(unittest.TestCase):
         self.assertTrue(any(text.startswith("Internet:") for text in texts))
         self.assertTrue(any(text.startswith("Supabase:") for text in texts))
         self.assertTrue(any(text.startswith("Drive:") for text in texts))
+
+    def test_apply_update_snapshot_updates_version_label_and_schedules_startup_prompt(self) -> None:
+        window = self._create_window()
+        snapshot = {
+            "local_version": "1.2.3",
+            "remote_version": "1.2.4",
+            "assets": {},
+            "error": None,
+        }
+
+        with patch.object(window, "_maybe_prompt_startup_update") as maybe_prompt:
+            window._apply_update_snapshot(snapshot, prompt_startup=True)
+            window.update_idletasks()
+            window.update()
+
+        self.assertEqual(window._version_var.get(), "Versión local: 1.2.3 | GitHub: 1.2.4")
+        self.assertEqual(window._latest_update_snapshot["remote_version"], "1.2.4")
+        maybe_prompt.assert_called_once()
+
+
+class HubWindowUpdateFlowTests(unittest.TestCase):
+    def test_maybe_prompt_startup_update_accepts_once_per_app_run(self) -> None:
+        dummy = _UpdateFlowDummy()
+        dummy._startup_update_prompt_shown = False
+        dummy._update_assets_are_usable = Mock(return_value=True)
+        dummy._start_manual_update = Mock()
+        snapshot = {
+            "local_version": "1.2.3",
+            "remote_version": "1.2.4",
+            "assets": {"RECA_INCLUSION_LABORAL_Setup.exe": "https://example.com/setup.exe"},
+            "error": None,
+        }
+
+        with patch.object(app.messagebox, "askyesno", return_value=True) as askyesno:
+            first = app.HubWindow._maybe_prompt_startup_update(dummy, snapshot)
+            second = app.HubWindow._maybe_prompt_startup_update(dummy, snapshot)
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertTrue(dummy._startup_update_prompt_shown)
+        askyesno.assert_called_once()
+        dummy._start_manual_update.assert_called_once_with(snapshot["assets"])
+
+    def test_maybe_prompt_startup_update_decline_does_not_repeat_prompt(self) -> None:
+        dummy = _UpdateFlowDummy()
+        dummy._startup_update_prompt_shown = False
+        dummy._update_assets_are_usable = Mock(return_value=True)
+        dummy._start_manual_update = Mock()
+        snapshot = {
+            "local_version": "1.2.3",
+            "remote_version": "1.2.4",
+            "assets": {"RECA_INCLUSION_LABORAL_Setup.exe": "https://example.com/setup.exe"},
+            "error": None,
+        }
+
+        with patch.object(app.messagebox, "askyesno", return_value=False) as askyesno:
+            first = app.HubWindow._maybe_prompt_startup_update(dummy, snapshot)
+            second = app.HubWindow._maybe_prompt_startup_update(dummy, snapshot)
+
+        self.assertFalse(first)
+        self.assertFalse(second)
+        self.assertTrue(dummy._startup_update_prompt_shown)
+        askyesno.assert_called_once()
+        dummy._start_manual_update.assert_not_called()
+
+    def test_maybe_prompt_startup_update_skips_errors_silently(self) -> None:
+        dummy = _UpdateFlowDummy()
+        dummy._startup_update_prompt_shown = False
+        dummy._update_assets_are_usable = Mock(return_value=True)
+        dummy._start_manual_update = Mock()
+        snapshot = {
+            "local_version": "1.2.3",
+            "remote_version": None,
+            "assets": {},
+            "error": "timeout",
+        }
+
+        with patch.object(app.messagebox, "askyesno") as askyesno:
+            result = app.HubWindow._maybe_prompt_startup_update(dummy, snapshot)
+
+        self.assertFalse(result)
+        self.assertFalse(dummy._startup_update_prompt_shown)
+        askyesno.assert_not_called()
+        dummy._start_manual_update.assert_not_called()
+
+    def test_handle_manual_update_snapshot_reports_missing_installer_asset(self) -> None:
+        dummy = _UpdateFlowDummy()
+        dummy._update_assets_are_usable = Mock(return_value=False)
+        dummy._apply_update_snapshot = Mock(
+            side_effect=lambda snapshot, prompt_startup=False: app.HubWindow._normalize_update_snapshot(
+                dummy, snapshot
+            )
+        )
+        dummy._get_expected_update_installer_asset_name = Mock(
+            return_value="RECA_INCLUSION_LABORAL_Setup.exe"
+        )
+        dummy._confirm_and_start_update = Mock()
+        snapshot = {
+            "local_version": "1.2.3",
+            "remote_version": "1.2.4",
+            "assets": {},
+            "error": None,
+        }
+
+        with patch.object(app.messagebox, "showerror") as showerror:
+            result = app.HubWindow._handle_manual_update_snapshot(dummy, snapshot)
+
+        self.assertFalse(result)
+        dummy._confirm_and_start_update.assert_not_called()
+        showerror.assert_called_once()
+        self.assertIn("RECA_INCLUSION_LABORAL_Setup.exe", showerror.call_args.args[1])
 
 
 if __name__ == "__main__":

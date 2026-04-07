@@ -120,6 +120,7 @@ from formularios import ui_feedback
 from formularios.user_messages import map_exception_to_user_message
 from version_info import get_version
 from updater import (
+    _repo_config as _updater_repo_config,
     get_latest_release_assets,
     is_update_available,
     download_installer,
@@ -7457,6 +7458,8 @@ class HubWindow(tk.Tk):
         self._companies_sort_var = None
         self._version_var = tk.StringVar(value="Versión local: - | GitHub: -")
         self._version_check_thread = None
+        self._latest_update_snapshot = None
+        self._startup_update_prompt_shown = False
         self._drafts_btn = None
         self._completed_btn = None
         self._refresh_db_btn = None
@@ -8748,24 +8751,164 @@ class HubWindow(tk.Tk):
         _log_capture(f"set_version_info local={local} remote={remote}")
         self._version_var.set(f"Versión local: {local} | GitHub: {remote}")
 
+    def _get_expected_update_installer_asset_name(self):
+        try:
+            _owner, _repo, _token, installer_asset, _hash_asset = _updater_repo_config()
+            return str(installer_asset or "").strip()
+        except Exception as exc:
+            _log_capture(f"_get_expected_update_installer_asset_name error: {exc}")
+            return ""
+
+    def _update_assets_are_usable(self, assets):
+        installer_asset = self._get_expected_update_installer_asset_name()
+        if not installer_asset or not isinstance(assets, dict):
+            return False
+        return bool(str((assets or {}).get(installer_asset) or "").strip())
+
+    def _normalize_update_snapshot(self, snapshot):
+        raw = dict(snapshot or {})
+        local_raw = raw.get("local_version")
+        remote_raw = raw.get("remote_version")
+        error_raw = raw.get("error")
+        assets = dict(raw.get("assets") or {})
+        local = str(local_raw or "0.0.0").strip() or "0.0.0"
+        remote = str(remote_raw).strip() if remote_raw else ""
+        error = str(error_raw).strip() if error_raw else ""
+        update_available = is_update_available(local, remote or None)
+        can_start_update = bool(update_available and self._update_assets_are_usable(assets))
+        return {
+            "local_version": local,
+            "remote_version": remote or None,
+            "assets": assets,
+            "error": error or None,
+            "update_available": update_available,
+            "can_start_update": can_start_update,
+        }
+
+    def _resolve_update_snapshot(self):
+        local = get_version() or "0.0.0"
+        _log_capture(f"_resolve_update_snapshot start local={local}")
+        snapshot = {
+            "local_version": local,
+            "remote_version": None,
+            "assets": {},
+            "error": None,
+        }
+        try:
+            remote, assets = get_latest_release_assets()
+            snapshot["remote_version"] = remote
+            snapshot["assets"] = dict(assets or {})
+            _log_capture(
+                "_resolve_update_snapshot success "
+                f"remote={remote} assets={list(snapshot['assets'].keys())}"
+            )
+        except Exception as exc:
+            snapshot["error"] = str(exc)
+            _log_capture(f"_resolve_update_snapshot error: {exc}")
+        normalized = self._normalize_update_snapshot(snapshot)
+        _log_capture(
+            "_resolve_update_snapshot normalized "
+            f"remote={normalized['remote_version']} "
+            f"update_available={normalized['update_available']} "
+            f"can_start_update={normalized['can_start_update']}"
+        )
+        return normalized
+
+    def _apply_update_snapshot(self, snapshot, *, prompt_startup=False):
+        normalized = self._normalize_update_snapshot(snapshot)
+        self._latest_update_snapshot = normalized
+        self.set_version_info(normalized["local_version"], normalized["remote_version"])
+        if prompt_startup:
+            try:
+                self.after(0, lambda snap=dict(normalized): self._maybe_prompt_startup_update(snap))
+            except tk.TclError:
+                pass
+        return normalized
+
+    def _confirm_and_start_update(self, snapshot, *, source):
+        normalized = self._normalize_update_snapshot(snapshot)
+        if not normalized["can_start_update"]:
+            _log_capture(f"{source}: actualización omitida por assets inválidos")
+            return False
+        confirm = messagebox.askyesno(
+            "Actualización disponible",
+            f"Hay una nueva versión disponible ({normalized['remote_version']}).\n¿Deseas actualizar ahora?",
+        )
+        if not confirm:
+            _log_capture(f"{source}: usuario canceló actualización")
+            return False
+        _log_capture(f"{source}: usuario confirmó actualización")
+        self._start_manual_update(normalized["assets"])
+        return True
+
+    def _maybe_prompt_startup_update(self, snapshot):
+        normalized = self._normalize_update_snapshot(snapshot)
+        if self._startup_update_prompt_shown:
+            _log_capture("_maybe_prompt_startup_update omitido: prompt ya mostrado")
+            return False
+        if normalized["error"]:
+            _log_capture("_maybe_prompt_startup_update omitido: error en snapshot")
+            return False
+        if not normalized["remote_version"]:
+            _log_capture("_maybe_prompt_startup_update omitido: versión remota vacía")
+            return False
+        if not normalized["update_available"]:
+            _log_capture("_maybe_prompt_startup_update omitido: sin actualización")
+            return False
+        if not normalized["can_start_update"]:
+            _log_capture("_maybe_prompt_startup_update omitido: release sin instalador válido")
+            return False
+        self._startup_update_prompt_shown = True
+        _log_capture(
+            "_maybe_prompt_startup_update: actualización disponible "
+            f"remote={normalized['remote_version']} local={normalized['local_version']}"
+        )
+        return self._confirm_and_start_update(normalized, source="_maybe_prompt_startup_update")
+
+    def _handle_manual_update_snapshot(self, snapshot):
+        normalized = self._apply_update_snapshot(snapshot, prompt_startup=False)
+        if normalized["error"]:
+            _log_capture(f"_handle_manual_update_snapshot error: {normalized['error']}")
+            messagebox.showerror("Actualización", f"No se pudo verificar: {normalized['error']}")
+            return False
+        if not normalized["remote_version"]:
+            _log_capture("_handle_manual_update_snapshot: remote vacío")
+            messagebox.showerror("Actualización", "No se pudo obtener la versión remota.")
+            return False
+        if not normalized["update_available"]:
+            _log_capture("_handle_manual_update_snapshot: sin actualización disponible")
+            messagebox.showinfo("Actualización", "Ya estás usando la última versión.")
+            return False
+        if not normalized["can_start_update"]:
+            installer_asset = self._get_expected_update_installer_asset_name() or "instalador"
+            _log_capture(
+                "_handle_manual_update_snapshot: release sin instalador esperado "
+                f"asset={installer_asset}"
+            )
+            messagebox.showerror(
+                "Actualización",
+                "Hay una nueva versión disponible "
+                f"({normalized['remote_version']}), pero el release no incluye el instalador "
+                f"esperado ({installer_asset}).",
+            )
+            return False
+        _log_capture(
+            "_handle_manual_update_snapshot: actualización disponible "
+            f"remote={normalized['remote_version']} local={normalized['local_version']}"
+        )
+        return self._confirm_and_start_update(normalized, source="_handle_manual_update_snapshot")
+
     def _refresh_version_info_async(self):
         if self._version_check_thread and self._version_check_thread.is_alive():
             _log_capture("_refresh_version_info_async omitido: hilo activo")
             return
 
         def _worker():
-            local = get_version()
-            remote = None
-            _log_capture(f"_refresh_version_info_async worker start local={local}")
+            snapshot = self._resolve_update_snapshot()
             try:
-                remote, _assets = get_latest_release_assets()
-                _log_capture(
-                    f"_refresh_version_info_async worker success remote={remote} assets={list((_assets or {}).keys())}"
-                )
-            except Exception:
-                remote = None
-                _log_capture("_refresh_version_info_async worker error al obtener versión remota")
-            self.after(0, lambda: self.set_version_info(local, remote))
+                self.after(0, lambda snap=snapshot: self._apply_update_snapshot(snap, prompt_startup=True))
+            except tk.TclError:
+                pass
 
         self._version_check_thread = threading.Thread(target=_worker, daemon=True)
         _log_capture("_refresh_version_info_async hilo iniciado")
@@ -8777,21 +8920,10 @@ class HubWindow(tk.Tk):
         dialog.set_status("Consultando versión en GitHub...")
         dialog.set_progress(20)
 
-        result = {"error": None, "local": None, "remote": None, "assets": None}
+        result = {"snapshot": None}
 
         def _worker():
-            try:
-                local = get_version()
-                remote, assets = get_latest_release_assets()
-                result["local"] = local
-                result["remote"] = remote
-                result["assets"] = assets
-                _log_capture(
-                    f"_open_update_page worker success local={local} remote={remote} assets={list((assets or {}).keys())}"
-                )
-            except Exception as exc:
-                result["error"] = str(exc)
-                _log_capture(f"_open_update_page worker error: {exc}")
+            result["snapshot"] = self._resolve_update_snapshot()
 
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
@@ -8801,31 +8933,7 @@ class HubWindow(tk.Tk):
                 self.after(200, _check_done)
                 return
             dialog.close()
-            if result["error"]:
-                _log_capture(f"_open_update_page resultado error: {result['error']}")
-                messagebox.showerror("Actualización", f"No se pudo verificar: {result['error']}")
-                return
-            local = result["local"] or "0.0.0"
-            remote = result["remote"]
-            self.set_version_info(local, remote)
-            if not remote:
-                _log_capture("_open_update_page: remote vacío")
-                messagebox.showerror("Actualización", "No se pudo obtener la versión remota.")
-                return
-            if not is_update_available(local, remote):
-                _log_capture("_open_update_page: sin actualización disponible")
-                messagebox.showinfo("Actualización", "Ya estás usando la última versión.")
-                return
-            _log_capture(f"_open_update_page: actualización disponible remote={remote} local={local}")
-            confirm = messagebox.askyesno(
-                "Actualización disponible",
-                f"Hay una nueva versión disponible ({remote}).\n¿Deseas actualizar ahora?",
-            )
-            if not confirm:
-                _log_capture("_open_update_page: usuario canceló actualización")
-                return
-            _log_capture("_open_update_page: usuario confirmó actualización")
-            self._start_manual_update(result["assets"] or {})
+            self._handle_manual_update_snapshot(result["snapshot"] or {})
 
         self.after(200, _check_done)
 

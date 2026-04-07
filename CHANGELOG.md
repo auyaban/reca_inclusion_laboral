@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.0.10 - 2026-04-07
+
+Esta version agrega un aviso automatico de actualizacion en el HUB para que los usuarios finales no pasen por alto que existe una version nueva.
+
+### Cambios principales
+
+- Se unifica en `app.py` la resolucion del estado de actualizacion en un snapshot reutilizable para el chequeo silencioso y la actualizacion manual.
+- Al entrar al HUB, la app sigue consultando la version remota en segundo plano, actualiza el indicador `Version local | GitHub` y ahora muestra un prompt una sola vez por apertura cuando existe una version superior con instalador valido.
+- Si el usuario acepta, se reutiliza exactamente el flujo existente de descarga, handoff al instalador y reinicio; si el usuario rechaza, la app continua normal sin volver a insistir en esa ejecucion.
+- El boton manual `Actualizar aplicacion` ahora reutiliza el mismo snapshot y reporta un error claro si el release remoto no incluye el instalador esperado.
+- Se agregan pruebas unitarias para el prompt automatico, el guard de una sola vez por ejecucion y el caso de release invalido sin asset de instalador.
+
+### Como afecta a los usuarios
+
+- Los usuarios reciben un aviso claro apenas entran al HUB cuando hay una version nueva disponible.
+- Ya no dependen de notar por su cuenta el indicador de version o de abrir manualmente el flujo de actualizacion.
+- Si prefieren seguir trabajando sin actualizar en ese momento, pueden hacerlo sin bloqueos ni prompts repetidos en la misma apertura de la app.
+
 ## 2.0.9 - 2026-04-06
 
 Esta version incorpora el ajuste del formato maestro de `Condiciones de Vacante` despues de eliminar filas en la plantilla.

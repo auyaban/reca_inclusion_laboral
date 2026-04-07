@@ -29,6 +29,16 @@ class SeguimientosRuntimeTests(_TkTestCase):
         result = kwargs["worker"](lambda *args, **kw: None)
         kwargs["on_success"](result)
 
+    @staticmethod
+    def _run_async_task_immediately(window, **kwargs):
+        try:
+            result = kwargs["worker"]()
+        except Exception as exc:
+            kwargs["on_error"](exc)
+            return True
+        kwargs["on_success"](result)
+        return True
+
     def _make_editor(
         self,
         *,
@@ -115,6 +125,44 @@ class SeguimientosRuntimeTests(_TkTestCase):
         self.assertIsNone(window._save_draft_command)
         self.assertIsNone(window._draft_autosave_after_id)
         self.assertFalse(hasattr(window.cedula_combo, "_draft_autosave_bound"))
+
+    def test_window_disables_search_and_shows_retry_hint_when_cedulas_fail(self) -> None:
+        with patch.object(
+            seguimientos,
+            "get_usuarios_reca_cedulas",
+            side_effect=RuntimeError("Supabase no esta disponible (HTTP 401): HTTP Error 401: Unauthorized"),
+        ):
+            window = app.SeguimientosWindow(self.root)
+        self.addCleanup(destroy_widget, window)
+
+        self.assertEqual(str(window.buscar_vinculado_btn.cget("state")), "disabled")
+        self.assertEqual(tuple(window.cedula_combo.cget("values") or ()), ())
+        self.assertIn("sesión o los permisos", str(window.cedula_hint_label.cget("text") or "").lower())
+
+    def test_reload_cedulas_restores_search_after_successful_retry(self) -> None:
+        with patch.object(
+            seguimientos,
+            "get_usuarios_reca_cedulas",
+            side_effect=RuntimeError("Supabase no esta disponible (HTTP 401): HTTP Error 401: Unauthorized"),
+        ):
+            window = app.SeguimientosWindow(self.root)
+        self.addCleanup(destroy_widget, window)
+
+        with patch.object(
+            app,
+            "_run_async_ui_task",
+            side_effect=lambda *args, **kwargs: self._run_async_task_immediately(*args, **kwargs),
+        ):
+            with patch.object(
+                seguimientos,
+                "get_usuarios_reca_cedulas",
+                return_value=["10101010", "20202020"],
+            ):
+                window._reload_cedulas()
+
+        self.assertEqual(str(window.buscar_vinculado_btn.cget("state")), "normal")
+        self.assertIn("10101010", tuple(window.cedula_combo.cget("values") or ()))
+        self.assertIn("recargada", str(window.cedula_hint_label.cget("text") or "").lower())
 
     def test_editor_smoke_renders_base_followup_and_final_and_saves(self) -> None:
         base_sheet = seguimientos.SHEET_BASE

@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.0.12 - 2026-04-07
+
+Esta version corrige una regresion en `Seguimientos` que podia dejar la ventana a medio renderizar y endurece la carga inicial de cédulas cuando la base de datos no responde o la sesión perdió permisos.
+
+### Cambios principales
+
+- `SeguimientosWindow` recupera su handler `_open_lsc_window`, evitando que el header falle al construir el botón `Solicitar Intérprete LSC` y que la vista quede incompleta.
+- La búsqueda por cédula ahora muestra un mensaje visible cuando `usuarios_reca` no carga, deshabilita `Buscar` mientras no exista una lista válida y agrega `Recargar lista` para reintentar sin cerrar la ventana.
+- Los errores `401/403`, de permisos o de conectividad al cargar cédulas se traducen a mensajes más accionables dentro del mismo flujo.
+- Se agregan pruebas runtime para cubrir la regresión de render de `Seguimientos` y el reintento exitoso de recarga de cédulas.
+
+### Como afecta a los usuarios
+
+- `Seguimientos` vuelve a abrir completo en vez de quedar vacío o a medio construir por el fallo del botón de LSC.
+- Si la lista de cédulas no carga por sesión, permisos o red, el usuario ya no queda con un combo vacío sin contexto y puede intentar la recarga desde la misma pantalla.
+
 ## 2.0.11 - 2026-04-07
 
 Esta version corrige un fallo del actualizador que podia descargar el instalador correcto pero relanzar la app sin aplicar realmente la actualizacion.

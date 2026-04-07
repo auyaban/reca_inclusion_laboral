@@ -19318,12 +19318,15 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         self._case_suggestion_cache = None
         self._case_cache_key = ""
         self._buscar_vinculado_busy = False
+        self._cedula_load_busy = False
+        self._cedula_lookup_hint_id = "seguimientos_cedula_lookup"
         self._company_lookup_hint_id = "seguimientos_company_lookup"
         self._compensar_hint_id = "seguimientos_compensar"
         self.status_label_widget = None
 
         self._build_header()
         self._build_body()
+        self._set_cedula_lookup_hint("Cargando cédulas disponibles...", state="loading")
         self._load_cedulas()
 
     def _get_case_target(self):
@@ -19390,13 +19393,23 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         self.buscar_vinculado_btn.grid(
             row=0, column=2, sticky="w", padx=(12, 0), pady=4
         )
+        self.reload_cedulas_btn = ttk.Button(
+            search,
+            text="Recargar lista",
+            style="Secondary.TButton",
+            command=self._reload_cedulas,
+        )
+        self.reload_cedulas_btn.grid(row=0, column=3, sticky="w", padx=(8, 0), pady=4)
+        self.cedula_hint_label = tk.Label(search, text="", font=("Arial", 9), fg="#6B6B6B", bg=COLOR_LIGHT_BG)
+        self.cedula_hint_label.grid(row=1, column=1, columnspan=3, sticky="w", pady=(2, 0))
+        ui_feedback.register_group_hint(self, self._cedula_lookup_hint_id, self.cedula_hint_label)
 
         tk.Label(
             search,
             text="¿Empresa afiliada a Compensar?",
             font=FONT_LABEL,
             bg=COLOR_LIGHT_BG,
-        ).grid(row=1, column=0, sticky="w", padx=(0, 8), pady=4)
+        ).grid(row=2, column=0, sticky="w", padx=(0, 8), pady=4)
         self.compensar_combo = ttk.Combobox(
             search,
             textvariable=self.compensar_var,
@@ -19404,9 +19417,9 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             state="disabled",
             width=30,
         )
-        self.compensar_combo.grid(row=1, column=1, sticky="w", pady=4)
+        self.compensar_combo.grid(row=2, column=1, sticky="w", pady=4)
         compensar_hint = tk.Label(search, text="", font=("Arial", 9), fg="#6B6B6B", bg=COLOR_LIGHT_BG)
-        compensar_hint.grid(row=2, column=1, columnspan=2, sticky="w", pady=(2, 0))
+        compensar_hint.grid(row=3, column=1, columnspan=2, sticky="w", pady=(2, 0))
         ui_feedback.register_group_hint(self, self._compensar_hint_id, compensar_hint)
 
         company_lookup = tk.LabelFrame(
@@ -19548,6 +19561,70 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             justify="left",
             wraplength=730,
         ).grid(row=row, column=1, sticky="w", pady=2)
+
+    def _set_cedula_lookup_hint(self, text, *, state="hint"):
+        ui_feedback.set_group_hint(self, self._cedula_lookup_hint_id, text, state=state)
+
+    def _set_cedula_search_enabled(self, enabled):
+        combo_state = "normal" if enabled else "disabled"
+        button_state = "normal" if enabled else "disabled"
+        try:
+            self.cedula_combo.config(state=combo_state)
+        except Exception:
+            pass
+        try:
+            self.buscar_vinculado_btn.config(state=button_state)
+        except Exception:
+            pass
+
+    def _format_cedula_load_error(self, exc):
+        text = str(exc or "").strip().lower()
+        if any(token in text for token in ("http 401", "http 403", "unauthorized", "permission denied", "42501")):
+            return (
+                "No fue posible cargar las cédulas porque la sesión o los permisos de la base de datos "
+                "no están disponibles. Reintenta la carga; si persiste, cierra sesión e ingresa nuevamente."
+            )
+        if _is_connectivity_exception(exc) or any(
+            token in text
+            for token in ("timeout", "timed out", "connection", "network", "dns", "failed to resolve")
+        ):
+            return "No fue posible cargar las cédulas por un problema de conexión con la base de datos. Reintenta la carga."
+        return _log_user_error("linked_user_search", exc)
+
+    def _apply_cedula_options(self, options, *, show_success_hint=False):
+        self.cedula_options = list(options or [])
+        self._filtered_cedulas = list(self.cedula_options)
+        self.cedula_combo["values"] = self._filtered_cedulas[:50]
+        if self.cedula_options:
+            self._set_cedula_search_enabled(True)
+            self._set_cedula_lookup_hint(
+                "Lista de cédulas recargada. Puedes escribir para filtrar." if show_success_hint else "",
+                state="success" if show_success_hint else "hint",
+            )
+            if not self.user_row:
+                self.status_var.set("Ingresa la cédula y busca el vinculado.")
+            return True
+        message = "No hay cédulas disponibles en usuarios_reca. Reintenta la carga después de sincronizar la base."
+        self._set_cedula_search_enabled(False)
+        self._set_cedula_lookup_hint(message, state="warning")
+        self.status_var.set(message)
+        return False
+
+    def _handle_cedula_load_error(self, exc):
+        message = self._format_cedula_load_error(exc)
+        if self.cedula_options:
+            message = f"{message} Se conserva la última lista cargada."
+            self._set_cedula_search_enabled(True)
+            self.cedula_combo["values"] = self._filtered_cedulas[:50]
+        else:
+            self.cedula_options = []
+            self._filtered_cedulas = []
+            self.cedula_combo.set("")
+            self.cedula_combo["values"] = ()
+            self._set_cedula_search_enabled(False)
+        self._set_cedula_lookup_hint(message, state="error")
+        self.status_var.set(message)
+        return False
 
     def _set_company_lookup_enabled(self, enabled):
         state = "normal" if enabled else "disabled"
@@ -19832,11 +19909,36 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _load_cedulas(self):
         try:
-            self.cedula_options = seguimientos.get_usuarios_reca_cedulas()
-            self._filtered_cedulas = list(self.cedula_options)
-            self.cedula_combo["values"] = self._filtered_cedulas
+            options = seguimientos.get_usuarios_reca_cedulas()
         except Exception as exc:
-            self.status_var.set(_log_user_error("linked_user_search", exc))
+            return self._handle_cedula_load_error(exc)
+        return self._apply_cedula_options(options)
+
+    def _reload_cedulas(self):
+        self._set_cedula_lookup_hint("Recargando cédulas disponibles...", state="loading")
+
+        def _worker():
+            return seguimientos.get_usuarios_reca_cedulas()
+
+        def _on_success(options):
+            self._apply_cedula_options(options, show_success_hint=True)
+
+        def _on_error(exc):
+            self._handle_cedula_load_error(exc)
+
+        _run_async_ui_task(
+            self,
+            busy_attr="_cedula_load_busy",
+            widgets=[self.cedula_combo, self.buscar_vinculado_btn, self.reload_cedulas_btn],
+            loading_button=self.reload_cedulas_btn,
+            loading_button_text="Recargando...",
+            status_label=self.status_label_widget,
+            loading_text="Recargando cédulas disponibles...",
+            loading_state="loading",
+            worker=_worker,
+            on_success=_on_success,
+            on_error=_on_error,
+        )
 
     def _filter_cedulas(self, _event=None):
         raw = self.cedula_combo.get().strip()
@@ -20220,6 +20322,35 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         _return_to_hub(self)
         self.destroy()
 
+    def _open_lsc_window(self):
+        empresa = (
+            self.linked_company
+            if isinstance(self.linked_company, dict) and self.linked_company.get("nombre_empresa")
+            else None
+        )
+        oferentes = []
+        if self.user_row and isinstance(self.user_row, dict):
+            nombre = (
+                self.user_row.get("nombre_usuario")
+                or self.user_row.get("nombre_completo")
+                or ""
+            ).strip()
+            cedula = (
+                self.user_row.get("cedula_usuario")
+                or self.user_row.get("cedula")
+                or ""
+            ).strip()
+            if nombre or cedula:
+                oferentes.append(
+                    {
+                        "nombre_oferente": nombre,
+                        "cedula": cedula,
+                        "proceso": "Seguimiento",
+                    }
+                )
+        ctx = {"empresa": empresa, "oferentes": oferentes, "source_form": "seguimientos"} if empresa else None
+        LSCWindow(self, context=ctx)
+
 
 class _SeguimientoDateField(tk.Frame):
     _DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y")
@@ -20326,22 +20457,6 @@ class _SeguimientoDateField(tk.Frame):
 
         if result["value"] is not None:
             self.var.set(result["value"].strftime("%Y-%m-%d"))
-
-    def _open_lsc_window(self):
-        empresa = self.linked_company if isinstance(self.linked_company, dict) and self.linked_company.get("nombre_empresa") else None
-        oferentes = []
-        if self.user_row and isinstance(self.user_row, dict):
-            nombre = (self.user_row.get("nombre_completo") or "").strip()
-            cedula = (self.user_row.get("cedula") or "").strip()
-            if nombre or cedula:
-                oferentes.append({
-                    "nombre_oferente": nombre,
-                    "cedula": cedula,
-                    "proceso": "Seguimiento",
-                })
-        ctx = {"empresa": empresa, "oferentes": oferentes, "source_form": "seguimientos"} if empresa else None
-        LSCWindow(self, context=ctx)
-
 
 # ── VENTANA: SeguimientoEditorWindow — editor de un seguimiento individual ───
 
@@ -22544,7 +22659,6 @@ class LSCWindow(tk.Toplevel, FormMousewheelMixin):
     def _close_to_hub(self):
         _return_to_hub(self)
         self.destroy()
-
 
 if __name__ == "__main__":
     try:

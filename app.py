@@ -209,6 +209,7 @@ OFFLINE_AUTH_FILE_NAME = "offline_auth_users.json"
 LOGIN_CREDENTIALS_FILE_NAME = "login_credentials.json"
 DRIVE_UPLOAD_QUEUE_FILE_NAME = "drive_upload_queue.json"
 DRIVE_UPLOAD_FAILED_FILE_NAME = "drive_upload_failed.json"
+FOLLOWUP_LOCAL_DRAFTS_FILE_NAME = "seguimientos_local_drafts.json"
 COMPLETED_FORMS_RETENTION_DAYS = 30
 TEST_FILL_DEFAULT_TEXT = "Pendiente"
 COMPLETED_FORM_ID_ALIASES = {
@@ -683,11 +684,135 @@ def _get_drive_upload_failed_queue_path():
     return os.path.join(_get_local_cache_dir(), DRIVE_UPLOAD_FAILED_FILE_NAME)
 
 
+def _get_followup_local_drafts_path():
+    return os.path.join(_get_local_cache_dir(), FOLLOWUP_LOCAL_DRAFTS_FILE_NAME)
+
+
 def _atomic_write_json_file(path, payload):
     tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
     with open(tmp_path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, indent=2)
     os.replace(tmp_path, path)
+
+
+def _load_followup_local_drafts_store():
+    path = _get_followup_local_drafts_path()
+    if not os.path.exists(path):
+        return {"cases": {}}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle) or {}
+    except Exception:
+        return {"cases": {}}
+    if not isinstance(data, dict):
+        return {"cases": {}}
+    cases = data.get("cases")
+    if not isinstance(cases, dict):
+        cases = {}
+    return {"cases": cases}
+
+
+def _save_followup_local_drafts_store(data):
+    path = _get_followup_local_drafts_path()
+    folder = os.path.dirname(path)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    payload = data if isinstance(data, dict) else {"cases": {}}
+    cases = payload.get("cases")
+    if not isinstance(cases, dict):
+        payload["cases"] = {}
+    _atomic_write_json_file(path, payload)
+
+
+def _build_followup_local_case_key(case_target):
+    if isinstance(case_target, dict):
+        file_id = str(case_target.get("file_id") or "").strip()
+        if file_id:
+            return f"drive:{file_id}"
+        try:
+            encoded = json.dumps(case_target, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        except Exception:
+            encoded = repr(case_target).encode("utf-8", errors="ignore")
+        return f"drive:{hashlib.sha256(encoded).hexdigest()}"
+    path = os.path.abspath(str(case_target or "").strip())
+    if not path:
+        return ""
+    if os.name == "nt":
+        path = os.path.normcase(path)
+    return f"path:{path}"
+
+
+def _get_followup_local_sheet_draft(case_target, sheet_name):
+    case_key = _build_followup_local_case_key(case_target)
+    sheet_key = str(sheet_name or "").strip()
+    if not case_key or not sheet_key:
+        return None
+    store = _load_followup_local_drafts_store()
+    case_entry = store.get("cases", {}).get(case_key)
+    if not isinstance(case_entry, dict):
+        return None
+    sheets = case_entry.get("sheets")
+    if not isinstance(sheets, dict):
+        return None
+    draft = sheets.get(sheet_key)
+    return dict(draft or {}) if isinstance(draft, dict) else None
+
+
+def _save_followup_local_sheet_draft(case_target, request):
+    case_key = _build_followup_local_case_key(case_target)
+    request = dict(request or {})
+    sheet_key = str(request.get("sheet") or "").strip()
+    if not case_key or not sheet_key:
+        return False
+    payload = request.get("payload")
+    if not isinstance(payload, dict):
+        return False
+    store = _load_followup_local_drafts_store()
+    cases = store.setdefault("cases", {})
+    case_entry = cases.setdefault(case_key, {"sheets": {}})
+    if not isinstance(case_entry, dict):
+        case_entry = {"sheets": {}}
+        cases[case_key] = case_entry
+    sheets = case_entry.setdefault("sheets", {})
+    if not isinstance(sheets, dict):
+        sheets = {}
+        case_entry["sheets"] = sheets
+    now_iso = _get_colombia_now().isoformat()
+    sheets[sheet_key] = {
+        "sheet": sheet_key,
+        "save_kind": str(request.get("save_kind") or "").strip(),
+        "followup_index": request.get("followup_index"),
+        "payload": copy.deepcopy(payload),
+        "fingerprint": str(request.get("fingerprint") or "").strip(),
+        "updated_at": now_iso,
+    }
+    case_entry["updated_at"] = now_iso
+    _save_followup_local_drafts_store(store)
+    return True
+
+
+def _delete_followup_local_sheet_draft(case_target, sheet_name):
+    case_key = _build_followup_local_case_key(case_target)
+    sheet_key = str(sheet_name or "").strip()
+    if not case_key or not sheet_key:
+        return False
+    store = _load_followup_local_drafts_store()
+    cases = store.get("cases", {})
+    if not isinstance(cases, dict):
+        return False
+    case_entry = cases.get(case_key)
+    if not isinstance(case_entry, dict):
+        return False
+    sheets = case_entry.get("sheets")
+    if not isinstance(sheets, dict) or sheet_key not in sheets:
+        return False
+    sheets.pop(sheet_key, None)
+    if sheets:
+        case_entry["updated_at"] = _get_colombia_now().isoformat()
+    else:
+        cases.pop(case_key, None)
+    _save_followup_local_drafts_store(store)
+    return True
 
 
 def _get_colombia_now():
@@ -7490,6 +7615,7 @@ class HubWindow(tk.Tk):
         self._auto_login_thread = None
         self._open_form_windows = {}
         self._form_action_buttons = {}
+        self._installing_update = False
 
         _ensure_drive_upload_worker()
         self._configure_input_styles()
@@ -8707,6 +8833,12 @@ class HubWindow(tk.Tk):
         )
 
     def _on_app_close(self):
+        if self._installing_update:
+            messagebox.showinfo(
+                "Actualización en progreso",
+                "La actualización se está instalando. Espera a que termine.",
+            )
+            return
         _log_capture("_on_app_close: cerrando app")
         if self._session_clock_after_id:
             try:
@@ -8974,11 +9106,14 @@ class HubWindow(tk.Tk):
                 _log_capture(f"_start_manual_update: instalador descargado en {path}")
                 self.after(0, lambda: dialog.set_status("Instalando actualización..."))
                 self.after(0, lambda: dialog.set_progress(100))
+                self._installing_update = True
                 run_installer(path, wait=True)
                 _log_capture("_start_manual_update: instalador completado")
             except Exception as exc:
                 result["error"] = str(exc)
                 _log_capture(f"_start_manual_update error: {exc}")
+            finally:
+                self._installing_update = False
 
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
@@ -20539,6 +20674,44 @@ class _SeguimientoDateField(tk.Frame):
 # ── VENTANA: SeguimientoEditorWindow — editor de un seguimiento individual ───
 
 
+FOLLOWUP_LOCAL_BASE_EDITABLE_FIELDS = (
+    "fecha_visita",
+    "modalidad",
+    "nombre_vinculado",
+    "cedula",
+    "telefono_vinculado",
+    "correo_vinculado",
+    "contacto_emergencia",
+    "parentesco",
+    "telefono_emergencia",
+    "cargo_vinculado",
+    "certificado_discapacidad",
+    "certificado_porcentaje",
+    "discapacidad",
+    "tipo_contrato",
+    "fecha_firma_contrato",
+    "fecha_inicio_contrato",
+    "fecha_fin_contrato",
+    "apoyos_ajustes",
+    "funciones_1_5",
+    "funciones_6_10",
+)
+
+
+def _merge_followup_local_payload(base_payload, draft_payload, *, save_kind):
+    merged = copy.deepcopy(base_payload or {})
+    local_payload = dict(draft_payload or {})
+    if str(save_kind or "").strip() == "base":
+        for field_id in FOLLOWUP_LOCAL_BASE_EDITABLE_FIELDS:
+            if field_id in local_payload:
+                merged[field_id] = copy.deepcopy(local_payload.get(field_id))
+        return merged
+    if str(save_kind or "").strip() == "followup":
+        for key, value in local_payload.items():
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
 class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
     def __init__(self, parent, case_path, case_record=None, bootstrap=None):
         super().__init__(parent)
@@ -20609,10 +20782,12 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         self._sheet_autosave_busy = False
         self._sheet_autosave_pending_request = None
         self._sheet_autosave_last_fingerprint = ""
+        self._sheet_autosave_debounce_ms = 1500
 
         self._build_header()
         self._build_controls()
         self._build_scroller()
+        self.protocol("WM_DELETE_WINDOW", self._close_editor)
         self._render_selected_sheet()
 
     def _get_hub_window(self):
@@ -20661,7 +20836,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
 
         self.save_button = ttk.Button(controls, text="Guardar hoja", command=self._save_current_sheet)
         self.save_button.pack(side="right")
-        ttk.Button(controls, text="Cerrar", command=self.destroy).pack(side="right", padx=(0, 8))
+        ttk.Button(controls, text="Cerrar", command=self._close_editor).pack(side="right", padx=(0, 8))
         ttk.Button(controls, text="Abrir en Drive", command=self._open_excel).pack(
             side="right", padx=(0, 8)
         )

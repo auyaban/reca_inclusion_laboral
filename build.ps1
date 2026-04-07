@@ -216,11 +216,31 @@ if ($Clean) {
 
 & $python -m PyInstaller @pyiArgs
 
+$helperPyiArgs = @(
+    "--noconfirm",
+    "--onefile",
+    "--name", "RECA_UPDATER_HELPER",
+    "updater_helper.py"
+)
+
+if ($Clean) {
+    $helperPyiArgs = @("--clean") + $helperPyiArgs
+}
+
+& $python -m PyInstaller @helperPyiArgs
+
 $distRoot = Join-Path $root "dist\RECA_INCLUSION_LABORAL"
 $runtimeContentRoot = Join-Path $distRoot "_internal"
 if (!(Test-Path $runtimeContentRoot)) {
     $runtimeContentRoot = $distRoot
 }
+
+$helperExeSource = Join-Path $root "dist\RECA_UPDATER_HELPER.exe"
+$helperExeTarget = Join-Path $distRoot "RECA_UPDATER_HELPER.exe"
+if (!(Test-Path $helperExeSource)) {
+    throw "Build incompleto: falta RECA_UPDATER_HELPER.exe en dist."
+}
+Copy-Item -Path $helperExeSource -Destination $helperExeTarget -Force
 
 $requiredRuntimePaths = @(
     "config.json",
@@ -235,6 +255,10 @@ foreach ($relativePath in $requiredRuntimePaths) {
     if (!(Test-Path $candidate)) {
         throw "Build incompleto: falta $relativePath en $runtimeContentRoot"
     }
+}
+
+if (!(Test-Path $helperExeTarget)) {
+    throw "Build incompleto: falta RECA_UPDATER_HELPER.exe en $distRoot"
 }
 
 Write-Host "Build verificado: recursos runtime presentes en $runtimeContentRoot."

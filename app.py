@@ -121,10 +121,15 @@ from formularios.user_messages import map_exception_to_user_message
 from version_info import get_version
 from updater import (
     _repo_config as _updater_repo_config,
-    get_latest_release_assets,
-    is_update_available,
+    clear_pending_update_session,
+    create_update_session_dir,
     download_installer,
-    schedule_installer_after_exit,
+    get_latest_release_assets,
+    get_release_page_url,
+    inspect_pending_update,
+    is_self_update_supported,
+    is_update_available,
+    start_update_handoff,
 )
 from logging_utils import get_log_file_path, get_logs_root, log_app_event, log_labs_event
 
@@ -7489,11 +7494,13 @@ class HubWindow(tk.Tk):
         self._auto_login_thread = None
         self._open_form_windows = {}
         self._form_action_buttons = {}
+        self._pending_update_recovery_shown = False
 
         _ensure_drive_upload_worker()
         self._configure_input_styles()
         self.protocol("WM_DELETE_WINDOW", self._on_app_close)
         self.after(0, self._build_login)
+        self.after(250, self._check_pending_update_status)
 
     def _configure_input_styles(self):
         try:
@@ -8759,6 +8766,148 @@ class HubWindow(tk.Tk):
             _log_capture(f"_get_expected_update_installer_asset_name error: {exc}")
             return ""
 
+    def _supports_self_update(self):
+        try:
+            return bool(
+                is_self_update_supported(
+                    app_executable=sys.executable,
+                    frozen=getattr(sys, "frozen", False),
+                )
+            )
+        except Exception as exc:
+            _log_capture(f"_supports_self_update error: {exc}")
+            return False
+
+    def _open_release_page(self, version=None):
+        try:
+            url = get_release_page_url(version)
+            webbrowser.open(url)
+            _log_capture(f"_open_release_page: {url}")
+            return True
+        except Exception as exc:
+            _log_capture(f"_open_release_page error: {exc}")
+            messagebox.showerror("Actualización", f"No se pudo abrir el release: {exc}")
+            return False
+
+    def _check_pending_update_status(self):
+        if self._pending_update_recovery_shown:
+            return
+        try:
+            pending = inspect_pending_update(current_version=get_version() or "0.0.0")
+        except Exception as exc:
+            _log_capture(f"_check_pending_update_status error: {exc}")
+            return
+        if not pending:
+            return
+        outcome = str(pending.get("outcome") or "").strip().lower()
+        if outcome == "succeeded":
+            _log_capture(
+                "_check_pending_update_status: actualización confirmada "
+                f"expected={pending.get('expected_version')}"
+            )
+            clear_pending_update_session(pending, remove_session_dir=True)
+            return
+        self._pending_update_recovery_shown = True
+        clear_pending_update_session(pending, remove_session_dir=False)
+        self._show_update_recovery_dialog(pending)
+
+    def _show_update_recovery_dialog(self, pending):
+        details = []
+        expected_version = str((pending or {}).get("expected_version") or "").strip()
+        if expected_version:
+            details.append(f"Versión esperada: {expected_version}")
+        detected_version = str((pending or {}).get("detected_installed_version") or "").strip()
+        if detected_version:
+            details.append(f"Versión detectada: {detected_version}")
+        installer_log_path = str((pending or {}).get("installer_log_path") or "").strip()
+        if installer_log_path:
+            details.append(f"Log instalador: {installer_log_path}")
+        status_text = str((pending or {}).get("message") or "").strip()
+        outcome = str((pending or {}).get("outcome") or "").strip().lower()
+        title_text = (
+            "La actualización anterior no terminó correctamente."
+            if outcome == "failed"
+            else "La actualización anterior quedó interrumpida."
+        )
+
+        modal = tk.Toplevel(self)
+        modal.title("Recuperar actualización")
+        modal.configure(bg=COLOR_LIGHT_BG)
+        modal.transient(self)
+        modal.resizable(False, False)
+        modal.grab_set()
+
+        body = tk.Frame(modal, bg=COLOR_LIGHT_BG, padx=18, pady=16)
+        body.pack(fill="both", expand=True)
+        tk.Label(
+            body,
+            text="Actualizar aplicación",
+            font=("Arial", 12, "bold"),
+            fg=COLOR_PURPLE,
+            bg=COLOR_LIGHT_BG,
+        ).pack(anchor="w", pady=(0, 6))
+        tk.Label(
+            body,
+            text=title_text,
+            justify="left",
+            wraplength=420,
+            font=("Arial", 10),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_LIGHT_BG,
+        ).pack(anchor="w")
+        if status_text:
+            tk.Label(
+                body,
+                text=status_text,
+                justify="left",
+                wraplength=420,
+                font=("Arial", 10),
+                fg=COLOR_TEXT_SECONDARY,
+                bg=COLOR_LIGHT_BG,
+            ).pack(anchor="w", pady=(8, 0))
+        if details:
+            tk.Label(
+                body,
+                text="\n".join(details),
+                justify="left",
+                wraplength=420,
+                font=("Arial", 9),
+                fg=COLOR_TEXT_SECONDARY,
+                bg=COLOR_LIGHT_BG,
+            ).pack(anchor="w", pady=(10, 0))
+
+        actions = tk.Frame(body, bg=COLOR_LIGHT_BG)
+        actions.pack(fill="x", pady=(14, 0))
+
+        def _close():
+            try:
+                modal.grab_release()
+            except Exception:
+                pass
+            try:
+                modal.destroy()
+            except Exception:
+                pass
+
+        ttk.Button(
+            actions,
+            text="Reintentar actualización",
+            command=lambda: (_close(), self._open_update_page()),
+        ).pack(side="left")
+        ttk.Button(
+            actions,
+            text="Abrir release",
+            command=lambda: (_close(), self._open_release_page((pending or {}).get("expected_version"))),
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Cerrar", command=_close).pack(side="right")
+
+        modal.protocol("WM_DELETE_WINDOW", _close)
+        modal.update_idletasks()
+        width, height = 480, 240
+        x = (modal.winfo_screenwidth() // 2) - (width // 2)
+        y = (modal.winfo_screenheight() // 2) - (height // 2)
+        modal.geometry(f"{width}x{height}+{x}+{y}")
+
     def _update_assets_are_usable(self, assets):
         installer_asset = self._get_expected_update_installer_asset_name()
         if not installer_asset or not isinstance(assets, dict):
@@ -8775,13 +8924,17 @@ class HubWindow(tk.Tk):
         remote = str(remote_raw).strip() if remote_raw else ""
         error = str(error_raw).strip() if error_raw else ""
         update_available = is_update_available(local, remote or None)
-        can_start_update = bool(update_available and self._update_assets_are_usable(assets))
+        has_installer_asset = self._update_assets_are_usable(assets)
+        supports_self_update = self._supports_self_update()
+        can_start_update = bool(update_available and has_installer_asset and supports_self_update)
         return {
             "local_version": local,
             "remote_version": remote or None,
             "assets": assets,
             "error": error or None,
             "update_available": update_available,
+            "has_installer_asset": has_installer_asset,
+            "supports_self_update": supports_self_update,
             "can_start_update": can_start_update,
         }
 
@@ -8828,7 +8981,7 @@ class HubWindow(tk.Tk):
     def _confirm_and_start_update(self, snapshot, *, source):
         normalized = self._normalize_update_snapshot(snapshot)
         if not normalized["can_start_update"]:
-            _log_capture(f"{source}: actualización omitida por assets inválidos")
+            _log_capture(f"{source}: actualización omitida por flujo no elegible")
             return False
         confirm = messagebox.askyesno(
             "Actualización disponible",
@@ -8838,7 +8991,7 @@ class HubWindow(tk.Tk):
             _log_capture(f"{source}: usuario canceló actualización")
             return False
         _log_capture(f"{source}: usuario confirmó actualización")
-        self._start_manual_update(normalized["assets"])
+        self._start_manual_update(normalized)
         return True
 
     def _maybe_prompt_startup_update(self, snapshot):
@@ -8855,8 +9008,11 @@ class HubWindow(tk.Tk):
         if not normalized["update_available"]:
             _log_capture("_maybe_prompt_startup_update omitido: sin actualización")
             return False
-        if not normalized["can_start_update"]:
+        if not normalized["has_installer_asset"]:
             _log_capture("_maybe_prompt_startup_update omitido: release sin instalador válido")
+            return False
+        if not normalized["supports_self_update"]:
+            _log_capture("_maybe_prompt_startup_update omitido: runtime sin soporte de auto-update")
             return False
         self._startup_update_prompt_shown = True
         _log_capture(
@@ -8879,7 +9035,7 @@ class HubWindow(tk.Tk):
             _log_capture("_handle_manual_update_snapshot: sin actualización disponible")
             messagebox.showinfo("Actualización", "Ya estás usando la última versión.")
             return False
-        if not normalized["can_start_update"]:
+        if not normalized["has_installer_asset"]:
             installer_asset = self._get_expected_update_installer_asset_name() or "instalador"
             _log_capture(
                 "_handle_manual_update_snapshot: release sin instalador esperado "
@@ -8891,6 +9047,16 @@ class HubWindow(tk.Tk):
                 f"({normalized['remote_version']}), pero el release no incluye el instalador "
                 f"esperado ({installer_asset}).",
             )
+            return False
+        if not normalized["supports_self_update"]:
+            _log_capture("_handle_manual_update_snapshot: runtime sin soporte de auto-update")
+            open_release = messagebox.askyesno(
+                "Actualización",
+                "Esta ejecución no admite auto-actualización porque no corresponde a una instalación empaquetada.\n"
+                "¿Deseas abrir el release en GitHub?",
+            )
+            if open_release:
+                self._open_release_page(normalized["remote_version"])
             return False
         _log_capture(
             "_handle_manual_update_snapshot: actualización disponible "
@@ -8937,12 +9103,18 @@ class HubWindow(tk.Tk):
 
         self.after(200, _check_done)
 
-    def _start_manual_update(self, assets):
-        _log_capture(f"_start_manual_update: inicio assets={list((assets or {}).keys())}")
+    def _start_manual_update(self, snapshot):
+        normalized = self._normalize_update_snapshot(snapshot)
+        assets = dict(normalized.get("assets") or {})
+        remote_version = str(normalized.get("remote_version") or "").strip()
+        _log_capture(
+            "_start_manual_update: inicio "
+            f"remote={remote_version or '?'} assets={list(assets.keys())}"
+        )
         dialog = LoadingDialog(self, title="Descargando instalador")
         dialog.set_status("Preparando descarga...")
         dialog.set_progress(5)
-        result = {"error": None, "path": None}
+        result = {"error": None, "path": None, "session_dir": None}
         progress_state = {"last": -1, "last_msg": ""}
 
         def _progress(message, value):
@@ -8963,7 +9135,9 @@ class HubWindow(tk.Tk):
 
         def _worker():
             try:
-                path = download_installer(assets, progress_callback=_progress)
+                session_dir = create_update_session_dir()
+                result["session_dir"] = session_dir
+                path = download_installer(assets, progress_callback=_progress, target_dir=session_dir)
                 result["path"] = path
                 _log_capture(f"_start_manual_update: instalador descargado en {path}")
                 self.after(0, lambda: dialog.set_status("Preparando instalación..."))
@@ -8982,30 +9156,46 @@ class HubWindow(tk.Tk):
             dialog.close()
             if result["error"]:
                 _log_capture(f"_start_manual_update resultado error: {result['error']}")
+                session_dir = result.get("session_dir")
+                if session_dir:
+                    try:
+                        shutil.rmtree(session_dir, ignore_errors=True)
+                    except Exception:
+                        pass
                 messagebox.showerror("Actualización", f"No se pudo actualizar: {result['error']}")
                 return
             _log_capture("_start_manual_update resultado OK: programando instalador post-cierre")
-            self._handoff_to_installer(result["path"])
+            self._handoff_to_installer(
+                result["path"],
+                expected_version=remote_version,
+                session_dir=result.get("session_dir"),
+            )
 
         self.after(300, _check_done)
 
-    def _handoff_to_installer(self, installer_path):
+    def _handoff_to_installer(self, installer_path, *, expected_version, session_dir=None):
         try:
-            if getattr(sys, "frozen", False):
-                relaunch_args = [sys.executable]
-            else:
-                relaunch_args = [sys.executable, os.path.abspath(__file__)]
-            schedule_installer_after_exit(
-                installer_path,
+            relaunch_args = [sys.executable]
+            session_info = start_update_handoff(
+                installer_path=installer_path,
+                expected_version=expected_version,
                 current_pid=os.getpid(),
                 relaunch_command=relaunch_args,
+                app_executable=sys.executable,
+                release_url=get_release_page_url(expected_version),
             )
             _log_capture(
-                "_handoff_to_installer: watcher programado "
-                f"installer={installer_path} relaunch={relaunch_args}"
+                "_handoff_to_installer: helper confirmado "
+                f"installer={installer_path} session={session_info.get('session_dir')} "
+                f"helper_pid={session_info.get('helper_pid')}"
             )
         except Exception as exc:
             _log_capture(f"_handoff_to_installer error: {exc}")
+            if session_dir:
+                try:
+                    shutil.rmtree(session_dir, ignore_errors=True)
+                except Exception:
+                    pass
             messagebox.showerror("Actualización", f"No se pudo iniciar el instalador: {exc}")
             return
         self._show_restart_countdown()

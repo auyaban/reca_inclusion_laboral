@@ -3071,6 +3071,60 @@ def _bind_selection_activity_dropdown_fields(
     primary_widget.bind("<FocusOut>", _sync_from_primary, add="+")
 
 
+def _bind_no_aplica_dropdown_fields(
+    fields_map,
+    *,
+    primary_field_id,
+    secondary_field_id,
+    active_values=("si", "sí"),
+):
+    if not isinstance(fields_map, dict):
+        return
+    primary_widget = fields_map.get(primary_field_id)
+    secondary_widget = fields_map.get(secondary_field_id)
+    if not isinstance(primary_widget, ttk.Combobox) or not isinstance(secondary_widget, ttk.Combobox):
+        return
+
+    active_keys = {_normalize_ascii_text(value).lower() for value in (active_values or ())}
+    sync_state = {"active": False}
+
+    def _resolve_no_aplica_option():
+        values = tuple(secondary_widget.cget("values"))
+        return _find_dropdown_option(
+            values,
+            lambda option: option == "no aplica",
+        ) or "No aplica"
+
+    def _sync_from_primary(_event=None):
+        if sync_state["active"]:
+            return
+        try:
+            source_value = primary_widget.get().strip()
+        except Exception:
+            return
+        if not source_value:
+            return
+
+        normalized_source = _normalize_ascii_text(source_value).lower()
+        sync_state["active"] = True
+        try:
+            if normalized_source in active_keys:
+                try:
+                    current_secondary = secondary_widget.get().strip()
+                except Exception:
+                    current_secondary = ""
+                if _normalize_ascii_text(current_secondary).lower() == "no aplica":
+                    secondary_widget.set("")
+                return
+            secondary_widget.set(_resolve_no_aplica_option())
+        finally:
+            sync_state["active"] = False
+
+    primary_widget._no_aplica_dropdown_sync = _sync_from_primary
+    primary_widget.bind("<<ComboboxSelected>>", _sync_from_primary, add="+")
+    primary_widget.bind("<FocusOut>", _sync_from_primary, add="+")
+
+
 def _section_history_has_meaningful_payload(cache_snapshot, section_id):
     if not isinstance(cache_snapshot, dict):
         return False
@@ -16742,6 +16796,10 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         edad_widget = fields.get("edad")
         if fecha_widget and edad_widget:
             self._refresh_age_from_date(fecha_widget, edad_widget)
+        grupo_etnico_widget = fields.get("grupo_etnico")
+        sync_fn = getattr(grupo_etnico_widget, "_no_aplica_dropdown_sync", None)
+        if callable(sync_fn):
+            sync_fn()
 
     def _on_cedula_selected(self, fields, widget):
         cedula = widget.get().strip()
@@ -17131,6 +17189,11 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                     columns=3,
                 )
             )
+            _bind_no_aplica_dropdown_fields(
+                fields,
+                primary_field_id="grupo_etnico",
+                secondary_field_id="grupo_etnico_cual",
+            )
 
             row4 = tk.Frame(section2_frame, bg="white")
             row4.pack(fill="x", pady=(0, 6))
@@ -17509,6 +17572,10 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                     else:
                         widget.delete(0, tk.END)
                         widget.insert(0, value)
+                grupo_etnico_widget = fields.get("grupo_etnico")
+                sync_fn = getattr(grupo_etnico_widget, "_no_aplica_dropdown_sync", None)
+                if callable(sync_fn):
+                    sync_fn()
             shared_desarrollo = ""
             for entry in cache:
                 shared_desarrollo = (entry.get("desarrollo_actividad") or "").strip()
@@ -17659,9 +17726,8 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             cargo_entry.grid(row=row_idx, column=1, sticky="w", pady=4)
             self.section7_rows.append((nombre_entry, cargo_entry))
 
-        _add_asistente_row()
-        _add_asistente_row()
-        _add_asistente_row()
+        for _ in range(4):
+            _add_asistente_row()
 
         cached_rows = contratacion_incluyente.get_form_cache().get("section_7", [])
         for idx, entry in enumerate(cached_rows):

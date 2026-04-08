@@ -593,6 +593,11 @@ def _normalize_section_2_payload(payload):
     shared_desarrollo = ""
     for entry in payload:
         current = dict(entry or {})
+        grupo_etnico = _normalize_text(current.get("grupo_etnico") or "")
+        if grupo_etnico not in {"si", "sí"}:
+            current["grupo_etnico_cual"] = "No aplica"
+        elif _normalize_text(current.get("grupo_etnico_cual") or "") == "no aplica":
+            current["grupo_etnico_cual"] = ""
         normalized.append(current)
         if not shared_desarrollo:
             shared_desarrollo = (current.get("desarrollo_actividad") or "").strip()

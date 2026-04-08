@@ -31,6 +31,20 @@ class ContratacionIncluyenteUnifiedTests(unittest.TestCase):
     def test_contratacion_template_uses_four_base_attendee_rows(self) -> None:
         self.assertEqual(contratacion.EXCEL_MAPPING["section_7"]["rows"], 4)
 
+    def test_normalize_section_2_payload_sets_grupo_etnico_cual_to_no_aplica(self) -> None:
+        payload = [
+            {
+                "numero": "1",
+                "grupo_etnico": "No",
+                "grupo_etnico_cual": "",
+                "desarrollo_actividad": "Actividad base",
+            }
+        ]
+
+        normalized = contratacion._normalize_section_2_payload(payload)
+
+        self.assertEqual(normalized[0]["grupo_etnico_cual"], "No aplica")
+
     def test_section_2_group_row_insertions_clone_full_block(self) -> None:
         payload = [{"numero": str(idx + 1)} for idx in range(4)]
         insertions = contratacion._build_section_2_row_insertions(payload)

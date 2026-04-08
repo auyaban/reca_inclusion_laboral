@@ -153,6 +153,36 @@ class GroupalSection2LayoutTests(_TkTestCase):
         self.assertGreater(attach_mock.call_count, initial_calls)
         self.assertEqual(attach_mock.call_args.args[1:], ("contratacion_incluyente", "section_2"))
 
+    def test_contratacion_section_7_starts_with_four_asistente_rows(self) -> None:
+        with patch.object(app.contratacion_incluyente, "cache_file_exists", return_value=False):
+            with patch.object(app.contratacion_incluyente, "get_usuarios_reca_cedulas", return_value=[]):
+                window = app.ContratacionIncluyenteWindow(self.root)
+        self.addCleanup(destroy_widget, window)
+
+        window._show_section_7()
+
+        self.assertEqual(len(window.section7_rows), 4)
+
+    def test_contratacion_grupo_etnico_sets_cual_to_no_aplica_when_not_yes(self) -> None:
+        with patch.object(app.contratacion_incluyente, "cache_file_exists", return_value=False):
+            with patch.object(app.contratacion_incluyente, "get_usuarios_reca_cedulas", return_value=[]):
+                window = app.ContratacionIncluyenteWindow(self.root)
+        self.addCleanup(destroy_widget, window)
+
+        window._show_section_2()
+        fields = window.oferente_blocks[0]
+
+        grupo_etnico = fields["grupo_etnico"]
+        grupo_etnico_cual = fields["grupo_etnico_cual"]
+
+        grupo_etnico.set("No")
+        getattr(grupo_etnico, "_no_aplica_dropdown_sync")()
+        self.assertEqual(grupo_etnico_cual.get(), "No aplica")
+
+        grupo_etnico.set("Si")
+        getattr(grupo_etnico, "_no_aplica_dropdown_sync")()
+        self.assertEqual(grupo_etnico_cual.get(), "")
+
 
 if __name__ == "__main__":
     unittest.main()

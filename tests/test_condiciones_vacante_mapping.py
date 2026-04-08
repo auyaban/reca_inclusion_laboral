@@ -10,7 +10,7 @@ class CondicionesVacanteMappingTests(unittest.TestCase):
         mapping = vacante.EXCEL_MAPPING["section_8"]
         self.assertEqual(mapping["name_col"], "E")
         self.assertEqual(mapping["cargo_col"], "L")
-        self.assertEqual(mapping["start_row"], 161)
+        self.assertEqual(mapping["start_row"], 158)
 
     def test_section_7_and_8_shift_after_extra_disability_rows(self) -> None:
         original_cache = dict(vacante.FORM_CACHE)
@@ -32,15 +32,15 @@ class CondicionesVacanteMappingTests(unittest.TestCase):
 
             self.assertEqual(
                 section_7_writes[0]["range"],
-                f"'{vacante.SHEET_NAME}'!A162",
+                f"'{vacante.SHEET_NAME}'!A159",
             )
             self.assertEqual(
                 section_8_writes[0]["range"],
-                f"'{vacante.SHEET_NAME}'!E164",
+                f"'{vacante.SHEET_NAME}'!E161",
             )
             self.assertEqual(
                 section_8_writes[1]["range"],
-                f"'{vacante.SHEET_NAME}'!L164",
+                f"'{vacante.SHEET_NAME}'!L161",
             )
         finally:
             vacante.FORM_CACHE.clear()
@@ -68,13 +68,13 @@ class CondicionesVacanteMappingTests(unittest.TestCase):
             [
                 {
                     "sheet_name": vacante.SHEET_NAME,
-                    "start_row": 153,
+                    "start_row": 150,
                     "base_rows": 4,
                     "total_rows": 8,
                 },
                 {
                     "sheet_name": vacante.SHEET_NAME,
-                    "start_row": 165,
+                    "start_row": 162,
                     "base_rows": 3,
                     "total_rows": 5,
                 },

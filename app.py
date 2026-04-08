@@ -159,6 +159,7 @@ COLOR_WARNING = "#B35300"
 COLOR_DANGER = "#B00020"
 COLOR_SURFACE = "#FFFFFF"
 COLOR_FIELD_ERROR_BG = "#FDE2E2"
+COLOR_FIELD_WARNING_BG = "#FFF4CC"
 COLOR_TEXT_PRIMARY = "#23182F"
 COLOR_TEXT_SECONDARY = "#5B5563"
 COLOR_BORDER = "#D8D0E0"
@@ -742,6 +743,15 @@ def _build_followup_local_case_key(case_target):
     return f"path:{path}"
 
 
+def _build_followup_local_draft_id(case_key, sheet_name):
+    key = str(case_key or "").strip()
+    sheet = str(sheet_name or "").strip()
+    if not key or not sheet:
+        return ""
+    encoded = f"{key}|{sheet}".encode("utf-8", errors="ignore")
+    return f"seguimientos:{hashlib.sha1(encoded).hexdigest()}"
+
+
 def _get_followup_local_sheet_draft(case_target, sheet_name):
     case_key = _build_followup_local_case_key(case_target)
     sheet_key = str(sheet_name or "").strip()
@@ -758,7 +768,7 @@ def _get_followup_local_sheet_draft(case_target, sheet_name):
     return dict(draft or {}) if isinstance(draft, dict) else None
 
 
-def _save_followup_local_sheet_draft(case_target, request):
+def _save_followup_local_sheet_draft(case_target, request, *, metadata=None):
     case_key = _build_followup_local_case_key(case_target)
     request = dict(request or {})
     sheet_key = str(request.get("sheet") or "").strip()
@@ -767,6 +777,7 @@ def _save_followup_local_sheet_draft(case_target, request):
     payload = request.get("payload")
     if not isinstance(payload, dict):
         return False
+    metadata = dict(metadata or {})
     store = _load_followup_local_drafts_store()
     cases = store.setdefault("cases", {})
     case_entry = cases.setdefault(case_key, {"sheets": {}})
@@ -778,15 +789,20 @@ def _save_followup_local_sheet_draft(case_target, request):
         sheets = {}
         case_entry["sheets"] = sheets
     now_iso = _get_colombia_now().isoformat()
+    draft_id = _build_followup_local_draft_id(case_key, sheet_key)
     sheets[sheet_key] = {
+        "draft_id": draft_id,
+        "case_key": case_key,
         "sheet": sheet_key,
         "save_kind": str(request.get("save_kind") or "").strip(),
         "followup_index": request.get("followup_index"),
         "payload": copy.deepcopy(payload),
         "fingerprint": str(request.get("fingerprint") or "").strip(),
         "updated_at": now_iso,
+        "metadata": copy.deepcopy(metadata),
     }
     case_entry["updated_at"] = now_iso
+    case_entry["metadata"] = copy.deepcopy(metadata)
     _save_followup_local_drafts_store(store)
     return True
 
@@ -813,6 +829,90 @@ def _delete_followup_local_sheet_draft(case_target, sheet_name):
         cases.pop(case_key, None)
     _save_followup_local_drafts_store(store)
     return True
+
+
+def _delete_followup_local_sheet_draft_by_id(draft_id, *, user_login=""):
+    draft_key = str(draft_id or "").strip()
+    login = str(user_login or "").strip().lower()
+    if not draft_key:
+        return False
+    store = _load_followup_local_drafts_store()
+    cases = store.get("cases", {})
+    if not isinstance(cases, dict):
+        return False
+    deleted = False
+    for case_key, case_entry in list(cases.items()):
+        if not isinstance(case_entry, dict):
+            continue
+        sheets = case_entry.get("sheets")
+        if not isinstance(sheets, dict):
+            continue
+        for sheet_key, sheet_entry in list(sheets.items()):
+            if not isinstance(sheet_entry, dict):
+                continue
+            if str(sheet_entry.get("draft_id") or "").strip() != draft_key:
+                continue
+            metadata = sheet_entry.get("metadata")
+            entry_login = str((metadata or {}).get("user_login") or "").strip().lower()
+            if login and entry_login and entry_login != login:
+                continue
+            sheets.pop(sheet_key, None)
+            deleted = True
+        if not sheets:
+            cases.pop(case_key, None)
+    if deleted:
+        _save_followup_local_drafts_store(store)
+    return deleted
+
+
+def _list_followup_local_drafts_for_user(user_login):
+    login = str(user_login or "").strip().lower()
+    if not login:
+        return []
+    store = _load_followup_local_drafts_store()
+    cases = store.get("cases", {})
+    if not isinstance(cases, dict):
+        return []
+    items = []
+    for case_entry in cases.values():
+        if not isinstance(case_entry, dict):
+            continue
+        sheets = case_entry.get("sheets")
+        if not isinstance(sheets, dict):
+            continue
+        for sheet_entry in sheets.values():
+            if not isinstance(sheet_entry, dict):
+                continue
+            metadata = dict(sheet_entry.get("metadata") or {})
+            entry_login = str(metadata.get("user_login") or "").strip().lower()
+            if entry_login != login:
+                continue
+            sheet_name = str(sheet_entry.get("sheet") or "").strip()
+            company_name = str(
+                metadata.get("company_name")
+                or metadata.get("case_label")
+                or metadata.get("folder_name")
+                or "Seguimientos"
+            ).strip()
+            items.append(
+                {
+                    "draft_id": str(sheet_entry.get("draft_id") or "").strip(),
+                    "form_id": "seguimientos",
+                    "form_name": "Seguimientos",
+                    "company_name": company_name,
+                    "last_section": sheet_name,
+                    "updated_at": str(sheet_entry.get("updated_at") or ""),
+                    "created_at": str(sheet_entry.get("updated_at") or ""),
+                    "draft_type": "followup_local",
+                    "sheet_name": sheet_name,
+                    "save_kind": str(sheet_entry.get("save_kind") or "").strip(),
+                    "case_record": copy.deepcopy(metadata.get("case_record") or {}),
+                    "case_path": str(metadata.get("case_path") or ""),
+                    "case_label": str(metadata.get("case_label") or company_name),
+                }
+            )
+    items.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    return items
 
 
 def _get_colombia_now():
@@ -6325,6 +6425,250 @@ def _build_followup_suggestion_from_workflow(workflow):
     }
 
 
+FOLLOWUP_STAGE_STATUS_LABELS = {
+    "pending": "Pendiente",
+    "not_started": "Pendiente",
+    "in_progress": "En curso",
+    "completed": "Completa",
+    "review_only": "Solo lectura",
+}
+
+
+def _friendly_followup_sheet_title(sheet_name, workflow=None, *, base_sheet_name=None):
+    current = str(sheet_name or "").strip()
+    if not current:
+        return ""
+    workflow = workflow or {}
+    stage_entries = list(workflow.get("stage_model") or workflow.get("sheet_progress") or [])
+    for entry in stage_entries:
+        if str((entry or {}).get("sheet_name") or "").strip() == current:
+            return str((entry or {}).get("title") or (entry or {}).get("label") or current).strip()
+    base_name = str(base_sheet_name or workflow.get("base_sheet_name") or seguimientos.SHEET_BASE).strip()
+    if current == base_name:
+        return "Ficha inicial del proceso"
+    if current == seguimientos.SHEET_FINAL:
+        return "Resultado final"
+    match = re.search(r"(\d+)$", current)
+    if match:
+        return f"Seguimiento {int(match.group(1))}"
+    return current
+
+
+def _format_followup_stage_status(status, *, coverage_percent=None, is_suggested=False):
+    normalized = str(status or "").strip() or "pending"
+    label = FOLLOWUP_STAGE_STATUS_LABELS.get(normalized, normalized.replace("_", " ").title())
+    if normalized in {"review_only", "pending", "not_started"}:
+        text = label
+    else:
+        try:
+            text = f"{label} · {int(coverage_percent or 0)}%"
+        except Exception:
+            text = label
+    if is_suggested and normalized != "review_only":
+        return f"{text} · Etapa sugerida"
+    return text
+
+
+def _get_followup_stage_palette(status, *, is_suggested=False):
+    normalized = str(status or "").strip() or "pending"
+    if normalized == "completed":
+        return {"accent": COLOR_SUCCESS, "bg": "#EAF7EE", "muted": "#1E5E2E"}
+    if normalized == "in_progress":
+        return {"accent": "#2E6FD8", "bg": "#EAF1FD", "muted": "#234A87"}
+    if normalized == "review_only":
+        return {"accent": "#5F6B7A", "bg": "#F1F3F5", "muted": "#4A5563"}
+    if is_suggested:
+        return {"accent": COLOR_PURPLE, "bg": "#F4ECFF", "muted": "#5C2E8A"}
+    return {"accent": "#8A8F98", "bg": "#F7F8FA", "muted": "#58616D"}
+
+
+def _build_followup_window_flow_model(
+    *,
+    user_row=None,
+    linked_company=None,
+    compensar_choice="",
+    case_record=None,
+    workflow=None,
+    summary=None,
+    suggestion=None,
+):
+    workflow = dict(workflow or {})
+    summary = dict(summary or {})
+    suggestion = dict(suggestion or {})
+    linked_company = dict(linked_company or {})
+    user_row = dict(user_row or {})
+    case_exists = bool(case_record)
+    company_known = bool(
+        str(linked_company.get("nombre_empresa") or "").strip()
+        or str(linked_company.get("nit_empresa") or "").strip()
+    )
+    company_confirmed = company_known and (
+        str(compensar_choice or "").strip().startswith("Si")
+        or str(compensar_choice or "").strip().startswith("No")
+        or bool(str(linked_company.get("caja_compensacion") or "").strip())
+    )
+    suggested_sheet = str(
+        suggestion.get("sheet")
+        or workflow.get("suggested_sheet")
+        or workflow.get("base_sheet_name")
+        or seguimientos.SHEET_BASE
+    ).strip()
+    suggested_title = _friendly_followup_sheet_title(suggested_sheet, workflow)
+    total_followups = int(
+        suggestion.get("max_seguimientos")
+        or workflow.get("max_seguimientos")
+        or 3
+    )
+    stage_entries = {
+        str((entry or {}).get("sheet_name") or "").strip(): dict(entry or {})
+        for entry in list(workflow.get("stage_model") or workflow.get("sheet_progress") or [])
+    }
+    base_sheet_name = str(workflow.get("base_sheet_name") or seguimientos.SHEET_BASE).strip()
+    base_stage = dict(
+        stage_entries.get(
+            base_sheet_name,
+            {
+                "sheet_name": base_sheet_name,
+                "title": "Ficha inicial del proceso",
+                "status": "pending" if not case_exists else "not_started",
+                "coverage_percent": 0,
+                "is_suggested": suggested_sheet == base_sheet_name,
+                "is_editable": bool(case_exists),
+                "helper_text": "Se crea al confirmar la empresa del caso.",
+            },
+        )
+    )
+    if not case_exists:
+        base_stage["status"] = "pending"
+        base_stage["helper_text"] = "Se habilita cuando el caso tenga Google Sheet."
+        base_stage["is_editable"] = False
+
+    current_followup_title = ""
+    current_followup_status = "pending"
+    current_followup_helper = "Se habilita después de completar la ficha inicial del proceso."
+    current_followup_sheet = ""
+    current_followup_coverage = 0
+    current_followup_editable = False
+    current_followup_suggested = False
+    if suggested_sheet and suggested_sheet not in {base_sheet_name, seguimientos.SHEET_FINAL}:
+        suggested_entry = dict(stage_entries.get(suggested_sheet) or {})
+        current_followup_title = str(
+            suggested_entry.get("title")
+            or _friendly_followup_sheet_title(suggested_sheet, workflow)
+            or "Seguimiento actual"
+        ).strip()
+        current_followup_status = str(suggested_entry.get("status") or "not_started").strip()
+        current_followup_helper = str(
+            suggested_entry.get("helper_text")
+            or suggestion.get("message")
+            or ""
+        ).strip()
+        current_followup_sheet = suggested_sheet
+        current_followup_coverage = int(suggested_entry.get("coverage_percent") or 0)
+        current_followup_editable = bool(suggested_entry.get("is_editable"))
+        current_followup_suggested = True
+    completed_titles = list(summary.get("completed_sheets") or workflow.get("completed_sheets") or [])
+    history_helper = ", ".join(completed_titles) if completed_titles else "Aún no hay seguimientos completos."
+    final_entry = dict(
+        stage_entries.get(
+            seguimientos.SHEET_FINAL,
+            {
+                "sheet_name": seguimientos.SHEET_FINAL,
+                "title": "Resultado final",
+                "status": "pending" if not case_exists else "review_only",
+                "coverage_percent": 0,
+                "is_suggested": suggested_sheet == seguimientos.SHEET_FINAL,
+                "is_editable": False,
+                "helper_text": "Consolidado automático del caso.",
+            },
+        )
+    )
+    if not case_exists:
+        final_entry["status"] = "pending"
+        final_entry["helper_text"] = "Se actualiza automáticamente al completar la ficha y los seguimientos."
+
+    return [
+        {
+            "stage_id": "identify_user",
+            "title": "Identificar vinculado",
+            "sheet_name": "",
+            "status": "completed" if user_row else "pending",
+            "coverage_percent": 100 if user_row else 0,
+            "is_editable": True,
+            "is_suggested": not bool(user_row),
+            "helper_text": (
+                str(user_row.get("nombre_usuario") or "").strip()
+                if user_row
+                else "Busca la cédula para cargar el caso."
+            ),
+        },
+        {
+            "stage_id": "confirm_company",
+            "title": "Confirmar empresa",
+            "sheet_name": "",
+            "status": (
+                "completed"
+                if company_confirmed
+                else ("in_progress" if user_row else "pending")
+            ),
+            "coverage_percent": 100 if company_confirmed else (40 if user_row and company_known else 0),
+            "is_editable": True,
+            "is_suggested": bool(user_row) and not company_confirmed,
+            "helper_text": (
+                "Empresa lista para crear o continuar el caso."
+                if company_confirmed
+                else (
+                    "Confirma la empresa y si es Compensar para preparar el caso."
+                    if user_row
+                    else "Primero identifica el vinculado."
+                )
+            ),
+        },
+        {
+            "stage_id": "base_process",
+            "title": str(base_stage.get("title") or "Ficha inicial del proceso"),
+            "sheet_name": str(base_stage.get("sheet_name") or ""),
+            "status": str(base_stage.get("status") or "pending"),
+            "coverage_percent": int(base_stage.get("coverage_percent") or 0),
+            "is_editable": bool(base_stage.get("is_editable")),
+            "is_suggested": bool(base_stage.get("is_suggested")),
+            "helper_text": str(base_stage.get("helper_text") or ""),
+        },
+        {
+            "stage_id": "current_followup",
+            "title": "Seguimiento actual",
+            "sheet_name": current_followup_sheet,
+            "status": current_followup_status,
+            "coverage_percent": current_followup_coverage,
+            "is_editable": current_followup_editable,
+            "is_suggested": current_followup_suggested,
+            "helper_text": current_followup_title
+            + (": " if current_followup_title and current_followup_helper else "")
+            + current_followup_helper,
+        },
+        {
+            "stage_id": "followup_history",
+            "title": "Historial de seguimientos",
+            "sheet_name": "",
+            "status": "completed" if completed_titles else ("in_progress" if case_exists else "pending"),
+            "coverage_percent": 100 if completed_titles else 0,
+            "is_editable": False,
+            "is_suggested": False,
+            "helper_text": history_helper,
+        },
+        {
+            "stage_id": "final_result",
+            "title": str(final_entry.get("title") or "Resultado final"),
+            "sheet_name": str(final_entry.get("sheet_name") or ""),
+            "status": str(final_entry.get("status") or "pending"),
+            "coverage_percent": int(final_entry.get("coverage_percent") or 0),
+            "is_editable": bool(final_entry.get("is_editable")),
+            "is_suggested": bool(final_entry.get("is_suggested")),
+            "helper_text": str(final_entry.get("helper_text") or ""),
+        },
+    ]
+
+
 def _format_followup_editor_open_error(exc):
     if exc is None:
         return ""
@@ -7699,6 +8043,13 @@ class HubWindow(tk.Tk):
             background=COLOR_FIELD_ERROR_BG,
         )
         style.map("Invalid.TCombobox", fieldbackground=[("readonly", COLOR_FIELD_ERROR_BG)])
+        style.configure("Changed.TEntry", fieldbackground=COLOR_FIELD_WARNING_BG)
+        style.configure(
+            "Changed.TCombobox",
+            fieldbackground=COLOR_FIELD_WARNING_BG,
+            background=COLOR_FIELD_WARNING_BG,
+        )
+        style.map("Changed.TCombobox", fieldbackground=[("readonly", COLOR_FIELD_WARNING_BG)])
         style.configure(
             "Vertical.TScrollbar",
             troughcolor="#F3E5F5",
@@ -9926,8 +10277,11 @@ class HubWindow(tk.Tk):
         users = data.get("users", {})
         drafts = users.get(user_login, [])
         if not isinstance(drafts, list):
-            return []
-        return [item for item in drafts if isinstance(item, dict)]
+            drafts = []
+        items = [item for item in drafts if isinstance(item, dict)]
+        items.extend(_list_followup_local_drafts_for_user(user_login))
+        items.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+        return items
 
     def _get_user_completed_forms(self):
         user_login = self._get_current_user_login()
@@ -10271,7 +10625,52 @@ class HubWindow(tk.Tk):
             source="manual",
         )
 
+    def _open_followup_local_draft_entry(self, draft):
+        case_record = dict(draft.get("case_record") or {})
+        case_path = str(draft.get("case_path") or "")
+        case_target = case_record if case_record else case_path
+        if not case_target:
+            messagebox.showerror("Borradores", "El borrador de seguimientos no tiene un caso válido para restaurar.")
+            return
+        try:
+            bootstrap = _load_followup_editor_bootstrap(case_target)
+        except RuntimeError as exc:
+            messagebox.showerror("Borradores", str(exc))
+            return
+        sheet_name = str(draft.get("sheet_name") or "").strip()
+        if sheet_name:
+            suggestion = dict((bootstrap or {}).get("suggestion") or {})
+            suggestion["sheet"] = sheet_name
+            suggestion["message"] = (
+                f"Borrador local restaurado en "
+                f"{_friendly_followup_sheet_title(sheet_name, (bootstrap or {}).get('workflow') or {})}."
+            )
+            bootstrap["suggestion"] = suggestion
+        editor = SeguimientoEditorWindow(
+            self,
+            case_path=case_path,
+            case_record=case_record,
+            bootstrap=bootstrap,
+        )
+        _focus_window(editor)
+        self.track_form_open("seguimientos", "Seguimientos")
+
+    def _delete_followup_local_draft_entry(self, draft):
+        draft_id = str(draft.get("draft_id") or "").strip()
+        if not draft_id:
+            return False
+        deleted = _delete_followup_local_sheet_draft_by_id(
+            draft_id,
+            user_login=self._get_current_user_login(),
+        )
+        if deleted:
+            self._refresh_drafts_badge()
+        return deleted
+
     def _open_draft_entry(self, draft):
+        if str(draft.get("draft_type") or "").strip() == "followup_local":
+            self._open_followup_local_draft_entry(draft)
+            return
         form_id = str(draft.get("form_id") or "")
         form_meta = next((item for item in get_forms() if item.get("id") == form_id), None)
         if not form_meta:
@@ -10416,6 +10815,11 @@ class HubWindow(tk.Tk):
             if not draft_id:
                 return
             if not messagebox.askyesno("Borradores", "¿Eliminar este borrador?"):
+                return
+            if str(draft.get("draft_type") or "").strip() == "followup_local":
+                if self._delete_followup_local_draft_entry(draft):
+                    tree.delete(sel)
+                    draft_by_iid.pop(sel, None)
                 return
             user_login = self._get_current_user_login()
             data = _load_drafts_store()
@@ -19445,12 +19849,17 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         self.company_var = tk.StringVar(value="")
         self.followups_var = tk.StringVar(value="")
         self.suggestion_var = tk.StringVar(value="")
+        self.profesional_var = tk.StringVar(value="")
+        self.case_type_var = tk.StringVar(value="")
+        self.max_followups_var = tk.StringVar(value="")
+        self.next_step_var = tk.StringVar(value="")
         self.compensar_var = tk.StringVar(value="")
         self.company_nit_var = tk.StringVar(value="")
         self.company_name_search_var = tk.StringVar(value="")
         self._case_summary_cache = None
         self._case_suggestion_cache = None
         self._case_cache_key = ""
+        self._flow_stage_model = []
         self._buscar_vinculado_busy = False
         self._cedula_load_busy = False
         self._case_bootstrap_busy = False
@@ -19458,10 +19867,12 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         self._company_lookup_hint_id = "seguimientos_company_lookup"
         self._compensar_hint_id = "seguimientos_compensar"
         self.status_label_widget = None
+        self.flow_stage_container = None
         self._pending_case_bootstrap = None
 
         self._build_header()
         self._build_body()
+        self._refresh_case_flow_visuals()
         self._set_cedula_lookup_hint("Cargando cédulas disponibles...", state="loading")
         self._load_cedulas()
 
@@ -19490,8 +19901,8 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         tk.Label(
             header,
             text=(
-                "Busca a la persona por cédula, deja listo su Google Sheet "
-                "y luego continúa en la hoja sugerida."
+                "Identifica el vinculado, confirma la empresa y continúa siempre "
+                "desde la etapa sugerida del caso."
             ),
             font=FONT_SUBTITLE,
             fg="#333333",
@@ -19616,37 +20027,41 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         )
         self.company_name_btn.grid(row=2, column=2, sticky="w", padx=(12, 0), pady=4)
 
-        info = tk.LabelFrame(
+        context = tk.LabelFrame(
             container,
-            text="Datos del Vinculado",
+            text="Contexto del caso",
             bg=COLOR_LIGHT_BG,
             font=FONT_LABEL,
             padx=12,
             pady=10,
         )
-        info.pack(fill="x", pady=(12, 0))
-        info.grid_columnconfigure(1, weight=1)
+        context.pack(fill="x", pady=(12, 0))
+        context.grid_columnconfigure(1, weight=1)
 
-        self._add_info_row(info, 0, "Nombre:", self.user_name_var)
-        self._add_info_row(info, 1, "Teléfono:", self.user_phone_var)
-        self._add_info_row(info, 2, "Cargo:", self.user_role_var)
-        self._add_info_row(info, 3, "Discapacidad:", self.user_discapacidad_var)
+        self._add_info_row(context, 0, "Vinculado:", self.user_name_var)
+        self._add_info_row(context, 1, "Teléfono:", self.user_phone_var)
+        self._add_info_row(context, 2, "Cargo:", self.user_role_var)
+        self._add_info_row(context, 3, "Discapacidad:", self.user_discapacidad_var)
+        self._add_info_row(context, 4, "Empresa:", self.company_var)
+        self._add_info_row(context, 5, "Profesional RECA:", self.profesional_var)
+        self._add_info_row(context, 6, "Tipo de empresa:", self.case_type_var)
+        self._add_info_row(context, 7, "Seguimientos visibles:", self.max_followups_var)
+        self._add_info_row(context, 8, "Próximo paso:", self.next_step_var)
+        self._add_info_row(context, 9, "Historial completado:", self.followups_var)
 
         status = tk.LabelFrame(
             container,
-            text="Estado del Caso",
+            text="Ruta del seguimiento",
             bg=COLOR_LIGHT_BG,
             font=FONT_LABEL,
             padx=12,
             pady=10,
         )
         status.pack(fill="x", pady=(12, 0))
-        status.grid_columnconfigure(1, weight=1)
+        status.grid_columnconfigure(0, weight=1)
 
         self._add_info_row(status, 0, "Caso:", self.path_var)
-        self._add_info_row(status, 1, "Empresa:", self.company_var)
-        self._add_info_row(status, 2, "Seguimientos:", self.followups_var)
-        self._add_info_row(status, 3, "Sugerencia:", self.suggestion_var)
+        self._add_info_row(status, 1, "Resumen operativo:", self.suggestion_var)
         self.status_label_widget = tk.Label(
             status,
             textvariable=self.status_var,
@@ -19655,8 +20070,11 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             bg=COLOR_LIGHT_BG,
             anchor="w",
             justify="left",
+            wraplength=860,
         )
-        self.status_label_widget.grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self.status_label_widget.grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 10))
+        self.flow_stage_container = tk.Frame(status, bg=COLOR_LIGHT_BG)
+        self.flow_stage_container.grid(row=3, column=0, columnspan=2, sticky="ew")
 
         actions = tk.Frame(container, bg=COLOR_LIGHT_BG)
         _pack_actions(actions, pad_y=(14, FORM_PADY), pad_x=False)
@@ -19664,7 +20082,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         ttk.Button(actions, text="Regresar", style="Secondary.TButton", command=self._close_to_hub).pack(side="left")
         self.create_btn = ttk.Button(
             actions,
-            text="Continuar",
+            text="Continuar donde voy",
             style="Primary.TButton",
             command=self._continue_case_flow,
             state="disabled",
@@ -19698,6 +20116,135 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             justify="left",
             wraplength=730,
         ).grid(row=row, column=1, sticky="w", pady=2)
+
+    def _get_case_type_label(self):
+        choice = str(self.compensar_var.get() or "").strip()
+        if choice.startswith("Si"):
+            return "Compensar"
+        if choice.startswith("No"):
+            return "Otro"
+        caja = str((self.linked_company or {}).get("caja_compensacion") or "").strip()
+        if caja:
+            return caja
+        return "Por confirmar"
+
+    def _update_case_context(self, *, suggestion=None, summary=None):
+        suggestion = dict(suggestion or self._case_suggestion_cache or {})
+        summary = dict(summary or self._case_summary_cache or {})
+        self.profesional_var.set(
+            str(
+                summary.get("profesional_asignado")
+                or (self.linked_company or {}).get("profesional_asignado")
+                or ""
+            ).strip()
+            or "(Sin asignar)"
+        )
+        self.case_type_var.set(self._get_case_type_label())
+        max_followups = (
+            suggestion.get("max_seguimientos")
+            or (self.case_record or {}).get("max_seguimientos")
+            or (self._case_summary_cache or {}).get("max_seguimientos")
+            or 3
+        )
+        self.max_followups_var.set(str(max_followups))
+        next_title = _friendly_followup_sheet_title(
+            suggestion.get("sheet"),
+            self._case_summary_cache or {},
+            base_sheet_name=(self.case_record or {}).get("base_sheet_name") or seguimientos.SHEET_BASE,
+        )
+        next_message = str(suggestion.get("message") or "").strip()
+        next_text = next_title
+        if next_message and next_message != next_title:
+            next_text = f"{next_title}. {next_message}" if next_title else next_message
+        self.next_step_var.set(next_text or "Busca primero el vinculado.")
+
+    def _render_flow_stage_cards(self):
+        container = self.flow_stage_container
+        if container is None:
+            return
+        for child in container.winfo_children():
+            child.destroy()
+        stages = list(self._flow_stage_model or [])
+        if not stages:
+            return
+        for index, stage in enumerate(stages):
+            palette = _get_followup_stage_palette(
+                stage.get("status"),
+                is_suggested=bool(stage.get("is_suggested")),
+            )
+            card = tk.Frame(
+                container,
+                bg=palette["bg"],
+                highlightbackground=palette["accent"],
+                highlightthickness=2,
+                bd=0,
+            )
+            card.grid(
+                row=index // 3,
+                column=index % 3,
+                sticky="nsew",
+                padx=(0 if index % 3 == 0 else 8, 0),
+                pady=(0 if index < 3 else 8, 0),
+            )
+            container.grid_columnconfigure(index % 3, weight=1)
+            inner = tk.Frame(card, bg=palette["bg"], padx=12, pady=10)
+            inner.pack(fill="both", expand=True)
+            tk.Label(
+                inner,
+                text=str(stage.get("title") or ""),
+                font=FONT_LABEL,
+                fg=palette["accent"],
+                bg=palette["bg"],
+                anchor="w",
+                justify="left",
+            ).pack(anchor="w")
+            tk.Label(
+                inner,
+                text=_format_followup_stage_status(
+                    stage.get("status"),
+                    coverage_percent=stage.get("coverage_percent"),
+                    is_suggested=bool(stage.get("is_suggested")),
+                ),
+                font=("Arial", 9, "bold"),
+                fg=palette["muted"],
+                bg=palette["bg"],
+                anchor="w",
+                justify="left",
+            ).pack(anchor="w", pady=(4, 2))
+            tk.Label(
+                inner,
+                text=str(stage.get("helper_text") or ""),
+                font=("Arial", 9),
+                fg="#333333",
+                bg=palette["bg"],
+                anchor="w",
+                justify="left",
+                wraplength=250,
+            ).pack(anchor="w")
+
+    def _refresh_case_flow_visuals(self, *, suggestion=None, summary=None):
+        suggestion = dict(suggestion or self._case_suggestion_cache or {})
+        summary = dict(summary or self._case_summary_cache or {})
+        workflow = {}
+        if self.case_record:
+            workflow = {
+                "base_sheet_name": summary.get("base_sheet_name") or seguimientos.SHEET_BASE,
+                "max_seguimientos": summary.get("max_seguimientos") or suggestion.get("max_seguimientos") or (self.case_record or {}).get("max_seguimientos") or 3,
+                "stage_model": list(summary.get("sheet_progress") or []),
+                "sheet_progress": list(summary.get("sheet_progress") or []),
+                "suggested_sheet": suggestion.get("sheet") or "",
+            }
+        self._flow_stage_model = _build_followup_window_flow_model(
+            user_row=self.user_row,
+            linked_company=self.linked_company,
+            compensar_choice=self.compensar_var.get(),
+            case_record=self.case_record,
+            workflow=workflow,
+            summary=summary,
+            suggestion=suggestion,
+        )
+        self._update_case_context(suggestion=suggestion, summary=summary)
+        self._render_flow_stage_cards()
 
     def _set_cedula_lookup_hint(self, text, *, state="hint"):
         ui_feedback.set_group_hint(self, self._cedula_lookup_hint_id, text, state=state)
@@ -19740,11 +20287,13 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             )
             if not self.user_row:
                 self.status_var.set("Ingresa la cédula y busca el vinculado.")
+                self._refresh_case_flow_visuals()
             return True
         message = "No hay cédulas disponibles en usuarios_reca. Reintenta la carga después de sincronizar la base."
         self._set_cedula_search_enabled(False)
         self._set_cedula_lookup_hint(message, state="warning")
         self.status_var.set(message)
+        self._refresh_case_flow_visuals()
         return False
 
     def _handle_cedula_load_error(self, exc):
@@ -19761,6 +20310,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             self._set_cedula_search_enabled(False)
         self._set_cedula_lookup_hint(message, state="error")
         self.status_var.set(message)
+        self._refresh_case_flow_visuals()
         return False
 
     def _set_company_lookup_enabled(self, enabled):
@@ -19836,7 +20386,8 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         self._case_cache_key = ""
         self.path_var.set("(Sin Google Sheet aún)")
         self.open_btn.config(state="disabled")
-        self.create_btn.config(state="disabled")
+        self.create_btn.config(state="normal" if self.user_row else "disabled")
+        self._refresh_case_flow_visuals()
 
     def _set_pending_case_bootstrap(self, *, row, normalized_cedula, linked_company=None):
         self._pending_case_bootstrap = {
@@ -19845,8 +20396,10 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             "linked_company": dict(linked_company or {}),
         }
         self._clear_case_state()
-        self.suggestion_var.set("Hoja 9 - Se creará el caso para iniciar desde la hoja 9.")
+        self.suggestion_var.set("Se creará el Google Sheet para continuar con la ficha inicial del proceso.")
         self.followups_var.set("Sin hojas completadas")
+        self.next_step_var.set("Confirma la empresa para crear el caso.")
+        self._refresh_case_flow_visuals()
 
     def _finalize_case_bootstrap_result(self, data):
         result = dict((data or {}).get("result") or {})
@@ -19864,9 +20417,10 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         if state_error is not None:
             self._case_suggestion_cache = None
             self._case_summary_cache = None
-            self.suggestion_var.set("No fue posible leer sugerencia.")
+            self.suggestion_var.set("No fue posible leer la etapa sugerida.")
             self.followups_var.set("")
             self.status_var.set(_format_followup_case_state_error(state_error))
+            self._refresh_case_flow_visuals()
             return
 
         self._apply_summary_result(
@@ -19992,10 +20546,15 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             self.company_var.set(linked_name)
         else:
             self.company_var.set("(Sin empresa cargada)")
+        self.profesional_var.set(
+            str((self.linked_company or {}).get("profesional_asignado") or "").strip() or "(Sin asignar)"
+        )
         compensar_choice = self._resolve_compensar_choice(self.linked_company)
         self.compensar_var.set(compensar_choice)
+        self.case_type_var.set(self._get_case_type_label())
         self._set_company_lookup_enabled(not bool(linked_name or linked_nit))
         self._set_compensar_choice_enabled(bool(linked_name or linked_nit) and not compensar_choice)
+        self._refresh_case_flow_visuals()
         if self._pending_case_bootstrap and self._compensar_choice_is_resolved(compensar_choice):
             self._maybe_start_pending_case_bootstrap()
 
@@ -20142,7 +20701,10 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             summary = {}
         if not suggestion:
             suggestion = {}
-        sheet = suggestion.get("sheet") or ""
+        sheet = _friendly_followup_sheet_title(
+            suggestion.get("sheet"),
+            {"stage_model": list(summary.get("sheet_progress") or []), "base_sheet_name": summary.get("base_sheet_name") or seguimientos.SHEET_BASE},
+        )
         msg = suggestion.get("message") or ""
         self.suggestion_var.set(f"{sheet} - {msg}" if sheet or msg else "")
         company_text = summary.get("empresa") or ""
@@ -20159,6 +20721,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             self.followups_var.set(", ".join(completed))
         else:
             self.followups_var.set("Sin hojas completadas")
+        self._refresh_case_flow_visuals(suggestion=suggestion, summary=summary)
         if missing_case_status:
             self.status_var.set(missing_case_status)
         else:
@@ -20267,7 +20830,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
                 if self.case_record
                 else "(Sin Google Sheet aún)"
             )
-            self.create_btn.config(state="normal" if self.case_record else "disabled")
+            self.create_btn.config(state="normal")
             self.open_btn.config(state="normal" if self.case_record else "disabled")
             if not self._get_case_target():
                 self._set_pending_case_bootstrap(
@@ -20280,6 +20843,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
                     "Confirma si la empresa es Compensar para crear carpeta y Google Sheet."
                 )
                 self.status_var.set(status_text)
+                self._refresh_case_flow_visuals()
                 if self._compensar_choice_is_resolved():
                     self._maybe_start_pending_case_bootstrap()
                 return
@@ -20287,9 +20851,10 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             if state_error is not None:
                 self._case_suggestion_cache = None
                 self._case_summary_cache = None
-                self.suggestion_var.set("No fue posible leer sugerencia.")
+                self.suggestion_var.set("No fue posible leer la etapa sugerida.")
                 self.followups_var.set("")
                 self.status_var.set(_format_followup_case_state_error(state_error))
+                self._refresh_case_flow_visuals()
                 return
             self._apply_summary_result(
                 suggestion=data.get("suggestion"),
@@ -20309,25 +20874,30 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
     def _refresh_suggestion(self):
         case_target = self._get_case_target()
         if not case_target:
-            self.suggestion_var.set("Hoja 9 - Se creará el caso para iniciar desde la hoja 9.")
+            self.suggestion_var.set("Se creará el caso para iniciar en la ficha inicial del proceso.")
             self._apply_linked_company_to_ui()
             self.followups_var.set("Sin hojas completadas")
             self.status_var.set(
                 "La cédula existe, pero no tiene caso en seguimientos. "
                 "Confirma si la empresa es Compensar para crear carpeta y Google Sheet."
             )
+            self._refresh_case_flow_visuals()
             return
         state_snapshot = _read_followup_case_state(case_target)
         suggestion = state_snapshot.get("suggestion")
         summary = state_snapshot.get("summary")
         state_error = state_snapshot.get("error")
         if state_error is not None:
-            self.suggestion_var.set("No fue posible leer sugerencia.")
+            self.suggestion_var.set("No fue posible leer la etapa sugerida.")
             self._apply_linked_company_to_ui()
             self.followups_var.set("")
             self.status_var.set(_format_followup_case_state_error(state_error))
+            self._refresh_case_flow_visuals()
             return
-        sheet = suggestion.get("sheet") or ""
+        sheet = _friendly_followup_sheet_title(
+            suggestion.get("sheet"),
+            {"stage_model": list(summary.get("sheet_progress") or []), "base_sheet_name": summary.get("base_sheet_name") or seguimientos.SHEET_BASE},
+        )
         msg = suggestion.get("message") or ""
         self.suggestion_var.set(f"{sheet} - {msg}")
         company_text = summary.get("empresa") or ""
@@ -20341,12 +20911,16 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         else:
             self.followups_var.set("Sin hojas completadas")
         self.status_var.set("La persona ya existe en seguimientos.")
+        self._refresh_case_flow_visuals(suggestion=suggestion, summary=summary)
 
     def _continue_case_flow(self):
         if not self._get_case_target():
+            if self._pending_case_bootstrap and self._compensar_choice_is_resolved():
+                self._maybe_start_pending_case_bootstrap()
+                return
             _show_inline_feedback(
                 self,
-                "Todavía no existe el Google Sheet del caso. Confirma si la empresa es Compensar para crearlo.",
+                "Todavía no existe el Google Sheet del caso. Confirma la empresa y si es Compensar para continuar.",
                 state="warning",
             )
             return
@@ -20421,7 +20995,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
                 summary = self._case_summary_cache
                 state_error = None
             else:
-                progress("Leyendo la hoja sugerida para continuar...", 75)
+                progress("Leyendo la etapa sugerida para continuar...", 75)
                 state_snapshot = _read_followup_case_state(case_target)
                 suggestion = state_snapshot.get("suggestion")
                 summary = state_snapshot.get("summary")
@@ -20451,7 +21025,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             if state_error is not None:
                 self._case_suggestion_cache = None
                 self._case_summary_cache = None
-                self.suggestion_var.set("No fue posible leer sugerencia.")
+                self.suggestion_var.set("No fue posible leer la etapa sugerida.")
                 self.followups_var.set("")
                 self.status_var.set(_format_followup_case_state_error(state_error))
                 if self._get_case_target():
@@ -20568,11 +21142,22 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
 class _SeguimientoDateField(tk.Frame):
     _DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y")
 
-    def __init__(self, master, *, host, textvariable=None, width=14):
+    def __init__(
+        self,
+        master,
+        *,
+        host,
+        textvariable=None,
+        width=14,
+        allow_text_values=False,
+        quick_actions=None,
+    ):
         super().__init__(master, bg=COLOR_LIGHT_BG)
         self.host = host
         self.var = textvariable or tk.StringVar(master=self, value="")
         self.always_disabled = False
+        self.allow_text_values = bool(allow_text_values)
+        self.quick_actions = list(quick_actions or [])
 
         self.entry = tk.Entry(self, textvariable=self.var, width=width, state="readonly")
         self.entry.pack(side="left")
@@ -20582,6 +21167,16 @@ class _SeguimientoDateField(tk.Frame):
         self.select_button.pack(side="left", padx=(6, 0))
         self.clear_button = ttk.Button(self, text="Limpiar", width=8, command=self.clear)
         self.clear_button.pack(side="left", padx=(4, 0))
+        self.quick_buttons = []
+        for label, value in self.quick_actions:
+            button = ttk.Button(
+                self,
+                text=str(label or ""),
+                width=max(10, len(str(label or "")) + 2),
+                command=lambda resolved=value: self._set_quick_value(resolved),
+            )
+            button.pack(side="left", padx=(4, 0))
+            self.quick_buttons.append(button)
 
     def _parse_date(self, value):
         text = str(value or "").strip()
@@ -20609,11 +21204,17 @@ class _SeguimientoDateField(tk.Frame):
 
     def set_enabled(self, editable):
         enabled = bool(editable) and not self.always_disabled
-        self.entry.config(state="readonly" if enabled else "disabled")
+        entry_state = "normal" if (enabled and self.allow_text_values) else ("readonly" if enabled else "disabled")
+        self.entry.config(state=entry_state)
         self.select_button.config(state="normal" if enabled else "disabled")
         self.clear_button.config(state="normal" if enabled else "disabled")
+        for button in list(self.quick_buttons or []):
+            button.config(state="normal" if enabled else "disabled")
 
     def set(self, value):
+        if self.allow_text_values:
+            self.var.set(str(value or ""))
+            return
         normalized = self._parse_date(value)
         self.var.set(normalized.strftime("%Y-%m-%d") if normalized else "")
 
@@ -20622,6 +21223,9 @@ class _SeguimientoDateField(tk.Frame):
 
     def clear(self):
         self.var.set("")
+
+    def _set_quick_value(self, value):
+        self.var.set(str(value or ""))
 
     def open_picker(self):
         if str(self.select_button.cget("state") or "") == "disabled":
@@ -20748,6 +21352,10 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             or seguimientos.SHEET_BASE
         )
         self.sheet_options = list(self.workflow.get("visible_sheets") or [self.base_sheet_name])
+        self.sheet_stage_model = []
+        self.sheet_display_var = tk.StringVar(value="")
+        self._sheet_title_by_name = {}
+        self._sheet_name_by_title = {}
         self.sheet_var = tk.StringVar(value=suggestion.get("sheet") or self.sheet_options[0])
         if self.sheet_var.get() not in self.sheet_options:
             self.sheet_var.set(self.sheet_options[0])
@@ -20760,21 +21368,32 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         self.base_dates_1 = []
         self.base_dates_2 = []
         self.base_company_widgets = {}
+        self.base_field_widgets = {}
         self.base_date_widgets = {}
+        self.base_date_na_button = None
         self.base_modalidad_widget = None
         self._always_readonly_widgets = set()
         self.company_name_combo = None
 
         self.follow_vars = {}
+        self.follow_widgets = {}
         self.follow_text = {}
         self.follow_item_obs = []
         self.follow_item_auto = []
+        self.follow_item_auto_widgets = []
         self.follow_item_emp = []
+        self.follow_item_emp_widgets = []
         self.follow_emp_eval = []
+        self.follow_emp_eval_widgets = []
         self.follow_emp_obs = []
         self.follow_asistentes = []
+        self.follow_date_widget = None
         self.current_followup_index = None
         self.save_button = None
+        self.continue_stage_button = None
+        self.stage_overview_container = None
+        self._sheet_remote_payload = {}
+        self._overwrite_fields = []
         self._rendered_sheet_name = ""
         self._sheet_autosave_after_id = None
         self._sheet_autosave_trace_tokens = []
@@ -20788,6 +21407,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         self._build_controls()
         self._build_scroller()
         self.protocol("WM_DELETE_WINDOW", self._close_editor)
+        self._refresh_sheet_selector_model()
         self._render_selected_sheet()
 
     def _get_hub_window(self):
@@ -20796,6 +21416,63 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         if isinstance(self.master, HubWindow):
             return self.master
         return None
+
+    def _build_local_draft_metadata(self):
+        hub = self._get_hub_window()
+        user_login = ""
+        if hub and hasattr(hub, "_get_current_user_login"):
+            try:
+                user_login = str(hub._get_current_user_login() or "").strip().lower()
+            except Exception:
+                user_login = ""
+        company_name = ""
+        if isinstance(self.base_vars, dict) and self.base_vars.get("nombre_empresa") is not None:
+            try:
+                company_name = str(self.base_vars["nombre_empresa"].get() or "").strip()
+            except Exception:
+                company_name = ""
+        if not company_name:
+            company_name = str(
+                (self.case_record or {}).get("folder_name")
+                or (self.case_record or {}).get("file_name")
+                or (self.case_record or {}).get("cedula")
+                or self.case_path
+                or "Seguimientos"
+            ).strip()
+        return {
+            "user_login": user_login,
+            "case_record": copy.deepcopy(self.case_record or {}),
+            "case_path": str(self.case_path or ""),
+            "company_name": company_name,
+            "case_label": company_name,
+            "folder_name": str((self.case_record or {}).get("folder_name") or ""),
+        }
+
+    def _refresh_sheet_selector_model(self):
+        self.sheet_stage_model = list(self.workflow.get("stage_model") or self.workflow.get("sheet_progress") or [])
+        self._sheet_title_by_name = {}
+        self._sheet_name_by_title = {}
+        display_values = []
+        for sheet_name in list(self.sheet_options or []):
+            title = _friendly_followup_sheet_title(
+                sheet_name,
+                {"stage_model": self.sheet_stage_model, "base_sheet_name": self.base_sheet_name},
+                base_sheet_name=self.base_sheet_name,
+            )
+            self._sheet_title_by_name[sheet_name] = title
+            self._sheet_name_by_title[title] = sheet_name
+            display_values.append(title)
+        if getattr(self, "sheet_combo", None) is not None:
+            self.sheet_combo["values"] = display_values
+        current_title = self._sheet_title_by_name.get(self.sheet_var.get(), self.sheet_var.get())
+        self.sheet_display_var.set(current_title)
+
+    def _on_sheet_combo_selected(self):
+        selected_title = str(self.sheet_display_var.get() or "").strip()
+        target_sheet = self._sheet_name_by_title.get(selected_title) or self.sheet_var.get()
+        if target_sheet != self.sheet_var.get():
+            self.sheet_var.set(target_sheet)
+        self._render_selected_sheet()
 
     def _build_header(self):
         header = tk.Frame(self, bg=COLOR_LIGHT_BG)
@@ -20821,21 +21498,28 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         controls = tk.Frame(self, bg=COLOR_LIGHT_BG)
         controls.pack(fill="x", padx=FORM_PADX, pady=(0, 8))
 
-        tk.Label(controls, text="Hoja:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(
+        tk.Label(controls, text="Etapa:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).pack(
             side="left", padx=(0, 6)
         )
         self.sheet_combo = ttk.Combobox(
             controls,
-            textvariable=self.sheet_var,
-            values=self.sheet_options,
+            textvariable=self.sheet_display_var,
+            values=(),
             state="readonly",
             width=45,
         )
         self.sheet_combo.pack(side="left")
-        self.sheet_combo.bind("<<ComboboxSelected>>", lambda _e: self._render_selected_sheet())
+        self.sheet_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_sheet_combo_selected())
 
-        self.save_button = ttk.Button(controls, text="Guardar hoja", command=self._save_current_sheet)
+        self.save_button = ttk.Button(controls, text="Guardar etapa", command=self._save_current_sheet)
         self.save_button.pack(side="right")
+        self.continue_stage_button = ttk.Button(
+            controls,
+            text="Ir a etapa sugerida",
+            style="Primary.TButton",
+            command=self._go_to_suggested_stage,
+        )
+        self.continue_stage_button.pack(side="right", padx=(0, 8))
         ttk.Button(controls, text="Cerrar", command=self._close_editor).pack(side="right", padx=(0, 8))
         ttk.Button(controls, text="Abrir en Drive", command=self._open_excel).pack(
             side="right", padx=(0, 8)
@@ -20852,6 +21536,8 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             wraplength=1140,
         )
         self.status_label_widget.pack(fill="x", padx=FORM_PADX, pady=(0, 8))
+        self.stage_overview_container = tk.Frame(self, bg=COLOR_LIGHT_BG)
+        self.stage_overview_container.pack(fill="x", padx=FORM_PADX, pady=(0, 10))
 
     def _build_scroller(self):
         outer = tk.Frame(self, bg=COLOR_LIGHT_BG)
@@ -20873,11 +21559,336 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             "<Configure>",
             lambda e: self.canvas.itemconfig(self.canvas_window_id, width=e.width),
         )
-        self._bind_mousewheel(self.canvas, self.content_frame)
+        self._bind_mousewheel(self.canvas, self)
+
+    def _refresh_scroller_layout(self):
+        try:
+            self.update_idletasks()
+        except Exception:
+            pass
+        try:
+            bbox = self.canvas.bbox("all")
+            if bbox:
+                self.canvas.configure(scrollregion=bbox)
+        except Exception:
+            pass
+
+    def _normalize_overwrite_value(self, value):
+        return str(value or "").strip()
+
+    def _bind_overwrite_refresh_widget(self, widget):
+        if widget is None or getattr(widget, "_followup_overwrite_bound", False):
+            return
+
+        def _refresh(_event=None):
+            self._refresh_overwrite_highlights()
+
+        for sequence in ("<KeyRelease>", "<FocusOut>", "<<ComboboxSelected>>", "<<Modified>>"):
+            try:
+                widget.bind(sequence, _refresh, add="+")
+            except Exception:
+                continue
+        widget._followup_overwrite_bound = True
+
+    def _set_widget_overwrite_state(self, widget, changed):
+        if widget is None:
+            return
+        try:
+            klass = str(widget.winfo_class() or "")
+        except Exception:
+            klass = ""
+        if klass in {"TEntry", "TCombobox"}:
+            original_style = getattr(widget, "_overwrite_original_style", None)
+            if original_style is None:
+                try:
+                    original_style = str(widget.cget("style") or "")
+                except Exception:
+                    original_style = ""
+                widget._overwrite_original_style = original_style
+            target_style = f"Changed.{klass}" if changed else original_style
+            try:
+                widget.configure(style=target_style)
+            except Exception:
+                pass
+            return
+        if klass in {"Entry", "Text", "DateEntry"}:
+            original_bg = getattr(widget, "_overwrite_original_bg", None)
+            if original_bg is None:
+                try:
+                    original_bg = widget.cget("bg")
+                except Exception:
+                    original_bg = "white"
+                widget._overwrite_original_bg = original_bg
+            try:
+                state = str(widget.cget("state") or "")
+            except Exception:
+                state = ""
+            if klass == "Entry" and state == "readonly":
+                original_readonly_bg = getattr(widget, "_overwrite_original_readonly_bg", None)
+                if original_readonly_bg is None:
+                    try:
+                        original_readonly_bg = widget.cget("readonlybackground")
+                    except Exception:
+                        original_readonly_bg = original_bg
+                    widget._overwrite_original_readonly_bg = original_readonly_bg
+                try:
+                    widget.configure(
+                        readonlybackground=COLOR_FIELD_WARNING_BG if changed else original_readonly_bg
+                    )
+                except Exception:
+                    pass
+                return
+            try:
+                widget.configure(bg=COLOR_FIELD_WARNING_BG if changed else original_bg)
+            except Exception:
+                pass
+
+    def _reset_overwrite_tracking(self, remote_payload=None):
+        self._sheet_remote_payload = copy.deepcopy(remote_payload or {})
+        self._overwrite_fields = []
+
+    def _register_overwrite_field(self, *, label, getter, widgets=None, original_value=""):
+        entry = {
+            "label": str(label or "").strip(),
+            "getter": getter,
+            "widgets": list(widgets or []),
+            "original_value": self._normalize_overwrite_value(original_value),
+        }
+        self._overwrite_fields.append(entry)
+        for widget in list(entry["widgets"]):
+            self._bind_overwrite_refresh_widget(widget)
+
+    def _get_overwrite_changes(self):
+        changes = []
+        for entry in list(self._overwrite_fields or []):
+            getter = entry.get("getter")
+            try:
+                current_value = getter() if callable(getter) else ""
+            except Exception:
+                current_value = ""
+            current = self._normalize_overwrite_value(current_value)
+            original = self._normalize_overwrite_value(entry.get("original_value"))
+            changed = bool(original) and current != original
+            for widget in list(entry.get("widgets") or []):
+                self._set_widget_overwrite_state(widget, changed)
+            if changed:
+                changes.append(
+                    {
+                        "label": str(entry.get("label") or "").strip(),
+                        "original": original,
+                        "current": current,
+                    }
+                )
+        return changes
+
+    def _refresh_overwrite_highlights(self):
+        self._get_overwrite_changes()
+
+    def _build_overwrite_warning_message(self, changes):
+        labels = [str((item or {}).get("label") or "").strip() for item in list(changes or []) if str((item or {}).get("label") or "").strip()]
+        if not labels:
+            return ""
+        preview = labels[:8]
+        details = "\n".join(f"- {label}" for label in preview)
+        remaining = len(labels) - len(preview)
+        if remaining > 0:
+            details += f"\n- y {remaining} campo(s) más"
+        return (
+            "Se van a sobreescribir datos que ya estaban diligenciados en esta etapa:\n\n"
+            f"{details}\n\n"
+            "Los campos marcados en amarillo cambiarán su valor actual.\n"
+            "¿Quieres guardar estos cambios?"
+        )
+
+    def _confirm_overwrite_changes(self):
+        changes = self._get_overwrite_changes()
+        if not changes:
+            return True
+        labels = [str(item.get("label") or "").strip() for item in changes if str(item.get("label") or "").strip()]
+        preview = ", ".join(labels[:4])
+        if len(labels) > 4:
+            preview = f"{preview} y {len(labels) - 4} campo(s) más"
+        _show_inline_feedback(
+            self,
+            f"Vas a sobreescribir datos ya diligenciados: {preview}. Confirma si quieres guardarlos.",
+            state="warning",
+        )
+        return bool(
+            messagebox.askyesno(
+                "Confirmar sobreescritura",
+                self._build_overwrite_warning_message(changes),
+                parent=self,
+            )
+        )
+
+    def _go_to_suggested_stage(self):
+        suggested_sheet = str((self.workflow or {}).get("suggested_sheet") or "").strip()
+        if not suggested_sheet or suggested_sheet == self.sheet_var.get():
+            return
+        if suggested_sheet == seguimientos.SHEET_FINAL:
+            self.status_var.set("El resultado final es de solo lectura.")
+        self.sheet_var.set(suggested_sheet)
+        self._refresh_sheet_selector_model()
+        self._render_selected_sheet()
+
+    def _refresh_continue_stage_button(self):
+        button = self.continue_stage_button
+        if button is None:
+            return
+        suggested_sheet = str((self.workflow or {}).get("suggested_sheet") or "").strip()
+        current_sheet = str(self.sheet_var.get() or "").strip()
+        if not suggested_sheet or suggested_sheet == current_sheet:
+            button.pack_forget()
+            return
+        suggested_title = _friendly_followup_sheet_title(
+            suggested_sheet,
+            {"stage_model": self.sheet_stage_model, "base_sheet_name": self.base_sheet_name},
+            base_sheet_name=self.base_sheet_name,
+        )
+        button.configure(text=f"Continuar a {suggested_title}")
+        button.pack(side="right", padx=(0, 8))
+
+    def _render_stage_overview(self):
+        container = self.stage_overview_container
+        if container is None:
+            return
+        for child in container.winfo_children():
+            child.destroy()
+        stage_model = list(self.sheet_stage_model or [])
+        if not stage_model:
+            return
+
+        current_title = _friendly_followup_sheet_title(
+            (self.workflow or {}).get("suggested_sheet"),
+            {"stage_model": stage_model, "base_sheet_name": self.base_sheet_name},
+            base_sheet_name=self.base_sheet_name,
+        ) or "Pendiente"
+        history_titles = [
+            str((entry or {}).get("title") or "")
+            for entry in stage_model
+            if str((entry or {}).get("stage_id") or "").startswith("followup_")
+            and str((entry or {}).get("status") or "") == "completed"
+        ]
+        cards = [
+            {
+                "title": "Ficha inicial del proceso",
+                "status": next(
+                    (
+                        dict(entry)
+                        for entry in stage_model
+                        if str((entry or {}).get("stage_id") or "") == "base_process"
+                    ),
+                    {},
+                ),
+            },
+            {
+                "title": "Seguimiento actual",
+                "status": {
+                    "status": next(
+                        (
+                            str((entry or {}).get("status") or "")
+                            for entry in stage_model
+                            if str((entry or {}).get("sheet_name") or "").strip()
+                            == str((self.workflow or {}).get("suggested_sheet") or "").strip()
+                        ),
+                        "pending",
+                    ),
+                    "coverage_percent": next(
+                        (
+                            int((entry or {}).get("coverage_percent") or 0)
+                            for entry in stage_model
+                            if str((entry or {}).get("sheet_name") or "").strip()
+                            == str((self.workflow or {}).get("suggested_sheet") or "").strip()
+                        ),
+                        0,
+                    ),
+                    "is_suggested": True,
+                    "helper_text": current_title,
+                },
+            },
+            {
+                "title": "Historial de seguimientos",
+                "status": {
+                    "status": "completed" if history_titles else "pending",
+                    "coverage_percent": 100 if history_titles else 0,
+                    "is_suggested": False,
+                    "helper_text": ", ".join(history_titles) if history_titles else "Aún no hay seguimientos completos.",
+                },
+            },
+            {
+                "title": "Resultado final",
+                "status": next(
+                    (
+                        dict(entry)
+                        for entry in stage_model
+                        if str((entry or {}).get("stage_id") or "") == "final_result"
+                    ),
+                    {},
+                ),
+            },
+        ]
+
+        for index, item in enumerate(cards):
+            status_entry = dict(item.get("status") or {})
+            palette = _get_followup_stage_palette(
+                status_entry.get("status"),
+                is_suggested=bool(status_entry.get("is_suggested")),
+            )
+            card = tk.Frame(
+                container,
+                bg=palette["bg"],
+                highlightbackground=palette["accent"],
+                highlightthickness=2,
+                bd=0,
+            )
+            card.grid(row=0, column=index, sticky="nsew", padx=(0 if index == 0 else 8, 0))
+            container.grid_columnconfigure(index, weight=1)
+            inner = tk.Frame(card, bg=palette["bg"], padx=12, pady=10)
+            inner.pack(fill="both", expand=True)
+            tk.Label(
+                inner,
+                text=item.get("title") or "",
+                font=FONT_LABEL,
+                fg=palette["accent"],
+                bg=palette["bg"],
+                anchor="w",
+                justify="left",
+            ).pack(anchor="w")
+            tk.Label(
+                inner,
+                text=_format_followup_stage_status(
+                    status_entry.get("status"),
+                    coverage_percent=status_entry.get("coverage_percent"),
+                    is_suggested=bool(status_entry.get("is_suggested")),
+                ),
+                font=("Arial", 9, "bold"),
+                fg=palette["muted"],
+                bg=palette["bg"],
+                anchor="w",
+                justify="left",
+            ).pack(anchor="w", pady=(4, 2))
+            tk.Label(
+                inner,
+                text=str(status_entry.get("helper_text") or ""),
+                font=("Arial", 9),
+                fg="#333333",
+                bg=palette["bg"],
+                anchor="w",
+                justify="left",
+                wraplength=240,
+            ).pack(anchor="w")
 
     def _clear_content(self):
         for child in self.content_frame.winfo_children():
             child.destroy()
+
+    def _close_editor(self):
+        try:
+            self._schedule_sheet_autosave(delay_ms=0)
+            self._flush_pending_sheet_autosave()
+        except Exception as exc:
+            _log_capture(f"followup_editor_local_draft_close_failed case={self.case_target!r} err={exc}")
+        self.destroy()
 
     def _cancel_sheet_autosave_timer(self):
         after_id = getattr(self, "_sheet_autosave_after_id", None)
@@ -20898,60 +21909,81 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         self._sheet_autosave_trace_tokens = []
 
     def _bind_sheet_autosave_var(self, var):
-        if not isinstance(var, tk.Variable):
-            return
-        try:
-            token = var.trace_add("write", lambda *_args, w=self: w._schedule_sheet_autosave())
-        except Exception:
-            return
-        self._sheet_autosave_trace_tokens.append((var, token))
+        return
 
-    def _bind_sheet_autosave_widget(self, widget, *, include_key_release=True, include_focus_out=True):
+    def _bind_sheet_autosave_widget(self, widget, *, include_focus_out=True):
         if widget is None or getattr(widget, "_seguimiento_autosave_bound", False):
             return
-        if include_key_release:
-            try:
-                widget.bind(
-                    "<KeyRelease>",
-                    lambda _event=None, w=self: w._schedule_sheet_autosave(),
-                    add="+",
-                )
-            except Exception:
-                pass
         if include_focus_out:
             try:
                 widget.bind(
                     "<FocusOut>",
-                    lambda _event=None, w=self: w._schedule_sheet_autosave(delay_ms=250),
+                    lambda _event=None, w=self: w._schedule_sheet_autosave(),
                     add="+",
                 )
             except Exception:
                 pass
         widget._seguimiento_autosave_bound = True
 
+    def _bind_sheet_autosave_date_field(self, field):
+        if field is None or getattr(field, "_seguimiento_autosave_bound", False):
+            return
+        self._bind_sheet_autosave_widget(field.entry)
+        self._bind_sheet_autosave_widget(field.select_button)
+        self._bind_sheet_autosave_widget(field.clear_button)
+        for button in list(getattr(field, "quick_buttons", []) or []):
+            self._bind_sheet_autosave_widget(button, include_focus_out=False)
+
+        original_clear = field.clear
+        original_open_picker = field.open_picker
+        original_quick_set = field._set_quick_value
+
+        def _clear_and_schedule():
+            original_clear()
+            self._schedule_sheet_autosave()
+            self._refresh_overwrite_highlights()
+
+        def _open_picker_and_schedule():
+            before = field.get()
+            original_open_picker()
+            if field.get() != before:
+                self._schedule_sheet_autosave()
+                self._refresh_overwrite_highlights()
+
+        def _set_quick_value_and_schedule(value):
+            before = field.get()
+            original_quick_set(value)
+            if field.get() != before:
+                self._schedule_sheet_autosave()
+                self._refresh_overwrite_highlights()
+
+        field.clear = _clear_and_schedule
+        field.open_picker = _open_picker_and_schedule
+        field._set_quick_value = _set_quick_value_and_schedule
+        try:
+            field.select_button.configure(command=field.open_picker)
+        except Exception:
+            pass
+        try:
+            field.clear_button.configure(command=field.clear)
+        except Exception:
+            pass
+        for button, (_label, value) in zip(list(getattr(field, "quick_buttons", []) or []), list(getattr(field, "quick_actions", []) or [])):
+            try:
+                button.configure(command=lambda resolved=value, current_field=field: current_field._set_quick_value(resolved))
+            except Exception:
+                continue
+        field._seguimiento_autosave_bound = True
+
     def _install_sheet_autosave_bindings(self):
         self._clear_sheet_autosave_traces()
-
-        for var in list(self.base_vars.values()) + list(self.follow_vars.values()):
-            self._bind_sheet_autosave_var(var)
-        for var in list(self.follow_item_auto) + list(self.follow_item_emp) + list(self.follow_emp_eval):
-            self._bind_sheet_autosave_var(var)
-
-        for widget in list(self.base_text.values()) + list(self.follow_text.values()):
-            self._bind_sheet_autosave_widget(widget)
-        for widget in (
-            list(self.base_func_entries_1)
-            + list(self.base_func_entries_2)
-            + list(self.follow_item_obs)
-            + list(self.follow_emp_obs)
-        ):
-            self._bind_sheet_autosave_widget(widget)
-        for name_entry, cargo_entry in list(self.follow_asistentes):
-            self._bind_sheet_autosave_widget(name_entry)
-            self._bind_sheet_autosave_widget(cargo_entry)
+        for _path, widget in _iter_widget_paths(self.content_frame):
+            if isinstance(widget, (tk.Entry, tk.Text, ttk.Combobox)):
+                self._bind_sheet_autosave_widget(widget)
         for field in list(self.base_date_widgets.values()) + list(self.base_dates_1) + list(self.base_dates_2):
-            if hasattr(field, "var"):
-                self._bind_sheet_autosave_var(field.var)
+            self._bind_sheet_autosave_date_field(field)
+        if self.follow_date_widget is not None:
+            self._bind_sheet_autosave_date_field(self.follow_date_widget)
 
     def _build_sheet_save_request(self, *, sheet_name=None, validate_base=False):
         sheet = str(sheet_name or self._rendered_sheet_name or self.sheet_var.get() or "").strip()
@@ -21005,7 +22037,18 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             return ""
         return hashlib.sha256(encoded).hexdigest()
 
-    def _schedule_sheet_autosave(self, delay_ms=700):
+    def _load_local_sheet_draft_payload(self, sheet_name, *, save_kind):
+        draft = _get_followup_local_sheet_draft(self.case_target, sheet_name)
+        if not isinstance(draft, dict):
+            return None
+        if str(draft.get("save_kind") or "").strip() != str(save_kind or "").strip():
+            return None
+        payload = draft.get("payload")
+        if not isinstance(payload, dict):
+            return None
+        return copy.deepcopy(payload)
+
+    def _schedule_sheet_autosave(self, delay_ms=None):
         if self._sheet_autosave_suspend:
             return False
         try:
@@ -21021,18 +22064,20 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             return False
         self._sheet_autosave_pending_request = request
         self._cancel_sheet_autosave_timer()
-        if self._sheet_autosave_busy:
-            return True
 
         def _run():
             self._sheet_autosave_after_id = None
             self._flush_pending_sheet_autosave()
 
         try:
-            if int(delay_ms or 0) <= 0:
+            resolved_delay = self._sheet_autosave_debounce_ms if delay_ms is None else int(delay_ms or 0)
+        except Exception:
+            resolved_delay = self._sheet_autosave_debounce_ms
+        try:
+            if int(resolved_delay or 0) <= 0:
                 self._sheet_autosave_after_id = self.after_idle(_run)
             else:
-                self._sheet_autosave_after_id = self.after(int(delay_ms), _run)
+                self._sheet_autosave_after_id = self.after(int(resolved_delay), _run)
         except Exception:
             self._sheet_autosave_after_id = None
             return False
@@ -21041,7 +22086,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
     def _flush_pending_sheet_autosave(self):
         self._cancel_sheet_autosave_timer()
         request = dict(self._sheet_autosave_pending_request or {})
-        if not request or self._sheet_autosave_busy:
+        if not request:
             return False
         fingerprint = str(request.get("fingerprint") or "")
         if fingerprint and fingerprint == str(self._sheet_autosave_last_fingerprint or ""):
@@ -21049,34 +22094,31 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             return False
 
         sheet_label = str(request.get("sheet") or "").strip()
-        self.status_var.set(f"Autoguardando hoja: {sheet_label}...")
-
-        def _worker():
-            return self._execute_sheet_save_worker(request, trigger="autosave")
-
-        def _on_success(result):
-            saved_fingerprint = str((result or {}).get("fingerprint") or fingerprint or "")
-            if saved_fingerprint:
-                self._sheet_autosave_last_fingerprint = saved_fingerprint
-            current_fingerprint = str((self._sheet_autosave_pending_request or {}).get("fingerprint") or "")
-            if current_fingerprint == saved_fingerprint:
-                self._sheet_autosave_pending_request = None
-            self.status_var.set(f"Autoguardado en hoja: {sheet_label}")
-            next_fingerprint = str((self._sheet_autosave_pending_request or {}).get("fingerprint") or "")
-            if next_fingerprint and next_fingerprint != str(self._sheet_autosave_last_fingerprint or ""):
-                self._schedule_sheet_autosave(delay_ms=250)
-
-        def _on_error(exc):
-            self.status_var.set(f"No se pudo autoguardar la hoja: {sheet_label}")
+        stage_title = self._sheet_title_by_name.get(sheet_label, sheet_label)
+        try:
+            saved = _save_followup_local_sheet_draft(
+                self.case_target,
+                request,
+                metadata=self._build_local_draft_metadata(),
+            )
+        except Exception as exc:
+            self.status_var.set(f"No se pudo guardar el borrador local de {stage_title}.")
             _show_inline_feedback(self, _log_user_error("save_sheet", exc), state="warning")
-
-        return _run_async_ui_task(
-            self,
-            busy_attr="_sheet_autosave_busy",
-            worker=_worker,
-            on_success=_on_success,
-            on_error=_on_error,
-        )
+            return False
+        if not saved:
+            return False
+        self._sheet_autosave_last_fingerprint = fingerprint
+        current_fingerprint = str((self._sheet_autosave_pending_request or {}).get("fingerprint") or "")
+        if current_fingerprint == fingerprint:
+            self._sheet_autosave_pending_request = None
+        self.status_var.set(f"Borrador local guardado en {stage_title}.")
+        hub = self._get_hub_window()
+        if hub and hasattr(hub, "_refresh_drafts_badge"):
+            try:
+                hub._refresh_drafts_badge()
+            except Exception:
+                pass
+        return True
 
     def _execute_sheet_save_worker(self, request, *, trigger, progress=None):
         request = dict(request or {})
@@ -21091,7 +22133,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
 
         _progress("Preparando los datos de la hoja...", 12)
         if save_kind == "base":
-            _progress("Guardando la hoja base...", 42)
+            _progress("Guardando la ficha inicial...", 42)
             try:
                 seguimientos.save_base_payload(self.case_target, payload)
             except PermissionError as exc:
@@ -21151,7 +22193,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         entry.grid(row=row, column=1, sticky="w", pady=3)
         return entry
 
-    def _add_labeled_date(self, parent, row, label, var, width=20):
+    def _add_labeled_date(self, parent, row, label, var, width=20, **field_kwargs):
         tk.Label(parent, text=label, font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
             row=row, column=0, sticky="w", padx=(0, 8), pady=3
         )
@@ -21160,6 +22202,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             host=self,
             textvariable=var,
             width=width,
+            **field_kwargs,
         )
         date_field.grid(row=row, column=1, sticky="w", pady=3)
         date_field.set(var.get())
@@ -21255,6 +22298,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         if previous_sheet and previous_sheet != target_sheet:
             self._schedule_sheet_autosave(delay_ms=0)
             self._flush_pending_sheet_autosave()
+        self._refresh_sheet_selector_model()
         self._sheet_autosave_suspend = True
         self._clear_sheet_autosave_traces()
         self._clear_content()
@@ -21264,14 +22308,18 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         elif sheet.startswith(seguimientos.SHEET_PREFIX):
             match = re.search(r"(\d+)$", sheet)
             if not match:
-                self.status_var.set("No se pudo identificar número de seguimiento.")
+                self.status_var.set("No se pudo identificar la etapa de seguimiento.")
                 return
             self._render_sheet_followup(int(match.group(1)))
         else:
             self._render_sheet_final()
         self._apply_sheet_access_rules()
         self._rendered_sheet_name = sheet
+        self.sheet_display_var.set(self._sheet_title_by_name.get(sheet, sheet))
+        self._render_stage_overview()
+        self._refresh_continue_stage_button()
         self._install_sheet_autosave_bindings()
+        self._refresh_overwrite_highlights()
         self._sheet_autosave_pending_request = None
         try:
             current_request = self._build_sheet_save_request(sheet_name=sheet, validate_base=False)
@@ -21279,6 +22327,11 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             current_request = None
         self._sheet_autosave_last_fingerprint = self._fingerprint_sheet_request(current_request)
         self._sheet_autosave_suspend = False
+        self._refresh_scroller_layout()
+        try:
+            self.after_idle(self._refresh_scroller_layout)
+        except Exception:
+            pass
         self.canvas.yview_moveto(0)
 
     def _refresh_workflow_state(self, preferred_sheet=None):
@@ -21302,8 +22355,6 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             or seguimientos.SHEET_BASE
         )
         self.sheet_options = list(self.workflow.get("visible_sheets") or [self.base_sheet_name])
-        if getattr(self, "sheet_combo", None) is not None:
-            self.sheet_combo["values"] = self.sheet_options
         target_sheet = preferred_sheet or self.sheet_var.get().strip()
         if target_sheet not in self.sheet_options:
             target_sheet = (
@@ -21311,6 +22362,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
                 or (self.sheet_options[0] if self.sheet_options else self.base_sheet_name)
             )
         self.sheet_var.set(target_sheet)
+        self._refresh_sheet_selector_model()
 
     def _run_loading_job(
         self,
@@ -21445,6 +22497,8 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         self._set_widget_edit_state(self.content_frame, editable)
         current_sheet = self.sheet_var.get().strip()
         suggested_sheet = str((self.workflow or {}).get("suggested_sheet") or "").strip()
+        current_title = self._sheet_title_by_name.get(current_sheet, current_sheet)
+        suggested_title = self._sheet_title_by_name.get(suggested_sheet, suggested_sheet)
 
         if current_sheet == str(self.base_sheet_name or "").strip():
             self._apply_base_followup_date_states(0)
@@ -21452,31 +22506,43 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             self.save_button.config(state="normal" if editable else "disabled")
         if not editable:
             if current_sheet == seguimientos.SHEET_FINAL:
-                self.status_var.set("Ponderado final es de solo revisión.")
+                self.status_var.set("Resultado final es de solo lectura.")
             return
         if current_sheet == str(self.base_sheet_name or "").strip():
             if suggested_sheet == current_sheet:
-                self.status_var.set(str((self.workflow or {}).get("message") or "Editando hoja 9."))
+                self.status_var.set(
+                    str((self.workflow or {}).get("message") or "Editando la ficha inicial del proceso.")
+                )
             else:
                 self.status_var.set(
-                    f"Editando hoja 9. Las fechas de seguimiento se alimentan desde cada seguimiento. "
-                    f"Siguiente sugerida: {suggested_sheet}."
+                    "Editando la ficha inicial del proceso. "
+                    f"Las fechas del historial se alimentan desde cada seguimiento. "
+                    f"Etapa sugerida actual: {suggested_title}."
                 )
             return
         if current_sheet != suggested_sheet and suggested_sheet:
             self.status_var.set(
-                f"Editando {current_sheet}. Sugerida actual: {suggested_sheet}. Puedes continuar aquí si lo necesitas."
+                f"Editando {current_title}. Etapa sugerida actual: {suggested_title}. "
+                "Puedes continuar aquí si necesitas corregir información."
             )
             return
         if (self.workflow or {}).get("message"):
             self.status_var.set(str((self.workflow or {}).get("message")))
 
     def _render_sheet_base(self):
-        payload = seguimientos.get_base_payload(self.case_target)
+        remote_payload = seguimientos.get_base_payload(self.case_target)
+        payload = copy.deepcopy(remote_payload)
+        local_payload = self._load_local_sheet_draft_payload(self.base_sheet_name, save_kind="base")
+        if local_payload:
+            payload = _merge_followup_local_payload(payload, local_payload, save_kind="base")
         self.base_company_widgets = {}
+        self.base_field_widgets = {}
         self.base_date_widgets = {}
+        self.base_date_na_button = None
         self.base_modalidad_widget = None
         self.company_name_combo = None
+        self.follow_date_widget = None
+        self._reset_overwrite_tracking(remote_payload)
         self.base_vars = {
             k: tk.StringVar(value=str(payload.get(k, "")))
             for k in [
@@ -21512,31 +22578,37 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             ]
         }
 
-        top = tk.LabelFrame(
+        visit = tk.LabelFrame(
             self.content_frame,
-            text="Hoja base - Datos generales",
+            text="Datos de visita",
             bg=COLOR_LIGHT_BG,
             font=FONT_LABEL,
             padx=12,
             pady=10,
         )
-        top.pack(fill="x", pady=(0, 10))
-        top.grid_columnconfigure(1, weight=1)
+        visit.pack(fill="x", pady=(0, 10))
+        visit.grid_columnconfigure(1, weight=1)
 
         row = 0
         self.base_date_widgets["fecha_visita"] = self._add_labeled_date(
-            top,
+            visit,
             row,
-            "Fecha visita:",
+            "Fecha de visita:",
             self.base_vars["fecha_visita"],
             width=18,
         )
+        self._register_overwrite_field(
+            label="Fecha de visita",
+            getter=lambda field=self.base_date_widgets["fecha_visita"]: field.get().strip(),
+            widgets=[self.base_date_widgets["fecha_visita"].entry],
+            original_value=remote_payload.get("fecha_visita"),
+        )
         row += 1
-        tk.Label(top, text="Modalidad:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
+        tk.Label(visit, text="Modalidad:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
             row=row, column=0, sticky="w", padx=(0, 8), pady=3
         )
         mod_combo = ttk.Combobox(
-            top,
+            visit,
             textvariable=self.base_vars["modalidad"],
             values=seguimientos.MODALIDAD_OPTIONS,
             state="readonly",
@@ -21544,7 +22616,26 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         )
         mod_combo.grid(row=row, column=1, sticky="w", pady=3)
         self.base_modalidad_widget = mod_combo
-        row += 1
+        self.base_field_widgets["modalidad"] = mod_combo
+        self._register_overwrite_field(
+            label="Modalidad",
+            getter=lambda var=self.base_vars["modalidad"]: var.get().strip(),
+            widgets=[mod_combo],
+            original_value=remote_payload.get("modalidad"),
+        )
+
+        company = tk.LabelFrame(
+            self.content_frame,
+            text="Empresa",
+            bg=COLOR_LIGHT_BG,
+            font=FONT_LABEL,
+            padx=12,
+            pady=10,
+        )
+        company.pack(fill="x", pady=(0, 10))
+        company.grid_columnconfigure(1, weight=1)
+
+        row = 0
         for field_id, label, width in [
             ("nombre_empresa", "Nombre empresa:", 72),
             ("nit_empresa", "NIT:", 25),
@@ -21556,11 +22647,11 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             ("cargo", "Cargo empresa:", 45),
             ("asesor", "Asesor:", 40),
             ("sede_empresa", "Sede Compensar:", 30),
-            ("caja_compensacion", "Empresa afiliada a Caja de Compensación:", 30),
+            ("caja_compensacion", "Caja de compensación:", 30),
             ("profesional_asignado", "Profesional asignado RECA:", 40),
         ]:
             widget = self._add_labeled_entry(
-                top,
+                company,
                 row,
                 label,
                 self.base_vars[field_id],
@@ -21568,6 +22659,13 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
                 readonly=True,
             )
             self.base_company_widgets[field_id] = widget
+            self.base_field_widgets[field_id] = widget
+            self._register_overwrite_field(
+                label=label.rstrip(":"),
+                getter=lambda var=self.base_vars[field_id]: var.get().strip(),
+                widgets=[widget],
+                original_value=remote_payload.get(field_id),
+            )
             row += 1
 
         vinc = tk.LabelFrame(
@@ -21594,7 +22692,14 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             ("discapacidad", "Discapacidad"),
             ("tipo_contrato", "Tipo contrato"),
         ]:
-            self._add_labeled_entry(vinc, r, f"{label}:", self.base_vars[key], width=50)
+            widget = self._add_labeled_entry(vinc, r, f"{label}:", self.base_vars[key], width=50)
+            self.base_field_widgets[key] = widget
+            self._register_overwrite_field(
+                label=label,
+                getter=lambda var=self.base_vars[key]: var.get().strip(),
+                widgets=[widget],
+                original_value=remote_payload.get(key),
+            )
             r += 1
         self.base_date_widgets["fecha_firma_contrato"] = self._add_labeled_date(
             vinc,
@@ -21602,6 +22707,12 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             "Fecha firma contrato:",
             self.base_vars["fecha_firma_contrato"],
             width=18,
+        )
+        self._register_overwrite_field(
+            label="Fecha firma contrato",
+            getter=lambda field=self.base_date_widgets["fecha_firma_contrato"]: field.get().strip(),
+            widgets=[self.base_date_widgets["fecha_firma_contrato"].entry],
+            original_value=remote_payload.get("fecha_firma_contrato"),
         )
         r += 1
         self.base_date_widgets["fecha_inicio_contrato"] = self._add_labeled_date(
@@ -21611,6 +22722,12 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             self.base_vars["fecha_inicio_contrato"],
             width=18,
         )
+        self._register_overwrite_field(
+            label="Fecha inicio contrato",
+            getter=lambda field=self.base_date_widgets["fecha_inicio_contrato"]: field.get().strip(),
+            widgets=[self.base_date_widgets["fecha_inicio_contrato"].entry],
+            original_value=remote_payload.get("fecha_inicio_contrato"),
+        )
         r += 1
         self.base_date_widgets["fecha_fin_contrato"] = self._add_labeled_date(
             vinc,
@@ -21618,37 +22735,57 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             "Fecha fin contrato:",
             self.base_vars["fecha_fin_contrato"],
             width=18,
+            allow_text_values=True,
+            quick_actions=[("No aplica", "No aplica")],
+        )
+        self.base_date_na_button = next(
+            iter(getattr(self.base_date_widgets["fecha_fin_contrato"], "quick_buttons", []) or []),
+            None,
+        )
+        self._register_overwrite_field(
+            label="Fecha fin contrato",
+            getter=lambda field=self.base_date_widgets["fecha_fin_contrato"]: field.get().strip(),
+            widgets=[
+                self.base_date_widgets["fecha_fin_contrato"].entry,
+                *list(getattr(self.base_date_widgets["fecha_fin_contrato"], "quick_buttons", []) or []),
+            ],
+            original_value=remote_payload.get("fecha_fin_contrato"),
         )
         r += 1
 
-        txt = tk.LabelFrame(
+        support = tk.LabelFrame(
             self.content_frame,
-            text="Apoyos / Ajustes",
+            text="Funciones y apoyos",
             bg=COLOR_LIGHT_BG,
             font=FONT_LABEL,
             padx=12,
             pady=10,
         )
-        txt.pack(fill="x", pady=(0, 10))
+        support.pack(fill="x", pady=(0, 10))
+        tk.Label(
+            support,
+            text="Apoyos y/o ajustes razonables",
+            font=FONT_LABEL,
+            bg=COLOR_LIGHT_BG,
+        ).pack(anchor="w")
         self._add_dictation_subsection(
-            txt,
+            support,
             title="Apoyos y/o ajustes razonables requeridos:",
             store=self.base_text,
             key="apoyos_ajustes",
             field_id="base:apoyos_ajustes",
             initial_value=payload.get("apoyos_ajustes", ""),
             height=4,
-            bottom_pad=0,
+            bottom_pad=10,
+        )
+        self._register_overwrite_field(
+            label="Apoyos y/o ajustes razonables",
+            getter=lambda widget=self.base_text["apoyos_ajustes"]: widget.get("1.0", tk.END).strip(),
+            widgets=[self.base_text["apoyos_ajustes"]],
+            original_value=remote_payload.get("apoyos_ajustes"),
         )
 
-        funcs = tk.LabelFrame(
-            self.content_frame,
-            text="Funciones del vinculado",
-            bg=COLOR_LIGHT_BG,
-            font=FONT_LABEL,
-            padx=12,
-            pady=10,
-        )
+        funcs = tk.Frame(support, bg=COLOR_LIGHT_BG)
         funcs.pack(fill="x", pady=(0, 10))
 
         tk.Label(funcs, text="Funciones 1 a 5", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
@@ -21667,56 +22804,105 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             if i < len(vals_1):
                 e1.insert(0, vals_1[i] or "")
             self.base_func_entries_1.append(e1)
+            self._register_overwrite_field(
+                label=f"Función {i + 1}",
+                getter=lambda entry=e1: entry.get().strip(),
+                widgets=[e1],
+                original_value=(remote_payload.get("funciones_1_5") or [""] * 5)[i] if i < len(remote_payload.get("funciones_1_5") or []) else "",
+            )
 
             e2 = tk.Entry(funcs, width=60)
             e2.grid(row=i + 1, column=1, sticky="w", padx=(18, 0), pady=2)
             if i < len(vals_2):
                 e2.insert(0, vals_2[i] or "")
             self.base_func_entries_2.append(e2)
+            self._register_overwrite_field(
+                label=f"Función {i + 6}",
+                getter=lambda entry=e2: entry.get().strip(),
+                widgets=[e2],
+                original_value=(remote_payload.get("funciones_6_10") or [""] * 5)[i] if i < len(remote_payload.get("funciones_6_10") or []) else "",
+            )
 
-        dates = tk.LabelFrame(
-            self.content_frame,
-            text="Fechas de seguimiento (automáticas)",
-            bg=COLOR_LIGHT_BG,
+        dates = tk.Frame(support, bg=COLOR_LIGHT_BG)
+        dates.pack(fill="x")
+        tk.Label(
+            dates,
+            text="Línea de tiempo de seguimientos",
             font=FONT_LABEL,
-            padx=12,
-            pady=10,
-        )
-        dates.pack(fill="x", pady=(0, 10))
+            bg=COLOR_LIGHT_BG,
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
 
         self.base_dates_1 = []
         self.base_dates_2 = []
         d1 = payload.get("seguimiento_fechas_1_3") or []
         d2 = payload.get("seguimiento_fechas_4_6") or []
-        for i in range(3):
-            tk.Label(dates, text=f"Seguimiento {i+1}:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
-                row=i, column=0, sticky="w", pady=2
+        stage_lookup = {
+            str((entry or {}).get("stage_id") or ""): dict(entry or {})
+            for entry in list(self.sheet_stage_model or [])
+        }
+        for idx in range(1, self.max_seg + 1):
+            row_idx = ((idx - 1) // 3) + 1
+            col_idx = (idx - 1) % 3
+            entry = dict(stage_lookup.get(f"followup_{idx}") or {})
+            palette = _get_followup_stage_palette(
+                entry.get("status"),
+                is_suggested=bool(entry.get("is_suggested")),
             )
-            e1_var = tk.StringVar(value=d1[i] if i < len(d1) else "")
-            e1 = _SeguimientoDateField(dates, host=self, textvariable=e1_var, width=14)
-            e1.grid(row=i, column=1, sticky="w", padx=(0, 24), pady=2)
-            e1.set(d1[i] if i < len(d1) else "")
-            e1.always_disabled = True
-            e1.set_enabled(False)
-            self.base_dates_1.append(e1)
-
+            card = tk.Frame(
+                dates,
+                bg=palette["bg"],
+                highlightbackground=palette["accent"],
+                highlightthickness=2,
+                bd=0,
+                padx=10,
+                pady=8,
+            )
+            card.grid(row=row_idx, column=col_idx, sticky="nsew", padx=(0 if col_idx == 0 else 8, 0), pady=6)
+            dates.grid_columnconfigure(col_idx, weight=1)
             tk.Label(
-                dates, text=f"Seguimiento {i+4}:", font=FONT_LABEL, bg=COLOR_LIGHT_BG
-            ).grid(row=i, column=2, sticky="w", pady=2)
-            e2_var = tk.StringVar(value=d2[i] if i < len(d2) else "")
-            e2 = _SeguimientoDateField(dates, host=self, textvariable=e2_var, width=14)
-            e2.grid(row=i, column=3, sticky="w", pady=2)
-            e2.set(d2[i] if i < len(d2) else "")
-            e2.always_disabled = True
-            e2.set_enabled(False)
-            self.base_dates_2.append(e2)
+                card,
+                text=f"Seguimiento {idx}",
+                font=FONT_LABEL,
+                fg=palette["accent"],
+                bg=palette["bg"],
+                anchor="w",
+            ).pack(anchor="w")
+            date_value = d1[idx - 1] if idx <= 3 and idx - 1 < len(d1) else ""
+            if idx > 3:
+                date_pos = idx - 4
+                date_value = d2[date_pos] if date_pos < len(d2) else ""
+            field_var = tk.StringVar(value=date_value or "")
+            field = _SeguimientoDateField(card, host=self, textvariable=field_var, width=12)
+            field.pack(anchor="w", pady=(6, 4))
+            field.set(date_value or "")
+            field.always_disabled = True
+            field.set_enabled(False)
+            if idx <= 3:
+                self.base_dates_1.append(field)
+            else:
+                self.base_dates_2.append(field)
+            tk.Label(
+                card,
+                text=_format_followup_stage_status(
+                    entry.get("status") or "pending",
+                    coverage_percent=entry.get("coverage_percent"),
+                    is_suggested=bool(entry.get("is_suggested")),
+                ),
+                font=("Arial", 9, "bold"),
+                fg=palette["muted"],
+                bg=palette["bg"],
+                anchor="w",
+                justify="left",
+                wraplength=220,
+            ).pack(anchor="w")
 
-        self.status_var.set("Editando hoja 9.")
+        self.status_var.set("Editando la ficha inicial del proceso.")
+        self._refresh_overwrite_highlights()
 
     def _build_followup_eval_actions(self, parent, specs, *, row, columnspan):
         actions = tk.LabelFrame(
             parent,
-            text="Acciones rápidas",
+            text="Acciones rápidas de diligenciamiento",
             bg=COLOR_LIGHT_BG,
             font=FONT_LABEL,
             padx=10,
@@ -21772,20 +22958,34 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         }
         group_label = status_map.get(str(group_key or "").strip(), "evaluación")
         self.status_var.set(f"Se aplicó '{value}' a toda la {group_label}.")
+        self._refresh_overwrite_highlights()
+        self._schedule_sheet_autosave()
 
     def _render_sheet_followup(self, idx):
         self.current_followup_index = idx
-        payload = seguimientos.get_followup_payload(self.case_target, idx)
+        remote_payload = seguimientos.get_followup_payload(self.case_target, idx)
+        payload = copy.deepcopy(remote_payload)
+        local_payload = self._load_local_sheet_draft_payload(
+            f"{seguimientos.SHEET_PREFIX}{idx}",
+            save_kind="followup",
+        )
+        if local_payload:
+            payload = _merge_followup_local_payload(payload, local_payload, save_kind="followup")
         self.follow_vars = {
             "modalidad": tk.StringVar(value=str(payload.get("modalidad") or "")),
             "seguimiento_numero": tk.StringVar(value=str(idx)),
             "fecha_seguimiento": tk.StringVar(value=str(payload.get("fecha_seguimiento") or "")),
             "tipo_apoyo": tk.StringVar(value=str(payload.get("tipo_apoyo") or "")),
         }
+        self.follow_widgets = {}
         self.follow_date_widget = None
+        self.follow_item_auto_widgets = []
+        self.follow_item_emp_widgets = []
+        self.follow_emp_eval_widgets = []
+        self._reset_overwrite_tracking(remote_payload)
         top = tk.LabelFrame(
             self.content_frame,
-            text=f"SEGUIMIENTO PROCESO IL {idx}",
+            text="Datos del seguimiento",
             bg=COLOR_LIGHT_BG,
             font=FONT_LABEL,
             padx=12,
@@ -21796,13 +22996,21 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         tk.Label(top, text="Modalidad:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
             row=0, column=0, sticky="w"
         )
-        ttk.Combobox(
+        modalidad_combo = ttk.Combobox(
             top,
             textvariable=self.follow_vars["modalidad"],
             values=seguimientos.MODALIDAD_OPTIONS,
             state="readonly",
             width=24,
-        ).grid(row=0, column=1, sticky="w")
+        )
+        modalidad_combo.grid(row=0, column=1, sticky="w")
+        self.follow_widgets["modalidad"] = modalidad_combo
+        self._register_overwrite_field(
+            label="Modalidad",
+            getter=lambda var=self.follow_vars["modalidad"]: var.get().strip(),
+            widgets=[modalidad_combo],
+            original_value=remote_payload.get("modalidad"),
+        )
         tk.Label(top, text="Seguimiento #:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
             row=0, column=2, sticky="w", padx=(24, 6)
         )
@@ -21821,16 +23029,40 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             self.follow_vars["fecha_seguimiento"],
             width=18,
         )
+        self._register_overwrite_field(
+            label="Fecha seguimiento",
+            getter=lambda field=self.follow_date_widget: field.get().strip(),
+            widgets=[self.follow_date_widget.entry],
+            original_value=remote_payload.get("fecha_seguimiento"),
+        )
+        tk.Label(top, text="Tipo de apoyo:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
+            row=1, column=2, sticky="w", padx=(24, 6)
+        )
+        tipo_apoyo_combo = ttk.Combobox(
+            top,
+            textvariable=self.follow_vars["tipo_apoyo"],
+            values=seguimientos.TIPO_APOYO_OPTIONS,
+            state="readonly",
+            width=34,
+        )
+        tipo_apoyo_combo.grid(row=1, column=3, sticky="w")
+        self.follow_widgets["tipo_apoyo"] = tipo_apoyo_combo
+        self._register_overwrite_field(
+            label="Tipo de apoyo",
+            getter=lambda var=self.follow_vars["tipo_apoyo"]: var.get().strip(),
+            widgets=[tipo_apoyo_combo],
+            original_value=remote_payload.get("tipo_apoyo"),
+        )
         if idx > 1:
             ttk.Button(
                 top,
-                text="Copiar seguimiento anterior",
+                text="Copiar datos del seguimiento anterior",
                 command=self._copy_previous_followup_values,
-            ).grid(row=0, column=4, sticky="w", padx=(24, 0))
+            ).grid(row=0, column=4, rowspan=2, sticky="w", padx=(24, 0))
 
         items = tk.LabelFrame(
             self.content_frame,
-            text="Evaluación desempeño (empleado / empresa)",
+            text="Desempeño del vinculado",
             bg=COLOR_LIGHT_BG,
             font=FONT_LABEL,
             padx=12,
@@ -21859,7 +23091,9 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
 
         self.follow_item_obs = []
         self.follow_item_auto = []
+        self.follow_item_auto_widgets = []
         self.follow_item_emp = []
+        self.follow_item_emp_widgets = []
         labels = payload.get("item_labels") or []
         obs_vals = payload.get("item_observaciones") or []
         auto_vals = payload.get("item_autoevaluacion") or []
@@ -21873,6 +23107,12 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             if i < len(obs_vals):
                 e_obs.insert(0, obs_vals[i] or "")
             self.follow_item_obs.append(e_obs)
+            self._register_overwrite_field(
+                label=f"Observación del vinculado: {label}",
+                getter=lambda entry=e_obs: entry.get().strip(),
+                widgets=[e_obs],
+                original_value=(remote_payload.get("item_observaciones") or [])[i] if i < len(remote_payload.get("item_observaciones") or []) else "",
+            )
 
             v_auto = tk.StringVar(value=auto_vals[i] if i < len(auto_vals) else "")
             c_auto = ttk.Combobox(
@@ -21880,6 +23120,13 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             )
             c_auto.grid(row=i + 2, column=2, sticky="w", padx=(8, 0), pady=2)
             self.follow_item_auto.append(v_auto)
+            self.follow_item_auto_widgets.append(c_auto)
+            self._register_overwrite_field(
+                label=f"Autoevaluación: {label}",
+                getter=lambda var=v_auto: var.get().strip(),
+                widgets=[c_auto],
+                original_value=(remote_payload.get("item_autoevaluacion") or [])[i] if i < len(remote_payload.get("item_autoevaluacion") or []) else "",
+            )
 
             v_emp = tk.StringVar(value=emp_vals[i] if i < len(emp_vals) else "")
             c_emp = ttk.Combobox(
@@ -21887,60 +23134,72 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             )
             c_emp.grid(row=i + 2, column=3, sticky="w", padx=(8, 0), pady=2)
             self.follow_item_emp.append(v_emp)
+            self.follow_item_emp_widgets.append(c_emp)
+            self._register_overwrite_field(
+                label=f"Evaluación de empresa: {label}",
+                getter=lambda var=v_emp: var.get().strip(),
+                widgets=[c_emp],
+                original_value=(remote_payload.get("item_eval_empresa") or [])[i] if i < len(remote_payload.get("item_eval_empresa") or []) else "",
+            )
 
         middle = tk.LabelFrame(
             self.content_frame,
-            text="Tipo de apoyo y evaluación empresarial",
+            text="Evaluación de la empresa",
             bg=COLOR_LIGHT_BG,
             font=FONT_LABEL,
             padx=12,
             pady=10,
         )
         middle.pack(fill="x", pady=(0, 10))
-        tk.Label(middle, text="Tipo de apoyo:", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
-            row=0, column=0, sticky="w"
-        )
-        ttk.Combobox(
-            middle,
-            textvariable=self.follow_vars["tipo_apoyo"],
-            values=seguimientos.TIPO_APOYO_OPTIONS,
-            state="readonly",
-            width=34,
-        ).grid(row=0, column=1, sticky="w")
         self._build_followup_eval_actions(
             middle,
             [("Aplicar a evaluación empresarial:", "empresa_eval")],
-            row=1,
+            row=0,
             columnspan=3,
         )
 
-        tk.Label(middle, text="Ítem", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(row=2, column=0, sticky="w", pady=(8, 2))
+        tk.Label(middle, text="Ítem", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(row=1, column=0, sticky="w", pady=(8, 2))
         tk.Label(middle, text="Evaluación", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
-            row=2, column=1, sticky="w", padx=(8, 0), pady=(8, 2)
+            row=1, column=1, sticky="w", padx=(8, 0), pady=(8, 2)
         )
         tk.Label(middle, text="Observación", font=FONT_LABEL, bg=COLOR_LIGHT_BG).grid(
-            row=2, column=2, sticky="w", padx=(8, 0), pady=(8, 2)
+            row=1, column=2, sticky="w", padx=(8, 0), pady=(8, 2)
         )
 
         self.follow_emp_eval = []
+        self.follow_emp_eval_widgets = []
         self.follow_emp_obs = []
         emp_labels = payload.get("empresa_item_labels") or []
         emp_eval_vals = payload.get("empresa_eval") or []
         emp_obs_vals = payload.get("empresa_observacion") or []
         for i, label in enumerate(emp_labels):
             tk.Label(middle, text=label, bg=COLOR_LIGHT_BG, anchor="w", justify="left").grid(
-                row=i + 3, column=0, sticky="w", pady=2
+                row=i + 2, column=0, sticky="w", pady=2
             )
             v = tk.StringVar(value=emp_eval_vals[i] if i < len(emp_eval_vals) else "")
-            ttk.Combobox(
+            emp_combo = ttk.Combobox(
                 middle, textvariable=v, values=seguimientos.EVAL_OPTIONS, state="readonly", width=20
-            ).grid(row=i + 3, column=1, sticky="w", padx=(8, 0), pady=2)
+            )
+            emp_combo.grid(row=i + 2, column=1, sticky="w", padx=(8, 0), pady=2)
             self.follow_emp_eval.append(v)
+            self.follow_emp_eval_widgets.append(emp_combo)
+            self._register_overwrite_field(
+                label=f"Evaluación empresarial: {label}",
+                getter=lambda var=v: var.get().strip(),
+                widgets=[emp_combo],
+                original_value=(remote_payload.get("empresa_eval") or [])[i] if i < len(remote_payload.get("empresa_eval") or []) else "",
+            )
             e = tk.Entry(middle, width=45)
-            e.grid(row=i + 3, column=2, sticky="w", padx=(8, 0), pady=2)
+            e.grid(row=i + 2, column=2, sticky="w", padx=(8, 0), pady=2)
             if i < len(emp_obs_vals):
                 e.insert(0, emp_obs_vals[i] or "")
             self.follow_emp_obs.append(e)
+            self._register_overwrite_field(
+                label=f"Observación empresarial: {label}",
+                getter=lambda entry=e: entry.get().strip(),
+                widgets=[e],
+                original_value=(remote_payload.get("empresa_observacion") or [])[i] if i < len(remote_payload.get("empresa_observacion") or []) else "",
+            )
 
         txt = tk.LabelFrame(
             self.content_frame,
@@ -21960,6 +23219,12 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             initial_value=payload.get("situacion_encontrada") or "",
             height=5,
         )
+        self._register_overwrite_field(
+            label="Situación encontrada",
+            getter=lambda widget=self.follow_text["situacion_encontrada"]: widget.get("1.0", tk.END).strip(),
+            widgets=[self.follow_text["situacion_encontrada"]],
+            original_value=remote_payload.get("situacion_encontrada"),
+        )
         self._add_dictation_subsection(
             txt,
             title="Estrategias:",
@@ -21969,6 +23234,12 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             initial_value=payload.get("estrategias_ajustes") or "",
             height=5,
             bottom_pad=0,
+        )
+        self._register_overwrite_field(
+            label="Estrategias y ajustes",
+            getter=lambda widget=self.follow_text["estrategias_ajustes"]: widget.get("1.0", tk.END).strip(),
+            widgets=[self.follow_text["estrategias_ajustes"]],
+            original_value=remote_payload.get("estrategias_ajustes"),
         )
 
         asist = tk.LabelFrame(
@@ -22000,8 +23271,23 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
                 e_name.insert(0, str(asistentes[i].get("nombre") or ""))
                 e_cargo.insert(0, str(asistentes[i].get("cargo") or ""))
             self.follow_asistentes.append((e_name, e_cargo))
+            original_asistentes = list(remote_payload.get("asistentes") or [])
+            original_entry = original_asistentes[i] if i < len(original_asistentes) else {}
+            self._register_overwrite_field(
+                label=f"Asistente {i + 1} nombre",
+                getter=lambda widget=e_name: _get_input_value(widget),
+                widgets=[e_name],
+                original_value=(original_entry or {}).get("nombre"),
+            )
+            self._register_overwrite_field(
+                label=f"Asistente {i + 1} cargo",
+                getter=lambda widget=e_cargo: _get_input_value(widget),
+                widgets=[e_cargo],
+                original_value=(original_entry or {}).get("cargo"),
+            )
 
-        self.status_var.set(f"Editando hoja de seguimiento {idx}.")
+        self.status_var.set(f"Editando Seguimiento {idx}.")
+        self._refresh_overwrite_highlights()
 
     def _set_entry_value(self, entry, value):
         entry.delete(0, tk.END)
@@ -22021,6 +23307,12 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         except Exception as exc:
             _show_inline_feedback(self, _log_user_error("followup_case", exc), state="error")
             return
+        local_previous = self._load_local_sheet_draft_payload(
+            f"{seguimientos.SHEET_PREFIX}{idx - 1}",
+            save_kind="followup",
+        )
+        if local_previous:
+            previous = _merge_followup_local_payload(previous, local_previous, save_kind="followup")
 
         self.follow_vars["modalidad"].set(str(previous.get("modalidad") or ""))
         self.follow_vars["tipo_apoyo"].set(str(previous.get("tipo_apoyo") or ""))
@@ -22041,17 +23333,24 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             var.set(str(prev_emp_eval[i] if i < len(prev_emp_eval) else ""))
         for i, entry in enumerate(self.follow_emp_obs):
             self._set_entry_value(entry, prev_emp_obs[i] if i < len(prev_emp_obs) else "")
+        prev_asistentes = previous.get("asistentes") or []
+        for i, (name_widget, cargo_widget) in enumerate(self.follow_asistentes):
+            current_asistente = prev_asistentes[i] if i < len(prev_asistentes) else {}
+            _set_input_value(name_widget, current_asistente.get("nombre") or "")
+            _set_input_value(cargo_widget, current_asistente.get("cargo") or "")
 
         self.status_var.set(
-            f"Se copiaron dropdowns y observaciones desde el seguimiento {idx - 1}. "
-            "No se copiaron situación, estrategias ni asistentes."
+            f"Se copiaron los datos del seguimiento {idx - 1}. "
+            "No se copiaron la fecha, situación encontrada ni estrategias."
         )
-        self._schedule_sheet_autosave(delay_ms=250)
+        self._refresh_overwrite_highlights()
+        self._schedule_sheet_autosave()
 
     def _render_sheet_final(self):
+        self._reset_overwrite_tracking({})
         card = tk.LabelFrame(
             self.content_frame,
-            text="PONDERADO FINAL",
+            text="Resultado final",
             bg=COLOR_LIGHT_BG,
             font=FONT_LABEL,
             padx=12,
@@ -22061,15 +23360,15 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         tk.Label(
             card,
             text=(
-                "Esta hoja es de cálculo consolidado. No se diligencia manualmente.\n"
-                "Completa la hoja base y los seguimientos para actualizar sus resultados."
+                "Este bloque consolida automáticamente el resultado del caso.\n"
+                "No se diligencia manualmente: se actualiza al guardar la ficha inicial y los seguimientos."
             ),
             bg=COLOR_LIGHT_BG,
             justify="left",
             anchor="w",
             font=("Arial", 10),
         ).pack(fill="x")
-        self.status_var.set("Ponderado final es de solo revisión.")
+        self.status_var.set("Resultado final es de solo lectura.")
 
     def _insert_followup_normativa_template(self):
         text_widget = self.follow_text.get("estrategias_ajustes")
@@ -22081,7 +23380,8 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         text_widget.insert(tk.END, SEGUIMIENTO_NORMATIVA_TEMPLATE_TEXT)
         text_widget.focus_set()
         text_widget.see(tk.END)
-        self._schedule_sheet_autosave(delay_ms=250)
+        self._refresh_overwrite_highlights()
+        self._schedule_sheet_autosave()
 
     def _buscar_empresa_por_nit(self):
         nit = self.base_vars.get("nit_empresa").get().strip() if self.base_vars.get("nit_empresa") else ""
@@ -22138,6 +23438,8 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             if field in self.base_vars:
                 self.base_vars[field].set(str(company.get(key) or ""))
         self.status_var.set("Datos de empresa cargados desde Supabase.")
+        self._refresh_overwrite_highlights()
+        self._schedule_sheet_autosave()
 
     def _collect_base_payload(self):
         payload = {k: v.get().strip() for k, v in self.base_vars.items()}
@@ -22165,7 +23467,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             return True
         _show_inline_feedback(
             self,
-            "Completa fecha de visita y modalidad antes de guardar la hoja base.",
+            "Completa fecha de visita y modalidad antes de guardar la ficha inicial.",
             state="error",
         )
         if "Fecha visita" in missing:
@@ -22203,9 +23505,10 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _save_current_sheet(self):
         sheet = self.sheet_var.get()
+        sheet_title = self._sheet_title_by_name.get(sheet, sheet)
         previous_base_completed = bool((self.workflow or {}).get("base_completed"))
         if sheet == seguimientos.SHEET_FINAL:
-            _show_inline_feedback(self, "Esta hoja no se diligencia manualmente.", state="warning")
+            _show_inline_feedback(self, "Esta etapa es de solo lectura.", state="warning")
             try:
                 self.sheet_combo.focus_set()
             except Exception:
@@ -22214,7 +23517,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         if not self._is_sheet_editable(sheet):
             _show_inline_feedback(
                 self,
-                "Esta hoja ya está cerrada. Solo se puede editar la hoja actualmente habilitada.",
+                "Esta etapa no está disponible para edición en este momento.",
                 state="warning",
             )
             try:
@@ -22231,6 +23534,9 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         except Exception as exc:
             _show_inline_feedback(self, _log_user_error("save_sheet", exc), state="error")
             return
+        if not self._confirm_overwrite_changes():
+            self.status_var.set("Guardado cancelado. Revisa los campos resaltados en amarillo.")
+            return
 
         request_fingerprint = str(request.get("fingerprint") or "")
 
@@ -22241,15 +23547,25 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             sync_warning = str((result or {}).get("sync_warning") or "").strip()
             self._sheet_autosave_last_fingerprint = request_fingerprint
             self._sheet_autosave_pending_request = None
+            try:
+                _delete_followup_local_sheet_draft(self.case_target, sheet)
+            except Exception as exc:
+                _log_capture(f"followup_editor_local_draft_clear_failed case={self.case_target!r} sheet={sheet!r} err={exc}")
+            hub = self._get_hub_window()
+            if hub and hasattr(hub, "_refresh_drafts_badge"):
+                try:
+                    hub._refresh_drafts_badge()
+                except Exception:
+                    pass
             if sync_warning:
                 _log_capture(f"[UI] context=sync_case_record err={sync_warning}")
                 _show_inline_feedback(
                     self,
-                    "La hoja se guardó, pero quedó pendiente la sincronización del caso.",
+                    "La etapa se guardó, pero quedó pendiente la sincronización del caso.",
                     state="warning",
                 )
             if not sync_warning:
-                self.status_var.set(f"Guardado exitoso en hoja: {sheet}")
+                self.status_var.set(f"Etapa guardada: {sheet_title}.")
             if isinstance(self.owner, SeguimientosWindow):
                 self.owner.case_record = self.case_record
                 self.owner.case_path = self.case_path
@@ -22266,17 +23582,13 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             ):
                 followup_1 = f"{seguimientos.SHEET_PREFIX}1"
                 if followup_1 in list(self.sheet_options or []):
-                    move_next = messagebox.askyesno(
-                        "Seguimientos",
-                        "La hoja 9 alcanzó el 90% de completitud. ¿Deseas continuar con Seguimiento 1?",
-                        parent=self,
+                    followup_title = self._sheet_title_by_name.get(followup_1, "Seguimiento 1")
+                    self.status_var.set(
+                        f"Ficha inicial completa. {followup_title} quedó listo para continuar."
                     )
-                    if move_next:
-                        self.sheet_var.set(followup_1)
-                        self._render_selected_sheet()
 
         self._run_loading_job(
-            title="Guardando hoja",
+            title="Guardando etapa",
             initial_status="Preparando el guardado...",
             worker=_worker,
             on_success=_on_success,

@@ -80,6 +80,32 @@ BASE_SHEET_CANDIDATES = (
 SHEET_PREFIX = "SEGUIMIENTO PROCESO IL "
 SHEET_FINAL = "PONDERADO FINAL"
 SHEET_META = "_META_IL"
+FOLLOWUP_DATE_LABEL = "Fecha seguimiento:"
+FOLLOWUP_DATE_LABEL_CELL = "U8"
+FOLLOWUP_DATE_VALUE_CELL = "X8"
+SHEET_COVERAGE_THRESHOLD = 90
+
+BASE_PROGRESS_SCALAR_FIELDS = (
+    "fecha_visita",
+    "modalidad",
+    "contacto_emergencia",
+    "parentesco",
+    "telefono_emergencia",
+    "certificado_discapacidad",
+    "certificado_porcentaje",
+    "tipo_contrato",
+    "fecha_firma_contrato",
+    "fecha_inicio_contrato",
+    "fecha_fin_contrato",
+    "apoyos_ajustes",
+)
+FOLLOWUP_PROGRESS_SCALAR_FIELDS = (
+    "modalidad",
+    "fecha_seguimiento",
+    "tipo_apoyo",
+    "situacion_encontrada",
+    "estrategias_ajustes",
+)
 
 
 def _load_runtime_env():
@@ -170,7 +196,7 @@ def register_form():
         "name": FORM_NAME,
         "module": __name__,
         "supports_drafts": False,
-        "hub_description": "Abre y actualiza casos con hoja base y seguimientos periódicos.",
+        "hub_description": "Abre y actualiza casos con ficha inicial, seguimientos periódicos y resultado final.",
         "singleton_window": True,
     }
 
@@ -375,17 +401,11 @@ def _find_case_folder_drive(service, cedula, nombre_usuario=""):
 
 
 def _pick_case_file(files):
-    preferred_order = {GOOGLE_SHEETS_MIME: 0, XLSX_MIME: 1}
-    ranked = []
     for item in files:
         mime = str(item.get("mimeType") or "").strip()
-        if mime not in preferred_order:
-            continue
-        ranked.append((preferred_order[mime], item))
-    if not ranked:
-        return None
-    ranked.sort(key=lambda pair: pair[0])
-    return ranked[0][1]
+        if mime == GOOGLE_SHEETS_MIME:
+            return item
+    return None
 
 
 def get_seguimientos_template_id():
@@ -564,41 +584,16 @@ def find_case_record(cedula, nombre_usuario=""):
                     "mime_type": case_file.get("mimeType"),
                     "webViewLink": case_file.get("webViewLink"),
                     "modifiedTime": case_file.get("modifiedTime"),
+                    "local_path": "",
                 }
-                if record["mime_type"] == GOOGLE_SHEETS_MIME:
-                    record["local_path"] = ""
-                    app_props = case_file.get("appProperties") or {}
-                    try:
-                        record["max_seguimientos"] = int(app_props.get("max_seguimientos") or 3)
-                    except Exception:
-                        record["max_seguimientos"] = 3
-                else:
-                    local_path = _build_local_case_copy_path(record)
-                    record["local_path"] = _download_drive_case_to_path(service, record, local_path)
-                    try:
-                        record["max_seguimientos"] = int(
-                            get_case_meta(record["local_path"]).get("max_seguimientos") or 3
-                        )
-                    except Exception:
-                        record["max_seguimientos"] = 3
+                app_props = case_file.get("appProperties") or {}
+                try:
+                    record["max_seguimientos"] = int(app_props.get("max_seguimientos") or 3)
+                except Exception:
+                    record["max_seguimientos"] = 3
                 return record
     except Exception:
         pass
-
-    legacy_path = find_case_workbook(normalized, nombre_usuario)
-    if legacy_path:
-        try:
-            max_seg = int(get_case_meta(legacy_path).get("max_seguimientos") or 3)
-        except Exception:
-            max_seg = 3
-        return {
-            "source": "legacy_local",
-            "cedula": normalized,
-            "file_name": os.path.basename(legacy_path),
-            "local_path": legacy_path,
-            "webViewLink": "",
-            "max_seguimientos": max_seg,
-        }
     return None
 
 
@@ -739,11 +734,48 @@ def _build_base_sheet_updates(payload, base_sheet_name=SHEET_BASE):
     return updates
 
 
+def _get_followup_date_cell(base_sheet_name, index):
+    try:
+        idx = int(index)
+    except Exception:
+        return ""
+    if 1 <= idx <= 3:
+        return f"'{base_sheet_name}'!C{28 + idx}"
+    if 4 <= idx <= 6:
+        return f"'{base_sheet_name}'!P{25 + idx}"
+    return ""
+
+
+def _set_followup_date_in_base_payload(payload, index, value):
+    payload = dict(payload or {})
+    text = _get_str(value)
+    try:
+        idx = int(index)
+    except Exception:
+        return payload
+    if 1 <= idx <= 3:
+        values = list(payload.get("seguimiento_fechas_1_3") or ["", "", ""])
+        while len(values) < 3:
+            values.append("")
+        values[idx - 1] = text
+        payload["seguimiento_fechas_1_3"] = values[:3]
+        return payload
+    if 4 <= idx <= 6:
+        values = list(payload.get("seguimiento_fechas_4_6") or ["", "", ""])
+        while len(values) < 3:
+            values.append("")
+        values[idx - 4] = text
+        payload["seguimiento_fechas_4_6"] = values[:3]
+    return payload
+
+
 def _build_followup_sheet_updates(index, payload):
     sheet_name = _get_followup_sheet_name(index)
     updates = [
         {"range": f"'{sheet_name}'!E8", "value": payload.get("modalidad", "")},
         {"range": f"'{sheet_name}'!P8", "value": payload.get("seguimiento_numero", index)},
+        {"range": f"'{sheet_name}'!{FOLLOWUP_DATE_LABEL_CELL}", "value": FOLLOWUP_DATE_LABEL},
+        {"range": f"'{sheet_name}'!{FOLLOWUP_DATE_VALUE_CELL}", "value": payload.get("fecha_seguimiento", "")},
         {"range": f"'{sheet_name}'!J31", "value": payload.get("tipo_apoyo", "")},
         {"range": f"'{sheet_name}'!A43", "value": payload.get("situacion_encontrada", "")},
         {"range": f"'{sheet_name}'!A45", "value": payload.get("estrategias_ajustes", "")},
@@ -767,6 +799,7 @@ def _build_empty_followup_payload(index):
     return {
         "modalidad": "",
         "seguimiento_numero": "",
+        "fecha_seguimiento": "",
         "item_observaciones": ["" for _ in range(19)],
         "item_autoevaluacion": ["" for _ in range(19)],
         "item_eval_empresa": ["" for _ in range(19)],
@@ -789,6 +822,8 @@ def _clear_followup_sheet_worksheet(ws, index):
     empty_payload = _build_empty_followup_payload(index)
     ws["E8"].value = empty_payload["modalidad"]
     ws["P8"].value = empty_payload["seguimiento_numero"]
+    ws[FOLLOWUP_DATE_LABEL_CELL].value = FOLLOWUP_DATE_LABEL
+    ws[FOLLOWUP_DATE_VALUE_CELL].value = empty_payload["fecha_seguimiento"]
     for pos, row in enumerate(range(12, 31)):
         ws[f"G{row}"].value = empty_payload["item_observaciones"][pos]
         ws[f"O{row}"].value = empty_payload["item_autoevaluacion"][pos]
@@ -811,6 +846,7 @@ def _get_followup_template_defaults(index):
         ws = _ensure_sheet_exists(workbook, _get_followup_sheet_name(index))
         return {
             "modalidad": _cell_value(ws, "E8"),
+            "fecha_seguimiento": _cell_value(ws, FOLLOWUP_DATE_VALUE_CELL),
             "item_observaciones": [_cell_value(ws, f"G{r}") for r in range(12, 31)],
             "item_autoevaluacion": [_cell_value(ws, f"O{r}") for r in range(12, 31)],
             "item_eval_empresa": [_cell_value(ws, f"R{r}") for r in range(12, 31)],
@@ -833,6 +869,7 @@ def _is_template_seeded_followup_payload(payload, index):
     payload = payload or {}
     fields = (
         "modalidad",
+        "fecha_seguimiento",
         "item_observaciones",
         "item_autoevaluacion",
         "item_eval_empresa",
@@ -1115,55 +1152,13 @@ def ensure_case_record(cedula, user_row, is_compensar):
         raise ValueError("Cédula inválida.")
     existing = find_case_record(normalized, user_row.get("nombre_usuario"))
     if existing:
-        if _is_native_case_ref(existing):
-            save_base_payload(existing, _build_base_payload_from_user_row(user_row), overwrite=False)
-            try:
-                existing["max_seguimientos"] = int(
-                    get_case_meta(existing).get("max_seguimientos") or 3
-                )
-            except Exception:
-                existing["max_seguimientos"] = 6 if bool(is_compensar) else 3
-        elif existing.get("local_path") and existing.get("source") != "legacy_local":
-            wb = _load_workbook_safe(existing["local_path"])
-            _fill_sheet_base(wb, user_row)
-            _sync_ponderado_from_payload(wb, _build_base_payload_from_user_row(user_row), overwrite=False)
-            sanitize_logo_error_cells(wb)
-            wb.save(existing["local_path"])
-            if existing.get("source") == "drive":
-                sync_case_record_from_local(existing, existing["local_path"])
-            try:
-                existing["max_seguimientos"] = int(
-                    get_case_meta(existing["local_path"]).get("max_seguimientos") or 3
-                )
-            except Exception:
-                existing["max_seguimientos"] = 6 if bool(is_compensar) else 3
-        elif existing.get("source") == "drive":
-            service = _get_drive_service()
-            max_seguimientos = int(existing.get("max_seguimientos") or (6 if bool(is_compensar) else 3))
-            existing = _create_native_case_record(
-                service,
-                existing["folder_id"],
-                existing["folder_name"],
-                normalized,
-                user_row,
-                max_seguimientos,
-                seed_path=existing.get("local_path"),
+        save_base_payload(existing, _build_base_payload_from_user_row(user_row), overwrite=False)
+        try:
+            existing["max_seguimientos"] = int(
+                get_case_meta(existing).get("max_seguimientos") or 3
             )
-        elif existing.get("source") == "legacy_local":
-            service = _get_drive_service()
-            seguimientos_folder_id = _ensure_seguimientos_folder(service)
-            folder_name = build_case_folder_name(user_row.get("nombre_usuario"), normalized)
-            case_folder_id = drive_upload._get_or_create_folder(service, seguimientos_folder_id, folder_name)
-            max_seguimientos = int(existing.get("max_seguimientos") or (6 if bool(is_compensar) else 3))
-            existing = _create_native_case_record(
-                service,
-                case_folder_id,
-                folder_name,
-                normalized,
-                user_row,
-                max_seguimientos,
-                seed_path=existing.get("local_path"),
-            )
+        except Exception:
+            existing["max_seguimientos"] = 6 if bool(is_compensar) else 3
         return {
             "record": existing,
             "created": False,
@@ -1243,8 +1238,12 @@ def describe_case(case_ref):
             "seguimientos": [],
             "seguimientos_count": 0,
             "ultimo_seguimiento": "",
+            "completed_sheets": [],
+            "sheet_progress": [],
+            "sheet_progress_summary": [],
         }
     payload = get_base_payload(case_ref)
+    workflow = get_workflow_state(case_ref)
     followup_dates = []
     for idx, value in enumerate(payload.get("seguimiento_fechas_1_3") or [], start=1):
         if str(value or "").strip():
@@ -1252,11 +1251,27 @@ def describe_case(case_ref):
     for offset, value in enumerate(payload.get("seguimiento_fechas_4_6") or [], start=4):
         if str(value or "").strip():
             followup_dates.append(f"S{offset}: {str(value).strip()}")
+    progress_summary = []
+    for entry in list(workflow.get("sheet_progress") or []):
+        label = str(entry.get("label") or entry.get("sheet_name") or "").strip()
+        status = str(entry.get("status") or "").strip()
+        coverage = int(entry.get("coverage_percent") or 0)
+        if status == "review_only":
+            progress_summary.append(f"{label}: solo lectura")
+        else:
+            progress_summary.append(f"{label}: {coverage}% ({status})")
     return {
         "empresa": str(payload.get("nombre_empresa") or "").strip(),
+        "profesional_asignado": str(payload.get("profesional_asignado") or "").strip(),
         "seguimientos": followup_dates,
         "seguimientos_count": len(followup_dates),
         "ultimo_seguimiento": followup_dates[-1] if followup_dates else "",
+        "completed_sheets": list(workflow.get("completed_sheets") or []),
+        "sheet_progress": list(workflow.get("sheet_progress") or []),
+        "sheet_progress_summary": progress_summary,
+        "suggested_sheet": str(workflow.get("suggested_sheet") or ""),
+        "base_sheet_name": str(workflow.get("base_sheet_name") or SHEET_BASE),
+        "max_seguimientos": int(workflow.get("max_seguimientos") or 3),
     }
 
 
@@ -1331,10 +1346,15 @@ def _has_followup_meaningful_content(payload):
 def _normalize_empty_followup_payload(payload, index, base_payload=None):
     payload = dict(payload or {})
     has_followup_date = bool(_get_followup_date_from_base(base_payload or {}, index))
-    if has_followup_date or _has_followup_meaningful_content(payload):
+    explicit_date = _get_str(payload.get("fecha_seguimiento"))
+    if not explicit_date and has_followup_date:
+        payload["fecha_seguimiento"] = _get_followup_date_from_base(base_payload or {}, index)
+        explicit_date = _get_str(payload.get("fecha_seguimiento"))
+    if explicit_date or has_followup_date or _has_followup_meaningful_content(payload):
         return payload
     payload["modalidad"] = ""
     payload["seguimiento_numero"] = str(index)
+    payload["fecha_seguimiento"] = ""
     payload["item_observaciones"] = ["" for _ in (payload.get("item_observaciones") or [])]
     payload["item_autoevaluacion"] = ["" for _ in (payload.get("item_autoevaluacion") or [])]
     payload["item_eval_empresa"] = ["" for _ in (payload.get("item_eval_empresa") or [])]
@@ -1370,7 +1390,144 @@ def _normalize_base_payload(payload):
     return payload
 
 
-def get_workflow_state(case_ref):
+def _coverage_percent(filled, total):
+    try:
+        filled_int = int(filled or 0)
+        total_int = int(total or 0)
+    except Exception:
+        return 0
+    if total_int <= 0:
+        return 0
+    return int((filled_int * 100) / total_int)
+
+
+def _build_progress_snapshot(*, values):
+    flags = [bool(item) for item in list(values or [])]
+    total = len(flags)
+    filled = sum(1 for item in flags if item)
+    coverage = _coverage_percent(filled, total)
+    if filled <= 0:
+        status = "not_started"
+    elif coverage >= SHEET_COVERAGE_THRESHOLD:
+        status = "completed"
+    else:
+        status = "in_progress"
+    return {
+        "filled": filled,
+        "total": total,
+        "coverage_percent": coverage,
+        "status": status,
+        "is_completed": status == "completed",
+    }
+
+
+def _has_value(value):
+    return bool(_get_str(value))
+
+
+def _build_base_progress_snapshot(payload):
+    payload = dict(payload or {})
+    flags = [_has_value(payload.get(field_id)) for field_id in BASE_PROGRESS_SCALAR_FIELDS]
+    flags.extend(_has_value(item) for item in list(payload.get("funciones_1_5") or [])[:5])
+    flags.extend(_has_value(item) for item in list(payload.get("funciones_6_10") or [])[:5])
+    return _build_progress_snapshot(values=flags)
+
+
+def _build_followup_progress_snapshot(payload):
+    payload = dict(payload or {})
+    flags = [_has_value(payload.get(field_id)) for field_id in FOLLOWUP_PROGRESS_SCALAR_FIELDS]
+    flags.extend(_has_value(item) for item in list(payload.get("item_autoevaluacion") or [])[:19])
+    flags.extend(_has_value(item) for item in list(payload.get("item_eval_empresa") or [])[:19])
+    flags.extend(_has_value(item) for item in list(payload.get("empresa_eval") or [])[:8])
+    return _build_progress_snapshot(values=flags)
+
+
+def _sheet_stage_title(sheet_name, base_sheet_name):
+    current = str(sheet_name or "").strip()
+    if current == str(base_sheet_name or "").strip():
+        return "Ficha inicial del proceso"
+    if current == SHEET_FINAL:
+        return "Resultado final"
+    match = re.search(r"(\d+)$", current)
+    if match:
+        return f"Seguimiento {int(match.group(1))}"
+    return current
+
+
+def _sheet_stage_id(sheet_name, base_sheet_name):
+    current = str(sheet_name or "").strip()
+    if current == str(base_sheet_name or "").strip():
+        return "base_process"
+    if current == SHEET_FINAL:
+        return "final_result"
+    match = re.search(r"(\d+)$", current)
+    if match:
+        return f"followup_{int(match.group(1))}"
+    return re.sub(r"[^a-z0-9]+", "_", current.lower()).strip("_") or "sheet_stage"
+
+
+def _sheet_stage_helper_text(*, sheet_name, base_sheet_name, status, is_suggested, is_editable):
+    current = str(sheet_name or "").strip()
+    current_status = str(status or "").strip()
+    if current == SHEET_FINAL:
+        return "Consolidado automático del proceso. Solo lectura."
+    if current == str(base_sheet_name or "").strip():
+        if is_suggested and current_status != "completed":
+            return "Empieza aquí para dejar lista la ficha inicial del caso."
+        if current_status == "completed":
+            return "La ficha inicial está completa y lista para soportar los seguimientos."
+        if current_status == "in_progress":
+            return "Completa la información inicial del proceso y los apoyos requeridos."
+        return "Registra los datos base del caso, la visita y los apoyos requeridos."
+    match = re.search(r"(\d+)$", current)
+    followup_number = int(match.group(1)) if match else 0
+    if current_status == "completed":
+        return (
+            f"Seguimiento {followup_number} registrado. Puedes revisarlo o corregirlo si hace falta."
+        )
+    if is_suggested and is_editable:
+        return f"Esta es la etapa sugerida para continuar con Seguimiento {followup_number}."
+    if current_status == "in_progress":
+        return f"Seguimiento {followup_number} en curso."
+    return f"Seguimiento {followup_number} pendiente por diligenciar."
+
+
+def _build_sheet_stage_entry(
+    sheet_name,
+    base_sheet_name,
+    *,
+    status,
+    coverage_percent,
+    is_completed=False,
+    is_suggested=False,
+    is_editable=False,
+):
+    title = _sheet_stage_title(sheet_name, base_sheet_name)
+    return {
+        "stage_id": _sheet_stage_id(sheet_name, base_sheet_name),
+        "title": title,
+        "label": title,
+        "sheet_name": str(sheet_name or "").strip(),
+        "status": str(status or "").strip(),
+        "coverage_percent": int(coverage_percent or 0),
+        "is_completed": bool(is_completed),
+        "is_suggested": bool(is_suggested),
+        "is_editable": bool(is_editable),
+        "helper_text": _sheet_stage_helper_text(
+            sheet_name=sheet_name,
+            base_sheet_name=base_sheet_name,
+            status=status,
+            is_suggested=is_suggested,
+            is_editable=is_editable,
+        ),
+    }
+
+
+def _sheet_label(sheet_name, base_sheet_name):
+    return _sheet_stage_title(sheet_name, base_sheet_name)
+
+
+def _legacy_get_workflow_state(case_ref):
     if not case_ref:
         return {
             "base_sheet_name": SHEET_BASE,
@@ -1381,7 +1538,7 @@ def get_workflow_state(case_ref):
             "editable_sheet": SHEET_BASE,
             "suggested_sheet": SHEET_BASE,
             "visible_sheets": [SHEET_BASE, f"{SHEET_PREFIX}1"],
-            "message": "Completa primero la hoja base del proceso.",
+            "message": "Completa primero la ficha inicial del proceso.",
         }
 
     meta = get_case_meta(case_ref)
@@ -1410,7 +1567,7 @@ def get_workflow_state(case_ref):
         editable_sheet = base_sheet_name
         suggested_sheet = base_sheet_name
         visible_followups = 1
-        message = "Completa primero la hoja base del proceso."
+        message = "Completa primero la ficha inicial del proceso."
     elif next_followup is not None and next_followup <= max_seguimientos:
         editable_sheet = f"{SHEET_PREFIX}{next_followup}"
         suggested_sheet = base_sheet_name if next_followup == 1 else editable_sheet
@@ -1420,7 +1577,7 @@ def get_workflow_state(case_ref):
         else:
             message = (
                 f"Seguimiento {next_followup} habilitado. "
-                f"En la hoja base solo puedes editar la fecha del seguimiento {next_followup}."
+                f"En la ficha inicial solo verás la fecha alimentada desde Seguimiento {next_followup}."
             )
     else:
         editable_sheet = ""
@@ -1445,9 +1602,9 @@ def get_workflow_state(case_ref):
     }
 
 
-def suggest_next_step(case_ref):
+def _legacy_suggest_next_step(case_ref):
     if not case_ref:
-        return {"sheet": SHEET_BASE, "message": "Inicia con la hoja base.", "max_seguimientos": 3}
+        return {"sheet": SHEET_BASE, "message": "Inicia con la ficha inicial del proceso.", "max_seguimientos": 3}
     workflow = get_workflow_state(case_ref)
     return {
         "sheet": workflow.get("suggested_sheet") or workflow.get("base_sheet_name") or SHEET_BASE,
@@ -1826,6 +1983,7 @@ def get_followup_payload(case_ref, index):
         ranges = [
             f"'{sheet_name}'!E8",
             f"'{sheet_name}'!P8",
+            f"'{sheet_name}'!{FOLLOWUP_DATE_VALUE_CELL}",
             f"'{sheet_name}'!A12:A30",
             f"'{sheet_name}'!G12:G30",
             f"'{sheet_name}'!O12:O30",
@@ -1843,6 +2001,7 @@ def get_followup_payload(case_ref, index):
         payload = {
             "modalidad": _first_batch_value(values, f"'{sheet_name}'!E8"),
             "seguimiento_numero": _first_batch_value(values, f"'{sheet_name}'!P8"),
+            "fecha_seguimiento": _first_batch_value(values, f"'{sheet_name}'!{FOLLOWUP_DATE_VALUE_CELL}"),
             "item_labels": _column_batch_values(values, f"'{sheet_name}'!A12:A30", 19),
             "item_observaciones": _column_batch_values(values, f"'{sheet_name}'!G12:G30", 19),
             "item_autoevaluacion": _column_batch_values(values, f"'{sheet_name}'!O12:O30", 19),
@@ -1870,6 +2029,7 @@ def get_followup_payload(case_ref, index):
     payload = {
         "modalidad": _cell_value(ws, "E8"),
         "seguimiento_numero": _cell_value(ws, "P8"),
+        "fecha_seguimiento": _cell_value(ws, FOLLOWUP_DATE_VALUE_CELL),
         "item_labels": item_labels,
         "item_observaciones": [_cell_value(ws, f"G{r}") for r in range(12, 31)],
         "item_autoevaluacion": [_cell_value(ws, f"O{r}") for r in range(12, 31)],
@@ -1892,13 +2052,19 @@ def get_followup_payload(case_ref, index):
 
 def save_followup_payload(case_ref, index, payload):
     if _is_native_case_ref(case_ref):
+        base_sheet_name = str(get_case_meta(case_ref).get("base_sheet_name") or SHEET_BASE)
         updates = _build_followup_sheet_updates(index, payload)
+        followup_date_range = _get_followup_date_cell(base_sheet_name, index)
+        if followup_date_range:
+            updates.append({"range": followup_date_range, "value": _get_str(payload.get("fecha_seguimiento"))})
         batch_write_sheet_updates(_get_spreadsheet_id_from_case_ref(case_ref), updates)
         return
     wb = _load_workbook_safe(case_ref, data_only=False)
     ws = _ensure_sheet_exists(wb, _get_followup_sheet_name(index))
     ws["E8"].value = payload.get("modalidad", "")
     ws["P8"].value = payload.get("seguimiento_numero", index)
+    ws[FOLLOWUP_DATE_LABEL_CELL].value = FOLLOWUP_DATE_LABEL
+    ws[FOLLOWUP_DATE_VALUE_CELL].value = _get_str(payload.get("fecha_seguimiento"))
     item_obs = payload.get("item_observaciones") or []
     item_auto = payload.get("item_autoevaluacion") or []
     item_emp = payload.get("item_eval_empresa") or []
@@ -1924,5 +2090,188 @@ def save_followup_payload(case_ref, index, payload):
         entry = asistentes[i] if i < len(asistentes) else {}
         ws[f"D{row}"].value = entry.get("nombre", "")
         ws[f"N{row}"].value = entry.get("cargo", "")
+    base_ws = _ensure_sheet_exists(wb, _get_base_sheet_name_from_workbook(wb))
+    date_cell = _get_followup_date_cell(_get_base_sheet_name_from_workbook(wb), index)
+    if date_cell:
+        local_ref = date_cell.split("!", 1)[1]
+        base_ws[local_ref].value = _get_str(payload.get("fecha_seguimiento"))
     sanitize_logo_error_cells(wb)
     wb.save(case_ref)
+
+
+def get_workflow_state(case_ref):
+    if not case_ref:
+        visible_sheets = [SHEET_BASE] + [f"{SHEET_PREFIX}{idx}" for idx in range(1, 4)] + [SHEET_FINAL]
+        base_entry = _build_sheet_stage_entry(
+            SHEET_BASE,
+            SHEET_BASE,
+            status="not_started",
+            coverage_percent=0,
+            is_completed=False,
+            is_suggested=True,
+            is_editable=True,
+        )
+        followup_entries = [
+            _build_sheet_stage_entry(
+                f"{SHEET_PREFIX}{idx}",
+                SHEET_BASE,
+                status="not_started",
+                coverage_percent=0,
+                is_completed=False,
+                is_suggested=False,
+                is_editable=True,
+            )
+            for idx in range(1, 4)
+        ]
+        final_entry = _build_sheet_stage_entry(
+            SHEET_FINAL,
+            SHEET_BASE,
+            status="review_only",
+            coverage_percent=0,
+            is_completed=False,
+            is_suggested=False,
+            is_editable=False,
+        )
+        stage_model = [base_entry] + followup_entries + [final_entry]
+        return {
+            "base_sheet_name": SHEET_BASE,
+            "max_seguimientos": 3,
+            "base_completed": False,
+            "base_coverage_percent": 0,
+            "completed_followups": [],
+            "completed_sheets": [],
+            "next_followup": 1,
+            "editable_sheet": SHEET_BASE,
+            "suggested_sheet": SHEET_BASE,
+            "visible_sheets": visible_sheets,
+            "sheet_progress": stage_model,
+            "stage_model": stage_model,
+            "message": "Empieza por la ficha inicial del proceso.",
+        }
+
+    meta = get_case_meta(case_ref)
+    base_sheet_name = str(meta.get("base_sheet_name") or SHEET_BASE)
+    max_seguimientos = 6 if int(meta.get("max_seguimientos") or 3) >= 6 else 3
+    base_payload = get_base_payload(case_ref)
+    base_progress = _build_base_progress_snapshot(base_payload)
+
+    sheet_progress = []
+    completed_followups = []
+    completed_sheets = []
+    next_followup = 1
+
+    base_entry = _build_sheet_stage_entry(
+        base_sheet_name,
+        base_sheet_name,
+        status=base_progress["status"],
+        coverage_percent=base_progress["coverage_percent"],
+        is_completed=bool(base_progress["is_completed"]),
+        is_suggested=False,
+        is_editable=True,
+    )
+    sheet_progress.append(base_entry)
+    if base_progress["is_completed"]:
+        completed_sheets.append(base_entry["label"])
+
+    if base_progress["is_completed"]:
+        next_followup = None
+        for idx in range(1, max_seguimientos + 1):
+            followup_sheet = _get_followup_sheet_name(idx)
+            followup_payload = get_followup_payload(case_ref, idx)
+            followup_progress = _build_followup_progress_snapshot(followup_payload)
+            entry = _build_sheet_stage_entry(
+                followup_sheet,
+                base_sheet_name,
+                status=followup_progress["status"],
+                coverage_percent=followup_progress["coverage_percent"],
+                is_completed=bool(followup_progress["is_completed"]),
+                is_suggested=False,
+                is_editable=True,
+            )
+            sheet_progress.append(entry)
+            if followup_progress["is_completed"]:
+                completed_followups.append(idx)
+                completed_sheets.append(entry["label"])
+                continue
+            if next_followup is None:
+                next_followup = idx
+        if next_followup is None:
+            suggested_sheet = SHEET_FINAL
+            message = "Todos los seguimientos visibles ya alcanzaron el 90%."
+        else:
+            suggested_sheet = _get_followup_sheet_name(next_followup)
+            if next_followup == 1:
+                message = "La ficha inicial está completa. Continúa con Seguimiento 1."
+            else:
+                message = f"Continúa con Seguimiento {next_followup}."
+    else:
+        for idx in range(1, max_seguimientos + 1):
+            followup_sheet = _get_followup_sheet_name(idx)
+            sheet_progress.append(
+                _build_sheet_stage_entry(
+                    followup_sheet,
+                    base_sheet_name,
+                    status="not_started",
+                    coverage_percent=0,
+                    is_completed=False,
+                    is_suggested=False,
+                    is_editable=True,
+                )
+            )
+        suggested_sheet = base_sheet_name
+        message = "Empieza por la ficha inicial del proceso."
+
+    sheet_progress.append(
+        _build_sheet_stage_entry(
+            SHEET_FINAL,
+            base_sheet_name,
+            status="review_only",
+            coverage_percent=0,
+            is_completed=False,
+            is_suggested=False,
+            is_editable=False,
+        )
+    )
+
+    for entry in sheet_progress:
+        if str(entry.get("sheet_name") or "").strip() == str(suggested_sheet or "").strip():
+            entry["is_suggested"] = True
+            entry["helper_text"] = _sheet_stage_helper_text(
+                sheet_name=entry.get("sheet_name"),
+                base_sheet_name=base_sheet_name,
+                status=entry.get("status"),
+                is_suggested=True,
+                is_editable=entry.get("is_editable"),
+            )
+            break
+
+    visible_sheets = [base_sheet_name] + [
+        _get_followup_sheet_name(idx) for idx in range(1, max_seguimientos + 1)
+    ] + [SHEET_FINAL]
+
+    return {
+        "base_sheet_name": base_sheet_name,
+        "max_seguimientos": max_seguimientos,
+        "base_completed": bool(base_progress["is_completed"]),
+        "base_coverage_percent": base_progress["coverage_percent"],
+        "completed_followups": completed_followups,
+        "completed_sheets": completed_sheets,
+        "next_followup": next_followup,
+        "editable_sheet": suggested_sheet,
+        "suggested_sheet": suggested_sheet,
+        "visible_sheets": visible_sheets,
+        "sheet_progress": sheet_progress,
+        "stage_model": sheet_progress,
+        "message": message,
+    }
+
+
+def suggest_next_step(case_ref):
+    if not case_ref:
+        return {"sheet": SHEET_BASE, "message": "Inicia con la ficha inicial del proceso.", "max_seguimientos": 3}
+    workflow = get_workflow_state(case_ref)
+    return {
+        "sheet": workflow.get("suggested_sheet") or workflow.get("base_sheet_name") or SHEET_BASE,
+        "message": workflow.get("message") or "",
+        "max_seguimientos": int(workflow.get("max_seguimientos") or 3),
+    }

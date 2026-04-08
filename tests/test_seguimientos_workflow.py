@@ -12,7 +12,7 @@ from formularios.seguimientos import seguimientos
 
 
 class SeguimientosWorkflowTests(unittest.TestCase):
-    def test_workflow_keeps_followup_1_open_when_only_date_is_registered(self) -> None:
+    def test_workflow_keeps_sheet_9_suggested_when_only_prefilled_data_exists(self) -> None:
         base_payload = {
             "nombre_vinculado": "Persona Demo",
             "cedula": "123456",
@@ -41,18 +41,32 @@ class SeguimientosWorkflowTests(unittest.TestCase):
 
         self.assertEqual(workflow["next_followup"], 1)
         self.assertEqual(workflow["completed_followups"], [])
-        self.assertEqual(workflow["editable_sheet"], f"{seguimientos.SHEET_PREFIX}1")
-        self.assertEqual(
-            workflow["message"],
-            "Hoja base y seguimiento 1 habilitados hasta diligenciar el seguimiento 1.",
-        )
+        self.assertEqual(workflow["editable_sheet"], seguimientos.SHEET_BASE)
+        self.assertEqual(workflow["suggested_sheet"], seguimientos.SHEET_BASE)
+        self.assertFalse(workflow["base_completed"])
+        self.assertEqual(workflow["base_coverage_percent"], 0)
+        self.assertEqual(workflow["message"], "Empieza por la ficha inicial del proceso.")
+        self.assertEqual(workflow["stage_model"][0]["stage_id"], "base_process")
+        self.assertEqual(workflow["stage_model"][0]["title"], "Ficha inicial del proceso")
+        self.assertEqual(workflow["stage_model"][-1]["title"], "Resultado final")
+        self.assertEqual(workflow["stage_model"][-1]["status"], "review_only")
 
-    def test_workflow_advances_to_followup_2_only_after_followup_1_is_completed(self) -> None:
+    def test_workflow_advances_to_followup_2_after_base_and_followup_1_reach_90_percent(self) -> None:
         base_payload = {
-            "nombre_vinculado": "Persona Demo",
-            "cedula": "123456",
-            "cargo_vinculado": "Auxiliar",
-            "discapacidad": "Fisica",
+            "fecha_visita": "2026-04-01",
+            "modalidad": "Presencial",
+            "contacto_emergencia": "Contacto Demo",
+            "parentesco": "Hermana",
+            "telefono_emergencia": "3111111111",
+            "certificado_discapacidad": "Si",
+            "certificado_porcentaje": "25%",
+            "tipo_contrato": "Indefinido",
+            "fecha_firma_contrato": "2026-03-01",
+            "fecha_inicio_contrato": "2026-03-05",
+            "fecha_fin_contrato": "",
+            "apoyos_ajustes": "Ajuste razonable",
+            "funciones_1_5": ["F1", "F2", "F3", "F4", "F5"],
+            "funciones_6_10": ["F6", "F7", "F8", "F9", "F10"],
             "seguimiento_fechas_1_3": ["2026-04-01", "", ""],
             "seguimiento_fechas_4_6": ["", "", ""],
         }
@@ -60,14 +74,24 @@ class SeguimientosWorkflowTests(unittest.TestCase):
         def _payload_for_index(_case_ref, index):
             if index == 1:
                 return {
-                    "item_autoevaluacion": ["Excelente"],
-                    "item_eval_empresa": ["Bien"],
+                    "modalidad": "Mixta",
+                    "fecha_seguimiento": "2026-04-01",
+                    "item_autoevaluacion": ["Excelente"] * 19,
+                    "item_eval_empresa": ["Bien"] * 19,
                     "tipo_apoyo": "Requiere apoyo bajo.",
+                    "empresa_eval": ["Bien"] * 8,
+                    "situacion_encontrada": "Sin novedades",
+                    "estrategias_ajustes": "Acompañamiento mensual",
                 }
             return {
+                "modalidad": "",
+                "fecha_seguimiento": "",
                 "item_autoevaluacion": [""],
                 "item_eval_empresa": [""],
                 "tipo_apoyo": "",
+                "empresa_eval": [""],
+                "situacion_encontrada": "",
+                "estrategias_ajustes": "",
             }
 
         with patch.object(
@@ -82,6 +106,21 @@ class SeguimientosWorkflowTests(unittest.TestCase):
         self.assertEqual(workflow["next_followup"], 2)
         self.assertEqual(workflow["completed_followups"], [1])
         self.assertEqual(workflow["editable_sheet"], f"{seguimientos.SHEET_PREFIX}2")
+        self.assertEqual(workflow["suggested_sheet"], f"{seguimientos.SHEET_PREFIX}2")
+        self.assertEqual(
+            workflow["completed_sheets"],
+            ["Ficha inicial del proceso", "Seguimiento 1"],
+        )
+        self.assertEqual(workflow["sheet_progress"][0]["coverage_percent"], 95)
+        followup_2 = next(
+            entry
+            for entry in workflow["stage_model"]
+            if entry["sheet_name"] == f"{seguimientos.SHEET_PREFIX}2"
+        )
+        self.assertEqual(followup_2["stage_id"], "followup_2")
+        self.assertEqual(followup_2["title"], "Seguimiento 2")
+        self.assertTrue(followup_2["is_suggested"])
+        self.assertTrue(followup_2["is_editable"])
 
 
 class SeguimientosBaseSheetMappingTests(unittest.TestCase):

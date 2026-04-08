@@ -1,5 +1,39 @@
 # Changelog
 
+## 2.0.14 - 2026-04-07
+
+Esta version consolida el rediseño operativo de `Seguimientos` y agrega protecciones para que el diligenciamiento diario sea mas claro y seguro para los profesionales.
+
+### Cambios principales
+
+- `SeguimientosWindow` y `SeguimientoEditorWindow` ahora muestran el flujo por etapas visibles, con lenguaje operativo en vez de nombres tecnicos de hojas.
+- La ficha inicial se reorganiza en bloques mas claros, recupera un scroll mas uniforme y muestra la linea de tiempo de seguimientos en solo lectura.
+- `Fecha fin contrato` ahora acepta texto libre y agrega una accion rapida para registrar `No aplica`.
+- `Copiar datos del seguimiento anterior` conserva la fecha y los textos largos del seguimiento actual, pero copia el resto de campos operativos, incluidos asistentes.
+- Los campos que van a sobreescribir datos ya diligenciados se resaltan en amarillo y `Guardar etapa` pide confirmacion explicita antes de reemplazarlos.
+- Se agregan pruebas de workflow y runtime para cubrir el stage model, la navegacion por etapas, las confirmaciones de sobreescritura y el nuevo comportamiento de copiado.
+- Se agrega la guia operativa [docs/seguimientos_flujo_operativo.md](docs/seguimientos_flujo_operativo.md) para adopcion del nuevo flujo.
+
+### Como afecta a los usuarios
+
+- El profesional ve con mayor claridad en que etapa va, que puede editar y cual es el siguiente paso sugerido.
+- La ficha inicial y los seguimientos reducen carga cognitiva y evitan errores al corregir informacion ya existente.
+- Cuando se intenta reemplazar un dato anterior, la app ahora lo hace visible antes de guardar.
+
+## 2.0.13 - 2026-04-07
+
+Esta version estabiliza el actualizador de Windows despues de los cambios recientes del handoff al instalador.
+
+### Cambios principales
+
+- Se bloquea el cierre de la ventana mientras el instalador esta corriendo para evitar interrupciones del proceso.
+- Se eliminan artefactos auxiliares del updater que habian quedado despues de la iteracion anterior.
+- El flujo del actualizador vuelve a una ruta mas simple y predecible para reducir riesgos operativos en release.
+
+### Como afecta a los usuarios
+
+- La actualizacion de la app es menos propensa a quedarse a medio camino por cierres prematuros o handoffs innecesariamente complejos.
+
 ## 2.0.12 - 2026-04-07
 
 Esta version corrige una regresion en `Seguimientos` que podia dejar la ventana a medio renderizar y endurece la carga inicial de cédulas cuando la base de datos no responde o la sesión perdió permisos.

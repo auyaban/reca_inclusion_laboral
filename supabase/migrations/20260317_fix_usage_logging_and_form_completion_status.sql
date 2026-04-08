@@ -65,9 +65,25 @@ set uploaded_at = coalesce(
     )
 where coalesce(trim(upload_status), '') = 'synced';
 
-update public.utilizacion_il_eventos e
-set finished_at = greatest(e.opened_at, u.app_closed_at)
-from public.utilizacion_il u
-where e.session_id = u.session_id
-  and e.finished_at is null
-  and u.app_closed_at is not null;
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.tables
+    where table_schema = 'public'
+      and table_name = 'utilizacion_il'
+  ) and exists (
+    select 1
+    from information_schema.tables
+    where table_schema = 'public'
+      and table_name = 'utilizacion_il_eventos'
+  ) then
+    update public.utilizacion_il_eventos e
+    set finished_at = greatest(e.opened_at, u.app_closed_at)
+    from public.utilizacion_il u
+    where e.session_id = u.session_id
+      and e.finished_at is null
+      and u.app_closed_at is not null;
+  end if;
+end
+$$;

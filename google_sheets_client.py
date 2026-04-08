@@ -18,8 +18,6 @@ import os
 import re
 import sys
 
-from openpyxl.utils.cell import range_boundaries
-
 from formularios.common import (
     DEFAULT_SERVICE_ACCOUNT_FILE_NAME,
     FORBIDDEN_CONFIG_KEYS,
@@ -36,6 +34,7 @@ DEFAULT_CONFIG_PATH = "config.json"
 SCOPE = "https://www.googleapis.com/auth/spreadsheets"
 SPREADSHEET_ID_RE = re.compile(r"/spreadsheets/d/([a-zA-Z0-9-_]+)")
 FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+_A1_COORD_RE = re.compile(r"^([A-Z]+)(\d+)$")
 _SHEETS_SERVICE_CACHE = {"signature": None, "service": None}
 
 
@@ -920,19 +919,38 @@ def _parse_a1_cell(a1_range):
     return sheet_name, row_idx, col_idx
 
 
+def _parse_a1_coord(token):
+    match = _A1_COORD_RE.match(str(token or "").strip().upper())
+    if not match:
+        raise ValueError(f"Cannot parse A1 coordinate: {token}")
+    col_idx = _col_letter_to_index(match.group(1))
+    row_idx = int(match.group(2)) - 1
+    if row_idx < 0:
+        raise ValueError(f"Cannot parse A1 coordinate: {token}")
+    return row_idx, col_idx
+
+
 def _parse_a1_rect(a1_range):
-    match = re.match(r"^'([^']+)'!([A-Z]+\d+(?::[A-Z]+\d+)?)$", str(a1_range or "").strip())
+    match = re.match(
+        r"^'([^']+)'!([A-Z]+\d+)(?::([A-Z]+\d+))?$",
+        str(a1_range or "").strip(),
+    )
     if not match:
         raise ValueError(f"Cannot parse A1 range: {a1_range}")
     sheet_name = match.group(1)
-    cell_range = match.group(2)
-    min_col, min_row, max_col, max_row = range_boundaries(cell_range)
+    start_row_idx, start_col_idx = _parse_a1_coord(match.group(2))
+    end_token = match.group(3) or match.group(2)
+    end_row_idx, end_col_idx = _parse_a1_coord(end_token)
+    min_row_idx = min(start_row_idx, end_row_idx)
+    max_row_idx = max(start_row_idx, end_row_idx)
+    min_col_idx = min(start_col_idx, end_col_idx)
+    max_col_idx = max(start_col_idx, end_col_idx)
     return {
         "sheet_name": sheet_name,
-        "start_row_index": max(0, min_row - 1),
-        "end_row_index": max_row,
-        "start_col_index": max(0, min_col - 1),
-        "end_col_index": max_col,
+        "start_row_index": min_row_idx,
+        "end_row_index": max_row_idx + 1,
+        "start_col_index": min_col_idx,
+        "end_col_index": max_col_idx + 1,
     }
 
 

@@ -165,8 +165,7 @@ Set-Content -Path (Join-Path $root "installer_config.local.iss") -Value $install
 $requiredBuildInputs = @(
     "config.json",
     "Diccionario.txt",
-    "VERSION",
-    "templates"
+    "VERSION"
 )
 
 foreach ($relativePath in $requiredBuildInputs) {
@@ -198,7 +197,6 @@ $pyiArgs = @(
     "--name", "RECA_INCLUSION_LABORAL",
     "--additional-hooks-dir", "pyinstaller_hooks",
     "--add-data", "config.json;.",
-    "--add-data", "templates;templates",
     "--add-data", "Diccionario.txt;.",
     "--add-data", "VERSION;.",
     "--add-data", "$bundledServiceAccountPath;.",
@@ -226,8 +224,7 @@ $requiredRuntimePaths = @(
     "config.json",
     "Diccionario.txt",
     "VERSION",
-    "service-account.json",
-    "templates"
+    "service-account.json"
 )
 
 foreach ($relativePath in $requiredRuntimePaths) {

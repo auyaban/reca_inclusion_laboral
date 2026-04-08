@@ -1477,11 +1477,13 @@ def _build_drive_upload_result_from_exception(job, exc, *, attempted_at=None):
 
 
 def _drive_upload_operation_label(job):
-    upload_kind = str((job or {}).get("upload_kind") or "excel_upload").strip().lower()
+    upload_kind = str((job or {}).get("upload_kind") or "").strip().lower()
     if upload_kind == "evaluacion_sheet":
         return "sheet_copy"
     if upload_kind == "pdf_export":
         return "pdf_export"
+    if upload_kind:
+        return upload_kind
     return "upload"
 
 
@@ -1616,13 +1618,12 @@ def _perform_pdf_export_attempt(job, attempted_at):
 
 def _perform_drive_upload_attempt(job):
     attempted_at = _get_colombia_now().isoformat()
-    upload_kind = str((job or {}).get("upload_kind") or "excel_upload").strip().lower()
+    upload_kind = str((job or {}).get("upload_kind") or "").strip().lower()
 
     # Delegación especial para PDF export (manejo propio, sin actualizar Supabase)
     if upload_kind == "pdf_export":
         return _perform_pdf_export_attempt(job, attempted_at)
 
-    excel_path = str((job or {}).get("local_excel_path") or "").strip()
     company_name = str((job or {}).get("company_name") or "").strip()
     try:
         if upload_kind == "evaluacion_sheet":
@@ -1631,7 +1632,9 @@ def _perform_drive_upload_attempt(job):
                 raise RuntimeError("El payload de Google Sheets es inválido.")
             remote_file_name = str((job or {}).get("remote_file_name") or "").strip()
             if not remote_file_name:
-                remote_file_name = os.path.splitext(os.path.basename(excel_path))[0]
+                raise RuntimeError(
+                    "Falta remote_file_name en el job de publicación remota."
+                )
             upload_result = drive_upload.publish_evaluacion_accesibilidad_sheet(
                 sheet_writes=sheet_export.get("writes") or [],
                 clear_ranges=sheet_export.get("clear_ranges") or [],
@@ -1640,10 +1643,9 @@ def _perform_drive_upload_attempt(job):
                 folder_name=company_name,
             )
         else:
-            upload_result = drive_upload.upload_excel_to_drive(
-                excel_path,
-                base_name=os.path.basename(excel_path),
-                folder_name=company_name,
+            raise RuntimeError(
+                "El job de Drive usa upload_kind no soportado. "
+                "Solo se permiten publicaciones remotas a Google Sheets o PDF."
             )
     except Exception as exc:
         return _build_drive_upload_result_from_exception(job, exc, attempted_at=attempted_at)
@@ -1665,7 +1667,7 @@ def _perform_drive_upload_attempt(job):
         "error": "",
         "attempted_at": attempted_at,
         "uploaded_at": uploaded_at,
-        "output_path": excel_path,
+        "output_path": str((job or {}).get("local_excel_path") or "").strip(),
         "remote_url": remote_url,
         "drive_file_id": drive_file_id,
     }
@@ -1750,7 +1752,7 @@ def _enqueue_drive_upload_job(job):
         "form_name": str((job or {}).get("form_name") or "").strip(),
         "company_name": str((job or {}).get("company_name") or "").strip(),
         "local_excel_path": str((job or {}).get("local_excel_path") or "").strip(),
-        "upload_kind": str((job or {}).get("upload_kind") or "excel_upload").strip(),
+        "upload_kind": str((job or {}).get("upload_kind") or "").strip(),
         "remote_file_name": str((job or {}).get("remote_file_name") or "").strip(),
         "sheet_export": (job or {}).get("sheet_export") or {},
         "attempts": int((job or {}).get("attempts") or 0),
@@ -3909,7 +3911,7 @@ def _open_local_file_safely(path, allowed_roots=None):
     if not os.path.exists(target):
         raise RuntimeError("No se encontró el archivo solicitado.")
     extension = os.path.splitext(target)[1].lower()
-    if extension not in {".xlsx", ".xlsm", ".xls", ".pdf"}:
+    if extension != ".pdf":
         raise RuntimeError("El tipo de archivo no está permitido para apertura directa.")
     roots = list(allowed_roots or ()) + _default_safe_open_roots()
     if not any(_is_path_within_root(target, root) for root in roots):
@@ -6955,15 +6957,21 @@ def _start_background_finalization(
                 already_in_drive = bool(export_result.get("already_in_drive"))
             else:
                 output_path = export_result
+            upload_kind = ""
+            if isinstance(drive_job, dict):
+                upload_kind = str(drive_job.get("upload_kind") or "").strip().lower()
             if not output_path and not already_in_drive:
                 raise FinalizeProcessError(
                     "generando el acta",
                     RuntimeError("No se generó el acta."),
                 )
-            if not already_in_drive and not os.path.exists(output_path):
+            if not already_in_drive and upload_kind not in {"evaluacion_sheet"}:
                 raise FinalizeProcessError(
-                    "verificando el acta generada",
-                    RuntimeError(f"No se encontró el acta generada:\n{output_path}"),
+                    "publicando el acta",
+                    RuntimeError(
+                        "El formulario devolvió una exportación local no soportada. "
+                        "La publicación debe hacerse directamente en Google Sheets."
+                    ),
                 )
             if module and hasattr(module, "get_form_cache"):
                 try:
@@ -6976,8 +6984,6 @@ def _start_background_finalization(
                 else:
                     export_cache_snapshot = copy.deepcopy(original_cache_snapshot or {})
             hub = _resolve_hub_window(window)
-            if hub and form_id:
-                hub.track_form_finished(form_id)
             if hub:
                 completion_payload = None
                 if form_id and export_cache_snapshot:
@@ -8271,8 +8277,6 @@ class HubWindow(tk.Tk):
         self._session_info_label = None
         self._session_clock_after_id = None
         self.current_session_id = None
-        self._form_event_ids = {}
-        self._form_event_payloads = {}
         self._companies_all = []
         self._empresa_names_cache = []
         self._companies_by_id = {}
@@ -8752,7 +8756,7 @@ class HubWindow(tk.Tk):
         self.current_user_profile = user_row
         if not bool((user_row or {}).get("_profile_fallback")):
             self._schedule_profesional_asignado_normalization()
-        self._start_usage_session()
+        self._ensure_session_id()
         if self.login_frame:
             self.login_frame.destroy()
             self.login_frame = None
@@ -9176,13 +9180,7 @@ class HubWindow(tk.Tk):
         dialog.wait_window()
         return result["ok"]
 
-    def _usage_upsert_async(self, table, row, on_conflict):
-        try:
-            _supabase_enqueue_upsert(table, [row], on_conflict=on_conflict)
-        except Exception:
-            return
-
-    def _usage_upsert_sync(self, table, row, on_conflict):
+    def _upsert_with_queue_sync(self, table, row, on_conflict):
         try:
             result = _supabase_upsert_with_queue(
                 table,
@@ -9191,13 +9189,13 @@ class HubWindow(tk.Tk):
             )
             return (result or {}).get("status") in {"synced", "queued"}
         except Exception as exc:
-            _log_capture(f"[USAGE] _usage_upsert_sync failed table={table} err={exc}")
+            _log_capture(f"[SUPABASE] _upsert_with_queue_sync failed table={table} err={exc}")
             try:
                 _supabase_enqueue_upsert(table, [row], on_conflict=on_conflict)
-                _log_capture(f"[USAGE] enqueued as fallback table={table}")
+                _log_capture(f"[SUPABASE] enqueued as fallback table={table}")
                 return True
             except Exception as q_exc:
-                _log_capture(f"[USAGE] enqueue_fallback failed table={table} err={q_exc}")
+                _log_capture(f"[SUPABASE] enqueue_fallback failed table={table} err={q_exc}")
             return False
 
     def _should_track_usage(self):
@@ -9208,95 +9206,12 @@ class HubWindow(tk.Tk):
             return True
         return login not in _get_usage_exempt_logins()
 
-    def _start_usage_session(self):
+    def _ensure_session_id(self):
         if not self._should_track_usage():
             return
         if self.current_session_id:
             return
         self.current_session_id = str(uuid.uuid4())
-        now = self._get_colombia_now().isoformat()
-        row = {
-            "session_id": self.current_session_id,
-            "usuario_login": (self.current_user_profile.get("usuario_login") or self.current_user or "").strip(),
-            "nombre_profesional": (self.current_user_profile.get("nombre_profesional") or "").strip(),
-            "programa": (self.current_user_profile.get("programa") or "").strip(),
-            "login_at": now,
-            "app_closed_at": None,
-        }
-        self._usage_upsert_async("utilizacion_il", row, on_conflict="session_id")
-
-    def _mark_app_closed(self):
-        if not self._should_track_usage():
-            return
-        if not self.current_session_id:
-            return
-        closed_at = self._get_colombia_now().isoformat()
-        try:
-            result = _supabase_patch_with_queue(
-                "utilizacion_il",
-                {"session_id": self.current_session_id},
-                {"app_closed_at": closed_at},
-            )
-            if (result or {}).get("status") in {"synced", "queued"}:
-                return
-        except Exception:
-            pass
-        row = {"session_id": self.current_session_id, "app_closed_at": closed_at}
-        self._usage_upsert_sync("utilizacion_il", row, on_conflict="session_id")
-
-    def track_form_open(self, form_id, form_name):
-        if not self._should_track_usage():
-            return
-        if not self.current_session_id:
-            return
-        event_id = str(uuid.uuid4())
-        self._form_event_ids[form_id] = event_id
-        row = {
-            "event_id": event_id,
-            "session_id": self.current_session_id,
-            "usuario_login": (self.current_user_profile.get("usuario_login") or self.current_user or "").strip(),
-            "form_id": form_id,
-            "form_name": form_name,
-            "opened_at": self._get_colombia_now().isoformat(),
-            "finished_at": None,
-        }
-        self._form_event_payloads[form_id] = dict(row)
-        self._usage_upsert_async("utilizacion_il_eventos", row, on_conflict="event_id")
-
-    def track_form_finished(self, form_id):
-        if not self._should_track_usage():
-            return
-        if not self.current_session_id:
-            return
-        event_id = self._form_event_ids.get(form_id)
-        if not event_id:
-            return
-        finished_at = self._get_colombia_now().isoformat()
-        try:
-            result = _supabase_patch_with_queue(
-                "utilizacion_il_eventos",
-                {"event_id": event_id},
-                {"finished_at": finished_at},
-            )
-            if (result or {}).get("status") in {"synced", "queued"}:
-                self._form_event_ids.pop(form_id, None)
-                self._form_event_payloads.pop(form_id, None)
-                return
-        except Exception:
-            pass
-
-        payload = dict(self._form_event_payloads.get(form_id) or {})
-        payload.update(
-            {
-                "event_id": event_id,
-                "session_id": self.current_session_id,
-                "finished_at": finished_at,
-            }
-        )
-        if not self._usage_upsert_sync("utilizacion_il_eventos", payload, on_conflict="event_id"):
-            pass
-        self._form_event_ids.pop(form_id, None)
-        self._form_event_payloads.pop(form_id, None)
 
     def _set_form_card_state(self, form_id, *, active):
         button = (self._form_action_buttons or {}).get(str(form_id or ""))
@@ -9401,10 +9316,10 @@ class HubWindow(tk.Tk):
                 f"create_form_completion_record form={form_name} company={company_name} output={output_path}"
             )
         try:
-            saved = self._usage_upsert_sync("formatos_finalizados_il", row, on_conflict="registro_id")
+            saved = self._upsert_with_queue_sync("formatos_finalizados_il", row, on_conflict="registro_id")
             if not saved:
                 _log_capture(
-                    f"[USAGE] create_form_completion_record upsert returned False "
+                    f"[FORM_COMPLETION] create_form_completion_record upsert returned False "
                     f"registro_id={registro_id} form={form_name}"
                 )
         except Exception as exc:
@@ -9569,7 +9484,6 @@ class HubWindow(tk.Tk):
             except tk.TclError:
                 pass
             self._net_status_after_id = None
-        self._mark_app_closed()
         self.after(250, self.destroy)
 
     def _get_colombia_now(self):
@@ -11018,8 +10932,6 @@ class HubWindow(tk.Tk):
             bootstrap=bootstrap,
         )
         _focus_window(editor)
-        self.track_form_open("seguimientos", "Seguimientos")
-
     def _delete_followup_local_draft_entry(self, draft):
         draft_id = str(draft.get("draft_id") or "").strip()
         if not draft_id:
@@ -11605,20 +11517,15 @@ class HubWindow(tk.Tk):
         window._draft_last_fingerprint = getattr(window, "_draft_last_fingerprint", "")
         window._skip_close_guard = False
         _ensure_form_save_status_label(window)
-        if not getattr(window, "_usage_close_tracking_installed", False):
-            window._usage_close_tracking_installed = True
-            window._usage_finish_logged = False
+        if not getattr(window, "_close_guard_installed", False):
+            window._close_guard_installed = True
+            window._form_window_released = False
             original_destroy = window.destroy
 
-            def _track_usage_finish_once():
-                if getattr(window, "_usage_finish_logged", False):
+            def _release_form_window_once():
+                if getattr(window, "_form_window_released", False):
                     return
-                window._usage_finish_logged = True
-                _log_capture(f"[USAGE] form_window_closed form={form_id}")
-                try:
-                    self.track_form_finished(form_id)
-                except Exception:
-                    pass
+                window._form_window_released = True
                 try:
                     self._release_form_window(form_id, window)
                 except Exception:
@@ -11628,11 +11535,10 @@ class HubWindow(tk.Tk):
                 if not getattr(window, "_skip_close_guard", False):
                     if _guard_form_action(window, action_label="cerrar"):
                         return None
-                _track_usage_finish_once()
+                _release_form_window_once()
                 return original_destroy(*args, **kwargs)
 
-            window._track_usage_finish_once = _track_usage_finish_once
-            window._original_destroy = original_destroy
+            window._release_form_window_once = _release_form_window_once
             window.destroy = _tracked_destroy
             try:
                 window.protocol("WM_DELETE_WINDOW", window.destroy)
@@ -11729,7 +11635,6 @@ class HubWindow(tk.Tk):
             if bool(form_meta.get("singleton_window")):
                 self._register_open_form_window(form_id, window)
             _focus_window(window)
-            self.track_form_open(form_meta["id"], form_meta["name"])
             return window
 
         if form_meta["id"] == "presentacion_programa":
@@ -22526,7 +22431,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
                 seguimientos.save_base_payload(self.case_target, payload)
             except PermissionError as exc:
                 raise RuntimeError(
-                    "No se pudo guardar porque el Excel está abierto en otra aplicación."
+                    "No se pudieron guardar los cambios del caso."
                 ) from exc
         elif save_kind == "followup":
             _progress(f"Guardando seguimiento {idx}...", 42)
@@ -22534,19 +22439,14 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
                 seguimientos.save_followup_payload(self.case_target, idx, payload)
             except PermissionError as exc:
                 raise RuntimeError(
-                    "No se pudo guardar porque el Excel está abierto en otra aplicación."
+                    "No se pudieron guardar los cambios del seguimiento."
                 ) from exc
         else:
             raise RuntimeError("No se pudo identificar la hoja que se intenta guardar.")
 
         sync_warning = ""
         if str(trigger or "").strip().lower() == "manual":
-            _progress("Sincronizando el caso con Drive...", 72)
-            if self.case_record and self.case_path:
-                try:
-                    seguimientos.sync_case_record_from_local(self.case_record, self.case_path)
-                except Exception as exc:
-                    sync_warning = str(exc)
+            _progress("Confirmando los cambios del caso...", 72)
             if save_kind == "followup":
                 _progress("Actualizando el estado del seguimiento...", 88)
                 hub = self._get_hub_window()

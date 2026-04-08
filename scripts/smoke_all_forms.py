@@ -12,7 +12,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import drive_upload
 from formularios.presentacion_programa import presentacion_programa
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.condiciones_vacante import condiciones_vacante
@@ -140,28 +139,36 @@ def run_smoke(only=None, strict=False, with_drive=False, professional="Smoke Tes
 
         try:
             section_1 = _seed_random_cache(module, label)
-            output_path = _export_module(module)
+            export_result = _export_module(module)
+            if isinstance(export_result, dict):
+                output_path = str(export_result.get("output_path") or "").strip()
+                already_in_drive = bool(export_result.get("already_in_drive"))
+                drive_file_id = str(
+                    export_result.get("drive_file_id")
+                    or export_result.get("file_id")
+                    or ""
+                ).strip()
+            else:
+                output_path = str(export_result or "").strip()
+                already_in_drive = False
+                drive_file_id = ""
             if not output_path:
-                raise RuntimeError("export_to_excel no devolvio ruta")
+                raise RuntimeError("export_to_excel no devolvio un destino remoto")
+            if not already_in_drive:
+                raise RuntimeError(
+                    "export_to_excel devolvio un flujo local no soportado; se esperaba already_in_drive=True"
+                )
 
             drive_result = None
             if with_drive:
-                upload_result = drive_upload.upload_excel_to_drive(
-                    output_path,
-                    base_name=os.path.basename(output_path),
-                    folder_name=professional,
-                )
-                drive_result = (
-                    f"OK id={upload_result.get('file_id')} "
-                    f"name={upload_result.get('file_name')}"
-                )
+                drive_result = f"YA_PUBLICADO id={drive_file_id or '-'}"
 
             results.append(
                 {
                     "form_id": form_id,
                     "label": label,
                     "status": "OK",
-                    "detail": "Exportado con datos random",
+                    "detail": "Publicado remoto con datos random",
                     "empresa": section_1.get("nombre_empresa"),
                     "excel": output_path,
                     "drive": drive_result,
@@ -207,7 +214,7 @@ def print_report(started, ended, results):
         if row.get("empresa"):
             print(f"  Empresa random: {row['empresa']}")
         if row.get("excel"):
-            print(f"  Excel: {row['excel']}")
+            print(f"  Destino remoto: {row['excel']}")
         if row.get("drive"):
             print(f"  Drive: {row['drive']}")
 
@@ -233,7 +240,7 @@ def main():
     parser.add_argument(
         "--with-drive",
         action="store_true",
-        help="Sube cada Excel generado a Drive.",
+        help="Verifica que cada exportación ya quede publicada remotamente.",
     )
     parser.add_argument(
         "--professional",

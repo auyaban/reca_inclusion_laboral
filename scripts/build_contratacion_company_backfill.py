@@ -14,9 +14,6 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from openpyxl import load_workbook
-
-
 def _iso_date(value):
     if isinstance(value, datetime):
         return value.isoformat()
@@ -26,6 +23,13 @@ def _iso_date(value):
 
 
 def build_mapping(workbook_path):
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:  # pragma: no cover - utilidad operativa opcional
+        raise SystemExit(
+            "Este script requiere openpyxl de forma opcional para leer el archivo histórico."
+        ) from exc
+
     wb = load_workbook(workbook_path, read_only=True, data_only=True)
     ws = wb[wb.sheetnames[0]]
     rows = ws.iter_rows(values_only=True)

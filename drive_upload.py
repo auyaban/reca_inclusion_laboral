@@ -5,7 +5,7 @@ Responsabilidades:
   - Worker thread (_drive_upload_worker_loop) que procesa una cola FIFO persistida
   - Cola guardada en JSON (%LOCALAPPDATA%/RECA/drive_upload_queue.json)
   - Cola de fallidos (drive_failed_queue.json) con resumen de error
-  - Subida de archivos Excel (.xlsx) y exportación a PDF desde Sheets
+  - Publicación remota de Google Sheets y exportación a PDF desde Sheets
   - Reintentos con backoff (_next_drive_retry_delay_seconds)
   - Cifrado/descifrado de credenciales guardadas usando Windows DPAPI
 
@@ -50,7 +50,6 @@ SCOPE = "https://www.googleapis.com/auth/drive"
 DEFAULT_CONFIG_PATH = "config.json"
 GOOGLE_SHEETS_MIME = "application/vnd.google-apps.spreadsheet"
 GOOGLE_FOLDER_MIME = "application/vnd.google-apps.folder"
-XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def _get_bundle_dir():
@@ -670,116 +669,6 @@ def probe_drive_service(timeout=6, log_enabled=False, require_write=True):
         if status == 404:
             return _result(False, "Carpeta de Drive no accesible", "folder_not_found", exc)
         return _result(False, "No se pudo conectar a Drive", "connectivity", exc)
-
-
-def upload_excel_to_drive(
-    excel_path,
-    base_name=None,
-    folder_name=None,
-    professional_name=None,
-):
-    if not excel_path:
-        raise RuntimeError("Falta excel_path para subir a Drive.")
-    if not os.path.exists(excel_path):
-        raise RuntimeError(f"No existe el archivo de Excel: {excel_path}")
-
-    # Log early so every failure path is captured in the drive log.
-    _log_drive(
-        f"START_EXCEL path={excel_path} base_name={base_name!r} folder_name={folder_name!r} "
-        f"bundle_dir={_get_bundle_dir()}",
-        excel_path,
-    )
-
-    try:
-        from google.oauth2.service_account import Credentials
-        from googleapiclient.discovery import build
-        from googleapiclient.http import MediaFileUpload
-    except ImportError as exc:
-        _log_drive("ERROR missing_dependencies", excel_path)
-        raise RuntimeError(
-            "Faltan dependencias para Google Drive. Instala google-api-python-client y google-auth."
-        ) from exc
-
-    try:
-        creds_path = _get_credentials_path()
-    except RuntimeError as exc:
-        _log_drive(f"ERROR credentials_path {exc}", excel_path)
-        raise
-
-    try:
-        configured_root_folder_id = _get_excel_folder_id()
-    except RuntimeError as exc:
-        _log_drive(f"ERROR folder_id {exc}", excel_path)
-        raise
-
-    requested_filename = _sanitize_filename(base_name or os.path.basename(excel_path))
-    resolved_folder_name = folder_name if folder_name is not None else professional_name
-
-    _log_drive(
-        f"RESOLVED creds={creds_path} folder_id={configured_root_folder_id} "
-        f"target_folder={resolved_folder_name!r}",
-        excel_path,
-    )
-
-    credentials = Credentials.from_service_account_file(creds_path, scopes=[SCOPE])
-    service = build("drive", "v3", credentials=credentials, cache_discovery=False)
-    root_folder_id = _resolve_target_root_id(service, configured_root_folder_id, excel_path)
-    target_folder_id = root_folder_id
-    if resolved_folder_name:
-        try:
-            target_folder_id = _get_or_create_folder(
-                service,
-                root_folder_id,
-                resolved_folder_name,
-                log_base_path=excel_path,
-            )
-        except Exception as exc:
-            _log_drive(
-                f"WARN folder_fallback folder_name={resolved_folder_name!r} error={exc}",
-                excel_path,
-            )
-            target_folder_id = root_folder_id
-
-    filename = _get_available_filename(service, target_folder_id, requested_filename, excel_path)
-    request_id = uuid.uuid4().hex
-    metadata = {
-        "name": filename,
-        "parents": [target_folder_id],
-        "appProperties": _build_request_app_properties("excel_upload", request_id),
-    }
-    try:
-        result = execute_google_create_with_confirmation(
-            lambda: service.files().create(
-                body=metadata,
-                media_body=MediaFileUpload(excel_path, mimetype=XLSX_MIME, resumable=False),
-                fields="id,name,webViewLink,mimeType,appProperties",
-                supportsAllDrives=True,
-            ),
-            lambda: _find_drive_file_by_request_id(
-                service,
-                target_folder_id,
-                filename,
-                request_id,
-                mime_type=XLSX_MIME,
-            ),
-            operation_name="drive.upload_excel",
-            logger=_google_request_logger(excel_path),
-        )
-    except Exception as exc:
-        _log_drive(f"ERROR upload_excel {exc}", excel_path)
-        raise
-    file_id = result.get("id")
-    file_name = result.get("name")
-    web_link = result.get("webViewLink")
-    _log_drive(
-        f"SUCCESS_EXCEL id={file_id} name={file_name} folder={target_folder_id} folder_name={resolved_folder_name!r} link={web_link}",
-        excel_path,
-    )
-    return {
-        "file_id": file_id,
-        "file_name": file_name,
-        "webViewLink": web_link,
-    }
 
 
 def publish_sheet_from_template(

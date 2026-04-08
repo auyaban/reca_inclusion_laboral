@@ -125,7 +125,6 @@ from updater import (
     get_latest_release_assets,
     get_release_page_url,
     is_update_available,
-    run_installer,
 )
 from logging_utils import get_log_file_path, get_logs_root, log_app_event, log_labs_event
 
@@ -7959,7 +7958,6 @@ class HubWindow(tk.Tk):
         self._auto_login_thread = None
         self._open_form_windows = {}
         self._form_action_buttons = {}
-        self._installing_update = False
 
         _ensure_drive_upload_worker()
         self._configure_input_styles()
@@ -9184,12 +9182,6 @@ class HubWindow(tk.Tk):
         )
 
     def _on_app_close(self):
-        if self._installing_update:
-            messagebox.showinfo(
-                "Actualización en progreso",
-                "La actualización se está instalando. Espera a que termine.",
-            )
-            return
         _log_capture("_on_app_close: cerrando app")
         if self._session_clock_after_id:
             try:
@@ -9455,16 +9447,11 @@ class HubWindow(tk.Tk):
                 path = download_installer(assets, progress_callback=_progress)
                 result["path"] = path
                 _log_capture(f"_start_manual_update: instalador descargado en {path}")
-                self.after(0, lambda: dialog.set_status("Instalando actualización..."))
+                self.after(0, lambda: dialog.set_status("Listo. Cerrando para instalar..."))
                 self.after(0, lambda: dialog.set_progress(100))
-                self._installing_update = True
-                run_installer(path, wait=True)
-                _log_capture("_start_manual_update: instalador completado")
             except Exception as exc:
                 result["error"] = str(exc)
                 _log_capture(f"_start_manual_update error: {exc}")
-            finally:
-                self._installing_update = False
 
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
@@ -9478,12 +9465,12 @@ class HubWindow(tk.Tk):
                 _log_capture(f"_start_manual_update resultado error: {result['error']}")
                 messagebox.showerror("Actualización", f"No se pudo actualizar: {result['error']}")
                 return
-            _log_capture("_start_manual_update resultado OK: iniciando reinicio")
-            self._show_restart_countdown()
+            _log_capture("_start_manual_update resultado OK: iniciando instalación")
+            self._show_restart_countdown(result["path"])
 
         self.after(300, _check_done)
 
-    def _show_restart_countdown(self, seconds=5):
+    def _show_restart_countdown(self, installer_path, seconds=5):
         modal = tk.Toplevel(self)
         modal.title("Actualización")
         modal.configure(bg=COLOR_LIGHT_BG)
@@ -9495,14 +9482,14 @@ class HubWindow(tk.Tk):
         body.pack(fill="both", expand=True)
         tk.Label(
             body,
-            text="Actualización instalada",
+            text="Descarga lista",
             font=("Arial", 12, "bold"),
             fg=COLOR_PURPLE,
             bg=COLOR_LIGHT_BG,
         ).pack(anchor="w", pady=(0, 6))
         countdown = tk.Label(
             body,
-            text=f"Reiniciando en {seconds} segundos...",
+            text=f"La aplicación se cerrará en {seconds} segundos para instalar...",
             font=("Arial", 10),
             fg=COLOR_TEAL,
             bg=COLOR_LIGHT_BG,
@@ -9510,7 +9497,7 @@ class HubWindow(tk.Tk):
         countdown.pack(anchor="w")
 
         modal.update_idletasks()
-        w, h = 360, 140
+        w, h = 400, 140
         x = (modal.winfo_screenwidth() // 2) - (w // 2)
         y = (modal.winfo_screenheight() // 2) - (h // 2)
         modal.geometry(f"{w}x{h}+{x}+{y}")
@@ -9521,19 +9508,30 @@ class HubWindow(tk.Tk):
                     modal.destroy()
                 except Exception:
                     pass
-                self.after(200, self._restart_app)
+                self.after(200, lambda: self._launch_installer_and_exit(installer_path))
                 return
-            countdown.config(text=f"Reiniciando en {remaining} segundos...")
+            countdown.config(text=f"La aplicación se cerrará en {remaining} segundos para instalar...")
             modal.after(1000, lambda: _tick(remaining - 1))
 
         _tick(seconds)
 
-    def _restart_app(self):
+    def _launch_installer_and_exit(self, installer_path):
+        args = [
+            str(installer_path),
+            "/VERYSILENT",
+            "/CURRENTUSER",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+        ]
         try:
-            subprocess.Popen([sys.executable], close_fds=True)
-            _log_capture("_restart_app: nueva instancia lanzada")
+            subprocess.Popen(
+                args,
+                close_fds=True,
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            )
+            _log_capture(f"_launch_installer_and_exit: installer lanzado {installer_path}")
         except Exception as exc:
-            _log_capture(f"_restart_app: error al relanzar: {exc}")
+            _log_capture(f"_launch_installer_and_exit error al lanzar: {exc}")
         try:
             self.destroy()
         except Exception:

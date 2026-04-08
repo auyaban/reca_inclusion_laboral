@@ -31,6 +31,7 @@ from formularios.common import (
     _merge_company_row_with_cache,
     _sanitize_filename,
     _supabase_get,
+    _supabase_get_paged,
     build_sheet_updates,
 )
 from formularios.finalize_validation import (
@@ -571,12 +572,28 @@ def get_empresas_by_nombre_prefix(prefix, env_path=".env", limit=50):
     prefix = " ".join(str(prefix).split())
     if not prefix:
         return []
+    try:
+        limit_value = int(limit)
+    except Exception:
+        limit_value = 50
+    page_size = 500
+    fetch_limit = max(0, limit_value)
     params = {
         "select": "nombre_empresa",
         "nombre_empresa": f"ilike.{prefix}%",
-        "limit": max(1, int(limit)),
     }
-    data = _supabase_get("empresas", params, env_path=env_path)
+    if fetch_limit and fetch_limit <= page_size:
+        params["limit"] = fetch_limit
+        data = _supabase_get("empresas", params, env_path=env_path)
+    else:
+        max_pages = 200 if fetch_limit <= 0 else max(1, (fetch_limit + page_size - 1) // page_size)
+        data = _supabase_get_paged(
+            "empresas",
+            params,
+            env_path=env_path,
+            page_size=page_size,
+            max_pages=max_pages,
+        )
     if not data:
         return []
     names = []
@@ -589,6 +606,8 @@ def get_empresas_by_nombre_prefix(prefix, env_path=".env", limit=50):
             continue
         seen.add(name)
         names.append(name)
+        if fetch_limit and len(names) >= fetch_limit:
+            break
     return names
 
 

@@ -7929,22 +7929,27 @@ def _section1_update_nombre_suggestions(self, open_dropdown=False):
     if not entry:
         return
     prefix = entry.get().strip()
-    if not prefix:
+    normalized_prefix = _normalize_company_search_text(prefix)
+    if len(normalized_prefix) < 2:
         entry["values"] = []
         _hide_empresa_autocomplete_popup(self)
         return
-    cache = getattr(self, "_empresa_names_cache", None)
-    if cache:
-        suggestions = _filter_company_name_suggestions(cache, prefix)
-    else:
-        lookup = getattr(self, "_empresa_lookup", None)
-        if not lookup or not hasattr(lookup, "get_empresas_by_nombre_prefix"):
-            _hide_empresa_autocomplete_popup(self)
-            return
+    suggestions = []
+    lookup = getattr(self, "_empresa_lookup", None)
+    if lookup and hasattr(lookup, "get_empresas_by_nombre_prefix"):
         try:
-            suggestions = lookup.get_empresas_by_nombre_prefix(prefix)
+            suggestions = lookup.get_empresas_by_nombre_prefix(prefix, limit=0)
+        except TypeError:
+            try:
+                suggestions = lookup.get_empresas_by_nombre_prefix(prefix)
+            except Exception:
+                suggestions = []
         except Exception:
             suggestions = []
+    if not suggestions:
+        cache = getattr(self, "_empresa_names_cache", None)
+        if cache:
+            suggestions = _filter_company_name_suggestions(cache, prefix)
     entry["values"] = suggestions
     if open_dropdown and suggestions:
         _show_empresa_autocomplete_popup(self, entry, suggestions)

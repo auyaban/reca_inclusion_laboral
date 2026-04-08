@@ -14635,7 +14635,8 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _render_section8_asistentes(self, values=None):
         rows = list(values or [])
-        min_rows = condiciones_vacante.SECTION_8.get("rows", 3)
+        # Mínimo: al menos 1 asistente + 1 asesor agencia (última fila siempre)
+        min_rows = max(condiciones_vacante.SECTION_8.get("rows", 3), 2)
         while len(rows) < min_rows:
             rows.append({"nombre": "", "cargo": ""})
 
@@ -14644,22 +14645,22 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             cargo_entry.destroy()
         self.section8_rows = []
 
+        last_idx = len(rows) - 1
         for idx, entry in enumerate(rows):
             row_idx = idx + 1
-            is_first = idx == 0
-            is_last = idx == len(rows) - 1
-            if is_first and not is_last:
+            is_last = idx == last_idx
+            if is_last:
+                nombre_entry, cargo_entry = _create_asesor_agencia_inputs(
+                    self.section8_table,
+                    ENTRY_W_WIDE,
+                    catalog=getattr(self, "_asesores_agencia_catalog", None),
+                )
+            elif idx == 0:
                 nombre_entry, cargo_entry = _create_asistente_inputs(
                     self.section8_table,
                     ENTRY_W_WIDE,
                     use_catalog=True,
                     catalog=_get_asistentes_profesionales_catalog(),
-                )
-            elif is_last:
-                nombre_entry, cargo_entry = _create_asesor_agencia_inputs(
-                    self.section8_table,
-                    ENTRY_W_WIDE,
-                    catalog=getattr(self, "_asesores_agencia_catalog", None),
                 )
             else:
                 nombre_entry, cargo_entry = _create_asistente_inputs(
@@ -14686,8 +14687,10 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
     def _add_section8_asistente_row(self):
         rows = self._get_section8_asistentes_values()
         if rows:
-            rows[-1] = {"nombre": "", "cargo": ""}
-        rows.append({"nombre": "", "cargo": ""})
+            # Inserta fila vacía antes del último (asesor agencia), preservando sus datos
+            rows.insert(len(rows) - 1, {"nombre": "", "cargo": ""})
+        else:
+            rows = [{"nombre": "", "cargo": ""}]
         self._render_section8_asistentes(rows)
 
     def _confirm_section_8(self):

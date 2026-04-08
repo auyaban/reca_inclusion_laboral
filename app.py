@@ -3287,13 +3287,24 @@ def _consume_pending_draft_restore(window, form_id, module, section_routes, defa
         pending.get("ui_section") or cache_snapshot.get("_last_section") or ""
     ).strip()
     route = section_routes.get(window._draft_restore_target_section) or default_route
-    if callable(route):
+    window._draft_restore_route_name = str(getattr(route, "__name__", "") or "").strip()
+    if window._draft_restore_target_section:
+        try:
+            window._current_section = window._draft_restore_target_section
+        except Exception:
+            pass
+    if not callable(route):
+        return False
+    if not getattr(window, "_runtime_sections_ready", False):
+        return True
+    try:
+        route()
+    except Exception:
         try:
             window.after_idle(route)
         except Exception:
-            route()
-        return True
-    return False
+            return False
+    return True
 
 
 # ── HELPERS: Normalización de texto, encoding, entradas numéricas ────────────
@@ -11419,6 +11430,18 @@ class HubWindow(tk.Tk):
                 window._current_section = str(cache.get("_last_section"))
         except Exception:
             pass
+        window._runtime_sections_ready = True
+        pending_route_name = str(getattr(window, "_draft_restore_route_name", "") or "").strip()
+        if pending_route_name:
+            route = getattr(window, pending_route_name, None)
+            if callable(route):
+                try:
+                    route()
+                except Exception as exc:
+                    _log_capture(
+                        f"[DRAFT] restore_route_replay_failed form={form_id} route={pending_route_name} err={exc}"
+                    )
+            window._draft_restore_route_name = ""
         try:
             _ensure_wizard_runtime_widgets(window)
         except Exception:

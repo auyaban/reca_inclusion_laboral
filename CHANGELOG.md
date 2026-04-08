@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.0.16 - 2026-04-07
+
+Esta version corrige una regresion al reabrir borradores de `Condiciones de Vacante` en la seccion final de asistentes.
+
+### Cambios principales
+
+- El restore de borradores ahora se reprocesa despues de inicializar el runtime del wizard, evitando estados mixtos entre la seccion visible y la seccion interna actual.
+- `Condiciones de Vacante` vuelve a mostrar correctamente el progreso final, los botones y la accion de agregar asistentes cuando se abre desde borrador.
+- Se agrega una prueba dedicada para cubrir la reapertura de borradores en `section_8`.
+
+### Como afecta a los usuarios
+
+- Abrir un borrador en asistentes vuelve a mostrar la pantalla completa y consistente, igual que en el flujo normal.
+
 ## 2.0.14 - 2026-04-07
 
 Esta version consolida el rediseño operativo de `Seguimientos` y agrega protecciones para que el diligenciamiento diario sea mas claro y seguro para los profesionales.

@@ -9511,7 +9511,7 @@ class HubWindow(tk.Tk):
                 self.after(200, lambda: self._launch_installer_and_exit(installer_path))
                 return
             countdown.config(text=f"La aplicación se cerrará en {remaining} segundos para instalar...")
-            modal.after(1000, lambda: _tick(remaining - 1))
+            self.after(1000, lambda: _tick(remaining - 1))
 
         _tick(seconds)
 
@@ -9526,17 +9526,12 @@ class HubWindow(tk.Tk):
         try:
             subprocess.Popen(
                 args,
-                close_fds=True,
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
             )
             _log_capture(f"_launch_installer_and_exit: installer lanzado {installer_path}")
         except Exception as exc:
             _log_capture(f"_launch_installer_and_exit error al lanzar: {exc}")
-        try:
-            self.destroy()
-        except Exception:
-            pass
-        sys.exit(0)
+        os._exit(0)
 
     def _build_header(self):
         self.header = tk.Frame(self, bg=COLOR_LIGHT_BG)

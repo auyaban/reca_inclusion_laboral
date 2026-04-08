@@ -29,6 +29,7 @@ import shutil
 import io
 import tempfile
 import uuid
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
@@ -2274,4 +2275,162 @@ def suggest_next_step(case_ref):
         "sheet": workflow.get("suggested_sheet") or workflow.get("base_sheet_name") or SHEET_BASE,
         "message": workflow.get("message") or "",
         "max_seguimientos": int(workflow.get("max_seguimientos") or 3),
+    }
+
+
+def _normalize_export_date_string(value):
+    text = _get_str(value)
+    if not text:
+        return ""
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(text, fmt).date().isoformat()
+        except Exception:
+            continue
+    return ""
+
+
+def _build_pdf_participants(base_payload):
+    participant = {
+        "nombre": _get_str((base_payload or {}).get("nombre_vinculado")),
+        "cedula": _get_str((base_payload or {}).get("cedula")),
+        "cargo": _get_str((base_payload or {}).get("cargo_vinculado")),
+    }
+    if not any(participant.values()):
+        return []
+    return [participant]
+
+
+def _normalize_followup_attendees(payload):
+    rows = []
+    for entry in list((payload or {}).get("asistentes") or []):
+        if not isinstance(entry, dict):
+            continue
+        normalized = {
+            "nombre": _get_str(entry.get("nombre")),
+            "cargo": _get_str(entry.get("cargo")),
+        }
+        if normalized["nombre"] or normalized["cargo"]:
+            rows.append(normalized)
+    return rows
+
+
+def list_pdf_followup_candidates(case_ref):
+    if not case_ref:
+        return []
+    workflow = get_workflow_state(case_ref)
+    base_payload = get_base_payload(case_ref)
+    max_seguimientos = int(workflow.get("max_seguimientos") or 3)
+    stage_entries = {
+        str((entry or {}).get("sheet_name") or "").strip(): dict(entry or {})
+        for entry in list(workflow.get("sheet_progress") or [])
+    }
+    candidates = []
+    for idx in range(1, max_seguimientos + 1):
+        sheet_name = _get_followup_sheet_name(idx)
+        entry = stage_entries.get(sheet_name) or {}
+        status = str(entry.get("status") or "").strip()
+        if status not in {"in_progress", "completed"}:
+            continue
+        payload = get_followup_payload(case_ref, idx)
+        candidates.append(
+            {
+                "followup_index": idx,
+                "sheet_name": sheet_name,
+                "title": str(entry.get("title") or entry.get("label") or f"Seguimiento {idx}").strip(),
+                "status": status,
+                "fecha_seguimiento": _get_str(
+                    payload.get("fecha_seguimiento") or _get_followup_date_from_base(base_payload, idx)
+                ),
+            }
+        )
+    return candidates
+
+
+def build_pdf_export_bundle(case_ref, followup_index=None):
+    if not case_ref:
+        raise RuntimeError("No hay un caso válido para exportar el PDF de seguimiento.")
+
+    meta = get_case_meta(case_ref)
+    base_payload = get_base_payload(case_ref)
+    base_sheet_name = str(meta.get("base_sheet_name") or SHEET_BASE).strip() or SHEET_BASE
+    temp_parent_folder_id = ""
+    if isinstance(case_ref, dict):
+        temp_parent_folder_id = _get_str(case_ref.get("folder_id"))
+
+    participants = _build_pdf_participants(base_payload)
+    included_sheet_names = [base_sheet_name]
+    nombre_empresa = _get_str(base_payload.get("nombre_empresa"))
+    nit_empresa = _get_str(base_payload.get("nit_empresa"))
+    cargo_objetivo = _get_str(base_payload.get("cargo_vinculado"))
+    nombre_profesional = _get_str(base_payload.get("profesional_asignado") or base_payload.get("asesor"))
+
+    common_metadata = {
+        "tipo_acta": "seguimiento",
+        "nit_empresa": nit_empresa,
+        "nombre_empresa": nombre_empresa,
+        "nombre_profesional": nombre_profesional,
+        "participantes": participants,
+        "cargo_objetivo": cargo_objetivo,
+    }
+
+    if followup_index is None:
+        fecha_servicio = _normalize_export_date_string(base_payload.get("fecha_visita"))
+        if not fecha_servicio:
+            raise RuntimeError("La ficha inicial no tiene una fecha válida para generar el PDF.")
+        acta_metadata = {
+            **common_metadata,
+            "document_variant": "base_only",
+            "fecha_servicio": fecha_servicio,
+            "modalidad_servicio": _get_str(base_payload.get("modalidad")),
+            "asistentes": [],
+            "included_sheet_names": included_sheet_names,
+            "included_followup_index": None,
+        }
+        return {
+            "tipo_acta": "seguimiento",
+            "fecha_servicio": fecha_servicio,
+            "extra_name": "Ficha inicial",
+            "acta_metadata": acta_metadata,
+            "selected_sheet_names": included_sheet_names,
+            "temp_parent_folder_id": temp_parent_folder_id,
+        }
+
+    idx = int(followup_index)
+    followup_sheet_name = _get_followup_sheet_name(idx)
+    followup_payload = get_followup_payload(case_ref, idx)
+    included_sheet_names = [base_sheet_name, followup_sheet_name]
+    fecha_seguimiento = _get_str(
+        followup_payload.get("fecha_seguimiento") or _get_followup_date_from_base(base_payload, idx)
+    )
+    fecha_servicio = _normalize_export_date_string(fecha_seguimiento) or _normalize_export_date_string(
+        base_payload.get("fecha_visita")
+    )
+    if not fecha_servicio:
+        raise RuntimeError(f"Seguimiento {idx} no tiene una fecha válida para generar el PDF.")
+    asistentes = _normalize_followup_attendees(followup_payload)
+    acta_metadata = {
+        **common_metadata,
+        "document_variant": "base_plus_followup",
+        "fecha_servicio": fecha_servicio,
+        "modalidad_servicio": _get_str(
+            followup_payload.get("modalidad") or base_payload.get("modalidad")
+        ),
+        "included_sheet_names": included_sheet_names,
+        "included_followup_index": idx,
+        "numero_seguimiento": idx,
+        "seguimiento_numero": _get_str(followup_payload.get("seguimiento_numero") or idx),
+        "fecha_seguimiento": fecha_seguimiento,
+        "tipo_apoyo": _get_str(followup_payload.get("tipo_apoyo")),
+        "situacion_encontrada": _get_str(followup_payload.get("situacion_encontrada")),
+        "estrategias_ajustes": _get_str(followup_payload.get("estrategias_ajustes")),
+        "asistentes": asistentes,
+    }
+    return {
+        "tipo_acta": "seguimiento",
+        "fecha_servicio": fecha_servicio,
+        "extra_name": f"Seguimiento {idx}",
+        "acta_metadata": acta_metadata,
+        "selected_sheet_names": included_sheet_names,
+        "temp_parent_folder_id": temp_parent_folder_id,
     }

@@ -37,6 +37,57 @@ class LoginAutoLoginPersistenceTests(unittest.TestCase):
 
 
 class LoginAutoLoginBehaviorTests(TkTestCase):
+    def test_finalize_login_success_schedules_profesional_normalization(self) -> None:
+        dummy = SimpleNamespace(
+            remember_login_var=SimpleNamespace(get=lambda: False),
+            auto_login_var=SimpleNamespace(get=lambda: False),
+            current_user="",
+            current_user_profile={},
+            login_frame=None,
+            _cache_offline_user_auth=Mock(),
+            _schedule_profesional_asignado_normalization=Mock(),
+            _start_usage_session=Mock(),
+            _build_header=Mock(),
+            _build_body=Mock(),
+            _auto_login_in_progress=True,
+        )
+
+        with patch.object(app, "_clear_login_credentials", return_value=None):
+            app.HubWindow._finalize_login_success(
+                dummy,
+                user_row={"usuario_login": "tester"},
+                username_input="tester",
+                username="tester",
+                password="secret",
+            )
+
+        dummy._schedule_profesional_asignado_normalization.assert_called_once_with()
+        dummy._start_usage_session.assert_called_once_with()
+        self.assertFalse(dummy._auto_login_in_progress)
+
+    def test_schedule_profesional_normalization_absorbs_background_errors(self) -> None:
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None, **kwargs):
+                self._target = target
+
+            def start(self):
+                if self._target is not None:
+                    self._target()
+
+        dummy = SimpleNamespace(
+            _profesional_normalization_in_progress=False,
+            _normalize_profesional_asignado=Mock(side_effect=RuntimeError("timeout")),
+        )
+
+        with patch.object(app.threading, "Thread", _ImmediateThread):
+            with patch.object(app, "_log_capture", return_value=None) as log_capture:
+                result = app.HubWindow._schedule_profesional_asignado_normalization(dummy)
+
+        self.assertTrue(result)
+        self.assertFalse(dummy._profesional_normalization_in_progress)
+        dummy._normalize_profesional_asignado.assert_called_once_with()
+        log_capture.assert_called()
+
     def test_update_auto_login_toggle_state_disables_checkbox_when_remember_is_false(self) -> None:
         dummy = SimpleNamespace()
         dummy.remember_login_var = tk.BooleanVar(master=self.root, value=False)

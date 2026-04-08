@@ -1349,6 +1349,90 @@ def export_google_sheet_as_pdf(service, file_id: str) -> bytes:
     return buffer.getvalue()
 
 
+def _copy_spreadsheet_for_pdf_export(service, sheet_file_id: str, parent_folder_id: str) -> str:
+    parent_id = str(parent_folder_id or "").strip()
+    if not parent_id:
+        raise RuntimeError("Falta la carpeta temporal para preparar el PDF.")
+    request_id = uuid.uuid4().hex
+    filename = _sanitize_filename(f"TMP PDF {sheet_file_id} {request_id[:8]}")
+    metadata = {
+        "name": filename,
+        "parents": [parent_id],
+        "appProperties": _build_request_app_properties("pdf_export_temp_copy", request_id),
+    }
+    copied = execute_google_create_with_confirmation(
+        lambda: service.files().copy(
+            fileId=sheet_file_id,
+            body=metadata,
+            fields="id,name,webViewLink,appProperties",
+            supportsAllDrives=True,
+        ),
+        lambda: _find_drive_file_by_request_id(
+            service,
+            parent_id,
+            filename,
+            request_id,
+            mime_type=GOOGLE_SHEETS_MIME,
+        ),
+        operation_name="drive.copy_pdf_export_sheet",
+        logger=_google_request_logger(filename),
+    )
+    temp_file_id = str(copied.get("id") or "").strip()
+    if not temp_file_id:
+        raise RuntimeError("Google Drive no devolvió el ID de la copia temporal para el PDF.")
+    return temp_file_id
+
+
+def _trash_drive_file(service, file_id: str) -> None:
+    target_id = str(file_id or "").strip()
+    if not target_id:
+        return
+    execute_google_request_with_retry(
+        service.files().update(
+            fileId=target_id,
+            body={"trashed": True},
+            fields="id",
+            supportsAllDrives=True,
+        ),
+        operation_name="drive.trash_pdf_temp_copy",
+        logger=_google_request_logger(),
+    )
+
+
+def _export_google_sheet_selection_as_pdf(
+    service,
+    sheet_file_id: str,
+    *,
+    selected_sheet_names=None,
+    temp_parent_folder_id: str | None = None,
+) -> bytes:
+    selected_names = [
+        str(name or "").strip()
+        for name in list(selected_sheet_names or [])
+        if str(name or "").strip()
+    ]
+    if not selected_names:
+        return export_google_sheet_as_pdf(service, sheet_file_id)
+
+    temp_file_id = ""
+    try:
+        temp_file_id = _copy_spreadsheet_for_pdf_export(
+            service,
+            sheet_file_id,
+            str(temp_parent_folder_id or "").strip(),
+        )
+        from google_sheets_client import hide_sheets
+
+        hide_sheets(temp_file_id, selected_names)
+        return export_google_sheet_as_pdf(service, temp_file_id)
+    finally:
+        if temp_file_id:
+            try:
+                _trash_drive_file(service, temp_file_id)
+            except Exception as exc:
+                _log_drive(f"WARN pdf_temp_copy_cleanup_failed file_id={temp_file_id} error={exc}")
+
+
 def inject_reca_metadata(pdf_bytes: bytes, metadata_dict: dict) -> bytes:
     """Inyecta el JSON del acta en el campo /RECA_Data de la metadata del PDF.
 
@@ -1455,6 +1539,8 @@ def create_and_upload_acta_pdf(
     folder_id: str,
     folder_name: str | None = None,
     extra: str | None = None,
+    selected_sheet_names=None,
+    temp_parent_folder_id: str | None = None,
 ) -> dict:
     """Orquesta la exportación, inyección de metadata y subida del PDF del acta.
 
@@ -1491,7 +1577,12 @@ def create_and_upload_acta_pdf(
             _log_drive(f"WARN PDF_EXPORT_SUBFOLDER_FAILED folder={clean_folder_name!r} err={exc} — usando raíz")
             target_folder_id = folder_id
 
-    pdf_bytes = export_google_sheet_as_pdf(service, sheet_file_id)
+    pdf_bytes = _export_google_sheet_selection_as_pdf(
+        service,
+        sheet_file_id,
+        selected_sheet_names=selected_sheet_names,
+        temp_parent_folder_id=str(temp_parent_folder_id or "").strip() or target_folder_id,
+    )
     pdf_bytes = inject_reca_metadata(pdf_bytes, acta_metadata)
     result = upload_pdf_to_folder(service, pdf_bytes, pdf_name, target_folder_id)
 

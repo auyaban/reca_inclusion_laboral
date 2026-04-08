@@ -767,6 +767,28 @@ def _get_followup_local_sheet_draft(case_target, sheet_name):
     return dict(draft or {}) if isinstance(draft, dict) else None
 
 
+def _list_followup_local_sheet_drafts(case_target):
+    case_key = _build_followup_local_case_key(case_target)
+    if not case_key:
+        return {}
+    store = _load_followup_local_drafts_store()
+    case_entry = store.get("cases", {}).get(case_key)
+    if not isinstance(case_entry, dict):
+        return {}
+    sheets = case_entry.get("sheets")
+    if not isinstance(sheets, dict):
+        return {}
+    items = {}
+    for sheet_key, draft in sheets.items():
+        if not isinstance(draft, dict):
+            continue
+        normalized_sheet = str(sheet_key or draft.get("sheet") or "").strip()
+        if not normalized_sheet:
+            continue
+        items[normalized_sheet] = dict(draft)
+    return items
+
+
 def _save_followup_local_sheet_draft(case_target, request, *, metadata=None):
     case_key = _build_followup_local_case_key(case_target)
     request = dict(request or {})
@@ -1472,10 +1494,23 @@ _PDF_EXPORT_ENABLED_TIPOS = {
     "contratacion_grupal",
     "induccion_organizacional",
     "induccion_operativa",
+    "seguimiento",
 }
 
 
-def _enqueue_pdf_export_job(*, sheet_file_id, tipo_acta, fecha_servicio, acta_metadata, extra_name=None, pdf_folder_id, company_name="", registro_id=""):
+def _enqueue_pdf_export_job(
+    *,
+    sheet_file_id,
+    tipo_acta,
+    fecha_servicio,
+    acta_metadata,
+    extra_name=None,
+    pdf_folder_id,
+    company_name="",
+    registro_id="",
+    selected_sheet_names=None,
+    temp_parent_folder_id="",
+):
     """Encola un job de exportación a PDF en la cola de uploads de Drive.
 
     A diferencia de ``_enqueue_drive_upload_job``, este job preserva todos los
@@ -1494,6 +1529,12 @@ def _enqueue_pdf_export_job(*, sheet_file_id, tipo_acta, fecha_servicio, acta_me
         "pdf_folder_id": str(pdf_folder_id or "").strip(),
         "company_name": str(company_name or "").strip(),
         "registro_id": str(registro_id or "").strip(),
+        "selected_sheet_names": [
+            str(name or "").strip()
+            for name in list(selected_sheet_names or [])
+            if str(name or "").strip()
+        ],
+        "temp_parent_folder_id": str(temp_parent_folder_id or "").strip(),
         "attempts": 0,
         "last_error": "",
         "next_try_at": float(time.time()),
@@ -1518,6 +1559,12 @@ def _perform_pdf_export_attempt(job, attempted_at):
     extra_name_raw = (job or {}).get("extra_name")
     extra_name = str(extra_name_raw or "").strip() or None
     pdf_folder_id = str((job or {}).get("pdf_folder_id") or "").strip()
+    selected_sheet_names = [
+        str(name or "").strip()
+        for name in list((job or {}).get("selected_sheet_names") or [])
+        if str(name or "").strip()
+    ]
+    temp_parent_folder_id = str((job or {}).get("temp_parent_folder_id") or "").strip()
 
     try:
         if not sheet_file_id:
@@ -1546,6 +1593,8 @@ def _perform_pdf_export_attempt(job, attempted_at):
             folder_id=pdf_folder_id,
             folder_name=company_name_for_pdf or None,
             extra=extra_name,
+            selected_sheet_names=selected_sheet_names,
+            temp_parent_folder_id=temp_parent_folder_id or pdf_folder_id,
         )
     except Exception as exc:
         return _build_drive_upload_result_from_exception(job, exc, attempted_at=attempted_at)
@@ -3916,7 +3965,18 @@ def _return_to_hub(window):
         return
 
 
-def _show_acta_published_dialog(parent, *, sheet_url, company_name="", pdf_folder_url=None):
+def _show_acta_published_dialog(
+    parent,
+    *,
+    sheet_url,
+    company_name="",
+    pdf_folder_url=None,
+    dialog_title="Acta publicada",
+    header_text="\u2705  \u00a1Acta publicada!",
+    body_text=None,
+    pdf_status_text=None,
+    open_sheet_label="Abrir Google Sheet",
+):
     """Dialog de éxito al publicar un acta.
 
     Muestra un mensaje amigable y permite abrir el Google Sheet y/o la
@@ -3924,7 +3984,7 @@ def _show_acta_published_dialog(parent, *, sheet_url, company_name="", pdf_folde
     tres acciones: abrir solo el Sheet, solo la carpeta de PDFs, o ambos.
     """
     dialog = tk.Toplevel(parent)
-    dialog.title("Acta publicada")
+    dialog.title(str(dialog_title or "Acta publicada"))
     dialog.configure(bg=COLOR_SURFACE)
     dialog.resizable(False, False)
     dialog.grab_set()
@@ -3937,7 +3997,7 @@ def _show_acta_published_dialog(parent, *, sheet_url, company_name="", pdf_folde
     header.pack_propagate(False)
     tk.Label(
         header,
-        text="\u2705  \u00a1Acta publicada!",
+        text=str(header_text or "\u2705  \u00a1Acta publicada!"),
         font=("Arial", 14, "bold"),
         fg="#FFFFFF",
         bg=COLOR_SUCCESS,
@@ -3949,9 +4009,12 @@ def _show_acta_published_dialog(parent, *, sheet_url, company_name="", pdf_folde
     body.pack(fill="x")
 
     company_line = f" de {company_name}" if company_name else ""
+    resolved_body_text = str(body_text or "").strip() or (
+        f"El acta{company_line} quedó guardada en Google Sheets."
+    )
     tk.Label(
         body,
-        text=f"El acta{company_line} qued\u00f3 guardada en Google Sheets.",
+        text=resolved_body_text,
         font=("Arial", 11),
         fg="#2D2D2D",
         bg=COLOR_SURFACE,
@@ -3960,9 +4023,12 @@ def _show_acta_published_dialog(parent, *, sheet_url, company_name="", pdf_folde
     ).pack(anchor="w")
 
     if pdf_folder_url:
+        resolved_pdf_status = str(pdf_status_text or "").strip() or (
+            "El PDF se est\u00e1 generando y estar\u00e1 disponible\nen la carpeta de Drive en unos segundos."
+        )
         tk.Label(
             body,
-            text="El PDF se est\u00e1 generando y estar\u00e1 disponible\nen la carpeta de Drive en unos segundos.",
+            text=resolved_pdf_status,
             font=("Arial", 10),
             fg="#5B5563",
             bg=COLOR_SURFACE,
@@ -4008,7 +4074,7 @@ def _show_acta_published_dialog(parent, *, sheet_url, company_name="", pdf_folde
         row.pack(anchor="w")
 
         tk.Button(
-            row, text="Abrir Google Sheet",
+            row, text=str(open_sheet_label or "Abrir Google Sheet"),
             bg=COLOR_PRIMARY, fg="#FFFFFF",
             command=_open_sheet, **_BTN,
         ).pack(side="left", padx=(0, 8))
@@ -4030,7 +4096,7 @@ def _show_acta_published_dialog(parent, *, sheet_url, company_name="", pdf_folde
         row.pack(anchor="w")
 
         tk.Button(
-            row, text="Abrir Google Sheet",
+            row, text=str(open_sheet_label or "Abrir Google Sheet"),
             bg=COLOR_PRIMARY, fg="#FFFFFF",
             command=_open_sheet, **_BTN,
         ).pack(side="left", padx=(0, 10))
@@ -8396,11 +8462,8 @@ class HubWindow(tk.Tk):
             _clear_login_credentials()
         self.current_user = (user_row.get("usuario_login") or username).strip()
         self.current_user_profile = user_row
-        try:
-            if not bool((user_row or {}).get("_profile_fallback")):
-                self._normalize_profesional_asignado()
-        except Exception:
-            pass
+        if not bool((user_row or {}).get("_profile_fallback")):
+            self._schedule_profesional_asignado_normalization()
         self._start_usage_session()
         if self.login_frame:
             self.login_frame.destroy()
@@ -8408,6 +8471,29 @@ class HubWindow(tk.Tk):
         self._auto_login_in_progress = False
         self._build_header()
         self._build_body()
+
+    def _schedule_profesional_asignado_normalization(self):
+        if bool(getattr(self, "_profesional_normalization_in_progress", False)):
+            return False
+        self._profesional_normalization_in_progress = True
+
+        def _worker():
+            try:
+                result = self._normalize_profesional_asignado()
+                status = str((result or {}).get("status") or "").strip().lower()
+                updated = int((result or {}).get("updated_rows") or 0)
+                if status not in {"ok", "skipped"}:
+                    _log_capture(
+                        "[LOGIN] profesional_asignado normalization deferred "
+                        f"status={status or 'unknown'} updated_rows={updated}"
+                    )
+            except Exception as exc:
+                _log_capture(f"[LOGIN] profesional_asignado normalization failed: {exc}")
+            finally:
+                self._profesional_normalization_in_progress = False
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return True
 
     def _handle_failed_login_attempt(self, *, message, silent=False, clear_saved=False):
         self._auto_login_in_progress = False
@@ -9994,12 +10080,16 @@ class HubWindow(tk.Tk):
         return False
 
     def _normalize_profesional_asignado(self):
-        profesionales = _supabase_get_paged(
-            "profesionales",
-            {"select": "nombre_profesional"},
-            page_size=1000,
-            max_pages=20,
-        )
+        try:
+            profesionales = _supabase_get_paged(
+                "profesionales",
+                {"select": "nombre_profesional"},
+                page_size=1000,
+                max_pages=20,
+            )
+        except Exception as exc:
+            _log_capture(f"[LOGIN] profesionales fetch failed during normalization: {exc}")
+            return {"status": "deferred", "updated_rows": 0, "error": str(exc)}
         alias_map = {}
         for row in profesionales:
             nombre = (row.get("nombre_profesional") or "").strip()
@@ -10007,16 +10097,22 @@ class HubWindow(tk.Tk):
                 continue
             for alias in self._build_profesional_aliases(nombre):
                 alias_map.setdefault(alias, nombre)
+        if not alias_map:
+            return {"status": "skipped", "updated_rows": 0, "error": ""}
 
-        empresas = _supabase_get_paged(
-            "empresas",
-            {
-                "select": "id,profesional_asignado",
-                "profesional_asignado": "not.is.null",
-            },
-            page_size=1000,
-            max_pages=50,
-        )
+        try:
+            empresas = _supabase_get_paged(
+                "empresas",
+                {
+                    "select": "id,profesional_asignado",
+                    "profesional_asignado": "not.is.null",
+                },
+                page_size=1000,
+                max_pages=50,
+            )
+        except Exception as exc:
+            _log_capture(f"[LOGIN] empresas fetch failed during normalization: {exc}")
+            return {"status": "deferred", "updated_rows": 0, "error": str(exc)}
         updates = []
         for row in empresas:
             current = (row.get("profesional_asignado") or "").strip()
@@ -10026,8 +10122,18 @@ class HubWindow(tk.Tk):
             target = alias_map.get(key)
             if target and target != current:
                 updates.append({"id": row.get("id"), "profesional_asignado": target})
-        if updates:
-            _supabase_upsert_with_queue("empresas", updates, on_conflict="id")
+        if not updates:
+            return {"status": "ok", "updated_rows": 0, "error": ""}
+        try:
+            result = _supabase_upsert_with_queue("empresas", updates, on_conflict="id")
+        except Exception as exc:
+            _log_capture(f"[LOGIN] empresas upsert failed during normalization: {exc}")
+            return {"status": "deferred", "updated_rows": 0, "error": str(exc)}
+        return {
+            "status": str((result or {}).get("status") or "ok"),
+            "updated_rows": len(updates),
+            "error": str((result or {}).get("error") or ""),
+        }
 
     def _get_assigned_companies(self):
         user_login = self._norm_match(self.current_user_profile.get("usuario_login") or self.current_user)
@@ -21072,7 +21178,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
             progress("Abriendo el editor...", 100)
             return {
                 "case_record": case_record,
-                "case_path": None,
+                "case_path": str(case_record.get("local_path") or self.case_path or "").strip() or None,
                 "bootstrap": bootstrap,
             }
 
@@ -21398,6 +21504,9 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         self._sheet_autosave_pending_request = None
         self._sheet_autosave_last_fingerprint = ""
         self._sheet_autosave_debounce_ms = 1500
+        self._base_saved_in_session = False
+        self._saved_followup_indices_in_session = []
+        self._last_saved_followup_index = None
 
         self._build_header()
         self._build_controls()
@@ -23446,11 +23555,21 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         payload["seguimiento_fechas_4_6"] = [e.get().strip() for e in self.base_dates_2]
         return payload
 
-    def _validate_base_payload(self, payload):
-        if self.base_date_widgets.get("fecha_visita") is not None:
-            ui_feedback.register_field(self, "fecha_visita", self.base_date_widgets.get("fecha_visita").entry)
+    def _validate_base_payload(self, payload, *, focus_invalid=True):
+        date_widget = self.base_date_widgets.get("fecha_visita")
+        date_entry = getattr(date_widget, "entry", None)
+        if date_entry is not None:
+            try:
+                if date_entry.winfo_exists():
+                    ui_feedback.register_field(self, "fecha_visita", date_entry)
+            except Exception:
+                pass
         if self.base_modalidad_widget is not None:
-            ui_feedback.register_field(self, "modalidad", self.base_modalidad_widget)
+            try:
+                if self.base_modalidad_widget.winfo_exists():
+                    ui_feedback.register_field(self, "modalidad", self.base_modalidad_widget)
+            except Exception:
+                pass
         ui_feedback.clear_field_errors(self, ["fecha_visita", "modalidad"])
         missing = []
         if not str((payload or {}).get("fecha_visita") or "").strip():
@@ -23466,18 +23585,21 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             "Completa fecha de visita y modalidad antes de guardar la ficha inicial.",
             state="error",
         )
-        if "Fecha visita" in missing:
-            widget = self.base_date_widgets.get("fecha_visita")
-            if widget is not None:
+        if focus_invalid:
+            if "Fecha visita" in missing:
+                widget = self.base_date_widgets.get("fecha_visita")
+                if widget is not None:
+                    try:
+                        if widget.select_button.winfo_exists():
+                            widget.select_button.focus_set()
+                    except Exception:
+                        pass
+            elif self.base_modalidad_widget is not None:
                 try:
-                    widget.select_button.focus_set()
+                    if self.base_modalidad_widget.winfo_exists():
+                        self.base_modalidad_widget.focus_set()
                 except Exception:
                     pass
-        elif self.base_modalidad_widget is not None:
-            try:
-                self.base_modalidad_widget.focus_set()
-            except Exception:
-                pass
         return False
 
     def _collect_followup_payload(self, idx):
@@ -23499,9 +23621,317 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         }
         return payload
 
+    def _sheet_title(self, sheet_name):
+        return _friendly_followup_sheet_title(
+            sheet_name,
+            {"stage_model": self.sheet_stage_model, "base_sheet_name": self.base_sheet_name},
+            base_sheet_name=self.base_sheet_name,
+        )
+
+    def _sheet_sort_key(self, sheet_name):
+        current = str(sheet_name or "").strip()
+        if current == str(self.base_sheet_name or "").strip():
+            return (0, 0)
+        match = re.search(r"(\d+)$", current)
+        if match:
+            return (1, int(match.group(1)))
+        return (2, current.casefold())
+
+    def _mark_session_sheet_saved(self, request):
+        request = dict(request or {})
+        save_kind = str(request.get("save_kind") or "").strip()
+        if save_kind == "base":
+            self._base_saved_in_session = True
+            return
+        if save_kind != "followup":
+            return
+        try:
+            idx = int(request.get("followup_index") or 0)
+        except Exception:
+            return
+        if idx <= 0:
+            return
+        self._saved_followup_indices_in_session = [
+            value for value in list(self._saved_followup_indices_in_session or []) if value != idx
+        ]
+        self._saved_followup_indices_in_session.append(idx)
+        self._last_saved_followup_index = idx
+
+    def _validate_sheet_request(self, request, *, focus_invalid=False):
+        request = dict(request or {})
+        save_kind = str(request.get("save_kind") or "").strip()
+        if save_kind != "base":
+            return True
+        return self._validate_base_payload(request.get("payload") or {}, focus_invalid=focus_invalid)
+
+    def _build_pending_sheet_save_requests(self, current_sheet):
+        requests_by_sheet = {}
+        local_drafts = _list_followup_local_sheet_drafts(self.case_target)
+        for draft in list(local_drafts.values()):
+            if not isinstance(draft, dict):
+                continue
+            sheet_name = str(draft.get("sheet") or "").strip()
+            if not sheet_name or sheet_name == seguimientos.SHEET_FINAL:
+                continue
+            payload = draft.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            requests_by_sheet[sheet_name] = {
+                "sheet": sheet_name,
+                "save_kind": str(draft.get("save_kind") or "").strip(),
+                "followup_index": draft.get("followup_index"),
+                "payload": copy.deepcopy(payload),
+                "fingerprint": str(draft.get("fingerprint") or ""),
+                "_was_dirty": True,
+            }
+
+        current_request = self._build_sheet_save_request(sheet_name=current_sheet, validate_base=False)
+        if current_request:
+            current_fingerprint = str(current_request.get("fingerprint") or "")
+            current_request["_was_dirty"] = bool(
+                current_sheet in requests_by_sheet
+                or current_fingerprint != str(self._sheet_autosave_last_fingerprint or "")
+            )
+            requests_by_sheet[current_sheet] = current_request
+
+        requests = []
+        for sheet_name in sorted(requests_by_sheet.keys(), key=self._sheet_sort_key):
+            request = dict(requests_by_sheet.get(sheet_name) or {})
+            if not request:
+                continue
+            if not self._validate_sheet_request(
+                request,
+                focus_invalid=(sheet_name == str(current_sheet or "").strip()),
+            ):
+                raise RuntimeError(
+                    f"Completa los campos obligatorios antes de guardar {self._sheet_title(sheet_name)}."
+                )
+            requests.append(request)
+        return requests
+
+    def _ask_generate_followup_pdf(self, *, has_followups):
+        message = (
+            "Las etapas con cambios quedaron guardadas en Google Sheets.\n\n"
+            "¿Deseas generar el PDF de cierre ahora?"
+        )
+        if has_followups:
+            message = (
+                "Las etapas con cambios quedaron guardadas en Google Sheets.\n\n"
+                "¿Deseas generar el PDF de cierre ahora? "
+                "Luego podrás elegir el seguimiento que irá junto con la ficha inicial."
+            )
+        return bool(messagebox.askyesno("Generar PDF", message, parent=self))
+
+    def _resolve_default_pdf_followup_index(self, candidates, saved_followups_in_batch):
+        candidate_indices = {
+            int(item.get("followup_index") or 0)
+            for item in list(candidates or [])
+            if int(item.get("followup_index") or 0) > 0
+        }
+        preferred = []
+        if saved_followups_in_batch:
+            preferred.append(int(saved_followups_in_batch[-1]))
+        if self._last_saved_followup_index:
+            preferred.append(int(self._last_saved_followup_index))
+        preferred.extend(reversed(list(self._saved_followup_indices_in_session or [])))
+        for idx in preferred:
+            if idx in candidate_indices:
+                return idx
+        ordered_candidates = sorted(candidate_indices)
+        return ordered_candidates[-1] if ordered_candidates else None
+
+    def _prompt_pdf_followup_choice(self, candidates, *, default_index=None):
+        items = [dict(item or {}) for item in list(candidates or [])]
+        if not items:
+            return None
+
+        options = []
+        option_by_label = {}
+        for item in items:
+            idx = int(item.get("followup_index") or 0)
+            if idx <= 0:
+                continue
+            title = str(item.get("title") or f"Seguimiento {idx}").strip()
+            fecha = str(item.get("fecha_seguimiento") or "").strip()
+            label = f"{title} ({fecha})" if fecha else title
+            options.append((label, idx))
+            option_by_label[label] = idx
+        if not options:
+            return None
+
+        default_label = options[-1][0]
+        for label, idx in options:
+            if idx == int(default_index or 0):
+                default_label = label
+                break
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Seleccionar seguimiento")
+        dialog.configure(bg=COLOR_LIGHT_BG)
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        result = {"value": None}
+        selected_var = tk.StringVar(value=default_label)
+
+        body = tk.Frame(dialog, bg=COLOR_LIGHT_BG, padx=24, pady=20)
+        body.pack(fill="both", expand=True)
+
+        tk.Label(
+            body,
+            text="Elige el seguimiento que irá en el PDF.",
+            font=FONT_SECTION,
+            fg=COLOR_PURPLE,
+            bg=COLOR_LIGHT_BG,
+            anchor="w",
+        ).pack(fill="x")
+        tk.Label(
+            body,
+            text="La ficha inicial del proceso siempre se incluirá en el mismo PDF.",
+            font=FONT_LABEL,
+            bg=COLOR_LIGHT_BG,
+            fg="#333333",
+            justify="left",
+            wraplength=420,
+            anchor="w",
+        ).pack(fill="x", pady=(8, 10))
+
+        combo = ttk.Combobox(
+            body,
+            textvariable=selected_var,
+            values=[label for label, _idx in options],
+            state="readonly",
+            width=48,
+        )
+        combo.pack(fill="x")
+
+        actions = tk.Frame(body, bg=COLOR_LIGHT_BG)
+        actions.pack(fill="x", pady=(18, 0))
+
+        def _accept():
+            result["value"] = option_by_label.get(str(selected_var.get() or "").strip())
+            dialog.destroy()
+
+        def _cancel():
+            result["value"] = None
+            dialog.destroy()
+
+        ttk.Button(actions, text="Cancelar", command=_cancel).pack(side="right")
+        ttk.Button(actions, text="Generar PDF", style="Primary.TButton", command=_accept).pack(
+            side="right",
+            padx=(0, 8),
+        )
+
+        dialog.protocol("WM_DELETE_WINDOW", _cancel)
+        dialog.update_idletasks()
+        width = max(dialog.winfo_reqwidth(), 470)
+        height = dialog.winfo_reqheight()
+        x = self.winfo_rootx() + max(0, (self.winfo_width() - width) // 2)
+        y = self.winfo_rooty() + max(0, (self.winfo_height() - height) // 2)
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+        dialog.lift()
+        try:
+            combo.focus_set()
+        except Exception:
+            pass
+        dialog.wait_window()
+        return result["value"]
+
+    def _start_followup_pdf_export(self, *, followup_index=None):
+        def _worker(progress):
+            progress("Preparando la exportación PDF...", 18)
+            export_bundle = seguimientos.build_pdf_export_bundle(
+                self.case_target,
+                followup_index=followup_index,
+            )
+            progress("Encolando el PDF en Drive...", 70)
+            pdf_folder_id = drive_upload._get_pdf_folder_id()
+            job_id = _enqueue_pdf_export_job(
+                sheet_file_id=str((self.case_record or {}).get("file_id") or "").strip(),
+                tipo_acta=str(export_bundle.get("tipo_acta") or "").strip(),
+                fecha_servicio=str(export_bundle.get("fecha_servicio") or "").strip(),
+                acta_metadata=export_bundle.get("acta_metadata") or {},
+                extra_name=export_bundle.get("extra_name"),
+                pdf_folder_id=pdf_folder_id,
+                company_name=str(
+                    ((export_bundle.get("acta_metadata") or {}).get("nombre_empresa"))
+                    or (self.case_record or {}).get("folder_name")
+                    or ""
+                ).strip(),
+                selected_sheet_names=export_bundle.get("selected_sheet_names") or [],
+                temp_parent_folder_id=str(export_bundle.get("temp_parent_folder_id") or "").strip(),
+            )
+            return {
+                "job_id": job_id,
+                "pdf_folder_id": pdf_folder_id,
+                "company_name": str(
+                    ((export_bundle.get("acta_metadata") or {}).get("nombre_empresa"))
+                    or (self.case_record or {}).get("folder_name")
+                    or ""
+                ).strip(),
+            }
+
+        def _on_success(result):
+            self.status_var.set("El PDF quedó en cola para generarse en Drive.")
+            dialog_parent = self.owner if getattr(self, "owner", None) is not None else self
+            try:
+                if dialog_parent is not self and not dialog_parent.winfo_exists():
+                    dialog_parent = self
+            except Exception:
+                dialog_parent = self
+            pdf_folder_id = str((result or {}).get("pdf_folder_id") or "").strip()
+            pdf_folder_url = (
+                f"https://drive.google.com/drive/folders/{pdf_folder_id}"
+                if pdf_folder_id
+                else None
+            )
+            sheet_url = str((self.case_record or {}).get("webViewLink") or self.case_path or "").strip()
+            company_name = str((result or {}).get("company_name") or "").strip()
+            if self.winfo_exists():
+                try:
+                    self._refresh_workflow_state(preferred_sheet=self.sheet_var.get())
+                    self._render_selected_sheet()
+                except Exception:
+                    pass
+            close_before_dialog = dialog_parent is not self
+            if close_before_dialog and self.winfo_exists():
+                try:
+                    self.destroy()
+                except tk.TclError:
+                    pass
+            _show_acta_published_dialog(
+                dialog_parent,
+                sheet_url=sheet_url,
+                company_name=company_name,
+                pdf_folder_url=pdf_folder_url,
+                dialog_title="PDF de seguimiento",
+                header_text="PDF de seguimiento en proceso",
+                body_text=(
+                    f"La información del caso{' de ' + company_name if company_name else ''} "
+                    "quedó guardada en Google Sheets."
+                ),
+                pdf_status_text=(
+                    "El PDF se está generando con la ficha inicial y el seguimiento seleccionado. "
+                    "Estará disponible en la carpeta de Drive en unos segundos."
+                ),
+            )
+            if (not close_before_dialog) and self.winfo_exists():
+                try:
+                    self.destroy()
+                except tk.TclError:
+                    pass
+
+        self._run_loading_job(
+            title="Generando PDF",
+            initial_status="Preparando la exportación...",
+            worker=_worker,
+            on_success=_on_success,
+            on_error_context="pdf_export",
+        )
+
     def _save_current_sheet(self):
         sheet = self.sheet_var.get()
-        sheet_title = self._sheet_title_by_name.get(sheet, sheet)
         previous_base_completed = bool((self.workflow or {}).get("base_completed"))
         if sheet == seguimientos.SHEET_FINAL:
             _show_inline_feedback(self, "Esta etapa es de solo lectura.", state="warning")
@@ -23524,44 +23954,114 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         self._cancel_sheet_autosave_timer()
         self._sheet_autosave_pending_request = None
         try:
-            request = self._build_sheet_save_request(sheet_name=sheet, validate_base=True)
-            if not request:
+            requests = self._build_pending_sheet_save_requests(sheet)
+        except RuntimeError as exc:
+            if "Completa los campos obligatorios antes de guardar" in str(exc or ""):
                 return
+            _show_inline_feedback(self, _log_user_error("save_sheet", exc), state="error")
+            return
         except Exception as exc:
             _show_inline_feedback(self, _log_user_error("save_sheet", exc), state="error")
+            return
+        if not requests:
+            self.status_var.set("No hay cambios pendientes para guardar en este caso.")
+            _show_inline_feedback(self, "No hay cambios pendientes para guardar.", state="warning")
             return
         if not self._confirm_overwrite_changes():
             self.status_var.set("Guardado cancelado. Revisa los campos resaltados en amarillo.")
             return
 
-        request_fingerprint = str(request.get("fingerprint") or "")
-
         def _worker(progress):
-            return self._execute_sheet_save_worker(request, trigger="manual", progress=progress)
+            total = max(1, len(requests))
+            saved_requests = []
+            sync_warnings = []
+            for position, request in enumerate(requests, start=1):
+                stage_title = self._sheet_title(request.get("sheet"))
+                start_percent = int(((position - 1) * 100) / total)
+                end_percent = int((position * 100) / total)
+
+                def _stage_progress(status, percent):
+                    try:
+                        percent_value = int(percent or 0)
+                    except Exception:
+                        percent_value = 0
+                    percent_value = max(0, min(100, percent_value))
+                    mapped = start_percent + int(((end_percent - start_percent) * percent_value) / 100)
+                    progress(f"{status} ({position}/{total})", max(6, min(mapped, 98)))
+
+                try:
+                    result = self._execute_sheet_save_worker(
+                        request,
+                        trigger="manual",
+                        progress=_stage_progress,
+                    )
+                except Exception as exc:
+                    raise RuntimeError(f"No se pudo guardar {stage_title}.\n{exc}") from exc
+
+                try:
+                    _delete_followup_local_sheet_draft(self.case_target, request.get("sheet"))
+                except Exception as exc:
+                    _log_capture(
+                        "followup_editor_local_draft_clear_failed "
+                        f"case={self.case_target!r} sheet={request.get('sheet')!r} err={exc}"
+                    )
+
+                saved_entry = dict(request)
+                saved_entry["sync_warning"] = str((result or {}).get("sync_warning") or "").strip()
+                saved_entry["fingerprint"] = str((result or {}).get("fingerprint") or request.get("fingerprint") or "")
+                saved_requests.append(saved_entry)
+                if saved_entry["sync_warning"]:
+                    sync_warnings.append(saved_entry["sync_warning"])
+
+            return {
+                "saved_requests": saved_requests,
+                "sync_warnings": sync_warnings,
+            }
 
         def _on_success(result):
-            sync_warning = str((result or {}).get("sync_warning") or "").strip()
-            self._sheet_autosave_last_fingerprint = request_fingerprint
+            saved_requests = list((result or {}).get("saved_requests") or [])
+            sync_warnings = [str(item or "").strip() for item in list((result or {}).get("sync_warnings") or []) if str(item or "").strip()]
             self._sheet_autosave_pending_request = None
-            try:
-                _delete_followup_local_sheet_draft(self.case_target, sheet)
-            except Exception as exc:
-                _log_capture(f"followup_editor_local_draft_clear_failed case={self.case_target!r} sheet={sheet!r} err={exc}")
+            saved_titles = []
+            saved_followups_in_batch = []
+            current_sheet_saved = False
+            for request in saved_requests:
+                sheet_name = str(request.get("sheet") or "").strip()
+                if not sheet_name:
+                    continue
+                saved_titles.append(self._sheet_title(sheet_name))
+                self._mark_session_sheet_saved(request)
+                if sheet_name == str(sheet or "").strip():
+                    self._sheet_autosave_last_fingerprint = str(request.get("fingerprint") or "")
+                    current_sheet_saved = True
+                if str(request.get("save_kind") or "").strip() == "followup":
+                    try:
+                        idx = int(request.get("followup_index") or 0)
+                    except Exception:
+                        idx = 0
+                    if idx > 0:
+                        saved_followups_in_batch.append(idx)
+            if not current_sheet_saved:
+                self._sheet_autosave_last_fingerprint = str(self._sheet_autosave_last_fingerprint or "")
             hub = self._get_hub_window()
             if hub and hasattr(hub, "_refresh_drafts_badge"):
                 try:
                     hub._refresh_drafts_badge()
                 except Exception:
                     pass
-            if sync_warning:
-                _log_capture(f"[UI] context=sync_case_record err={sync_warning}")
+            if sync_warnings:
+                for warning in sync_warnings:
+                    _log_capture(f"[UI] context=sync_case_record err={warning}")
                 _show_inline_feedback(
                     self,
-                    "La etapa se guardó, pero quedó pendiente la sincronización del caso.",
+                    "Las etapas se guardaron, pero quedó pendiente la sincronización del caso.",
                     state="warning",
                 )
-            if not sync_warning:
-                self.status_var.set(f"Etapa guardada: {sheet_title}.")
+            if not sync_warnings:
+                joined_titles = ", ".join(saved_titles[:3])
+                if len(saved_titles) > 3:
+                    joined_titles = f"{joined_titles} y {len(saved_titles) - 3} etapa(s) más"
+                self.status_var.set(f"Etapas guardadas: {joined_titles}.")
             if isinstance(self.owner, SeguimientosWindow):
                 self.owner.case_record = self.case_record
                 self.owner.case_path = self.case_path
@@ -23582,6 +24082,29 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
                     self.status_var.set(
                         f"Ficha inicial completa. {followup_title} quedó listo para continuar."
                     )
+
+            had_dirty_changes = any(bool(request.get("_was_dirty")) for request in saved_requests)
+            if not had_dirty_changes:
+                return
+            candidates = seguimientos.list_pdf_followup_candidates(self.case_target)
+            if not self._ask_generate_followup_pdf(has_followups=bool(candidates)):
+                return
+
+            followup_index = None
+            if candidates:
+                default_index = self._resolve_default_pdf_followup_index(
+                    candidates,
+                    saved_followups_in_batch,
+                )
+                followup_index = self._prompt_pdf_followup_choice(
+                    candidates,
+                    default_index=default_index,
+                )
+                if followup_index is None:
+                    self.status_var.set("Las etapas se guardaron. La generación del PDF fue cancelada.")
+                    return
+
+            self._start_followup_pdf_export(followup_index=followup_index)
 
         self._run_loading_job(
             title="Guardando etapa",

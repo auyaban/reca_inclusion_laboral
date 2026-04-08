@@ -753,14 +753,14 @@ class SeguimientosRuntimeTests(_TkTestCase):
 
         self.assertEqual(field.entry.cget("bg"), app.COLOR_FIELD_WARNING_BG)
 
-        with patch.object(app.messagebox, "askyesno", side_effect=[False, True]) as askyesno:
+        with patch.object(app.messagebox, "askyesno", side_effect=[False, True, False]) as askyesno:
             editor._save_current_sheet()
             save_base_payload.assert_not_called()
             self.assertIn("cancelado", editor.status_var.get().lower())
 
             editor._save_current_sheet()
 
-        self.assertEqual(askyesno.call_count, 2)
+        self.assertEqual(askyesno.call_count, 3)
         save_base_payload.assert_called_once_with(editor.case_target, ANY)
 
     def test_followup_quick_actions_apply_values_to_each_group(self) -> None:
@@ -1551,6 +1551,179 @@ class SeguimientosRuntimeTests(_TkTestCase):
         self.assertEqual(kwargs["bootstrap"]["suggestion"]["sheet"], f"{seguimientos.SHEET_PREFIX}1")
         focus_window.assert_called_once()
         hub.track_form_open.assert_called_once_with("seguimientos", "Seguimientos")
+
+    def test_editor_save_batches_base_draft_before_current_followup(self) -> None:
+        self._install_followup_local_draft_store()
+        base_sheet = seguimientos.SHEET_BASE
+        followup_sheet = f"{seguimientos.SHEET_PREFIX}1"
+        case_record = {
+            "source": "drive",
+            "mime_type": seguimientos.GOOGLE_SHEETS_MIME,
+            "file_id": "sheet-batch-save",
+            "webViewLink": "https://example.com/sheet-batch-save",
+        }
+        workflow = {
+            "max_seguimientos": 3,
+            "base_sheet_name": base_sheet,
+            "visible_sheets": [base_sheet, followup_sheet, seguimientos.SHEET_FINAL],
+            "editable_sheet": followup_sheet,
+            "suggested_sheet": followup_sheet,
+            "next_followup": 1,
+            "message": "Seguimiento 1 habilitado.",
+        }
+        base_payload = {
+            "fecha_visita": "2026-04-07",
+            "modalidad": "Presencial",
+            "nombre_empresa": "Empresa Demo",
+            "cedula": "10101010",
+            "seguimiento_fechas_1_3": ["", "", ""],
+            "seguimiento_fechas_4_6": ["", "", ""],
+        }
+        followup_payload = {
+            "modalidad": "Presencial",
+            "tipo_apoyo": "",
+            "item_labels": ["Asistencia", "Puntualidad"],
+            "item_observaciones": ["", ""],
+            "item_autoevaluacion": ["", ""],
+            "item_eval_empresa": ["", ""],
+            "empresa_item_labels": ["Comunicación", "Productividad"],
+            "empresa_eval": ["", ""],
+            "empresa_observacion": ["", ""],
+            "situacion_encontrada": "",
+            "estrategias_ajustes": "",
+            "asistentes": [],
+        }
+        save_order = []
+
+        def _save_base(*_args, **_kwargs):
+            save_order.append("base")
+
+        def _save_followup(*_args, **_kwargs):
+            save_order.append("followup_1")
+
+        editor = self._make_editor(
+            workflow=workflow,
+            case_record=case_record,
+            base_payload=base_payload,
+            followup_payload=followup_payload,
+            save_base_payload=Mock(side_effect=_save_base),
+            save_followup_payload=Mock(side_effect=_save_followup),
+        )
+        editor._run_loading_job = self._run_loading_job_immediately
+        editor.sheet_var.set(followup_sheet)
+        editor._render_selected_sheet()
+        editor.follow_vars["tipo_apoyo"].set(seguimientos.TIPO_APOYO_OPTIONS[0])
+
+        app._save_followup_local_sheet_draft(
+            editor.case_target,
+            {
+                "sheet": base_sheet,
+                "save_kind": "base",
+                "followup_index": None,
+                "payload": {
+                    **base_payload,
+                    "nombre_empresa": "Empresa Demo Ajustada",
+                },
+                "fingerprint": "draft-base",
+            },
+            metadata=editor._build_local_draft_metadata(),
+        )
+
+        with patch.object(app.seguimientos, "list_pdf_followup_candidates", return_value=[]):
+            with patch.object(app.messagebox, "askyesno", return_value=False):
+                editor._save_current_sheet()
+
+        self.assertEqual(save_order, ["base", "followup_1"])
+        self.assertIsNone(app._get_followup_local_sheet_draft(editor.case_target, base_sheet))
+
+    def test_editor_dirty_base_save_prompts_pdf_without_selector(self) -> None:
+        base_sheet = seguimientos.SHEET_BASE
+        case_record = {
+            "source": "drive",
+            "mime_type": seguimientos.GOOGLE_SHEETS_MIME,
+            "file_id": "sheet-pdf-base-only",
+            "webViewLink": "https://example.com/sheet-pdf-base-only",
+        }
+        workflow = {
+            "max_seguimientos": 3,
+            "base_sheet_name": base_sheet,
+            "visible_sheets": [base_sheet, f"{seguimientos.SHEET_PREFIX}1", seguimientos.SHEET_FINAL],
+            "editable_sheet": base_sheet,
+            "suggested_sheet": base_sheet,
+            "next_followup": 1,
+            "message": "Empieza por la ficha inicial del proceso.",
+        }
+        base_payload = {
+            "fecha_visita": "2026-04-07",
+            "modalidad": "Presencial",
+            "nombre_empresa": "Empresa Demo",
+            "cedula": "10101010",
+            "seguimiento_fechas_1_3": ["", "", ""],
+            "seguimiento_fechas_4_6": ["", "", ""],
+        }
+        editor = self._make_editor(
+            workflow=workflow,
+            case_record=case_record,
+            base_payload=base_payload,
+            save_base_payload=Mock(),
+        )
+        editor._run_loading_job = self._run_loading_job_immediately
+        editor.base_vars["nombre_empresa"].set("Empresa Demo Ajustada")
+
+        with patch.object(app.seguimientos, "list_pdf_followup_candidates", return_value=[]):
+            with patch.object(app.messagebox, "askyesno", side_effect=[True, True]) as askyesno:
+                with patch.object(editor, "_prompt_pdf_followup_choice") as prompt_choice:
+                    with patch.object(editor, "_start_followup_pdf_export") as start_pdf:
+                        editor._save_current_sheet()
+
+        self.assertEqual(askyesno.call_count, 2)
+        prompt_choice.assert_not_called()
+        start_pdf.assert_called_once_with(followup_index=None)
+
+    def test_editor_prefers_last_saved_followup_for_pdf_default(self) -> None:
+        base_sheet = seguimientos.SHEET_BASE
+        case_record = {
+            "source": "drive",
+            "mime_type": seguimientos.GOOGLE_SHEETS_MIME,
+            "file_id": "sheet-default-followup",
+            "webViewLink": "https://example.com/sheet-default-followup",
+        }
+        workflow = {
+            "max_seguimientos": 3,
+            "base_sheet_name": base_sheet,
+            "visible_sheets": [base_sheet, f"{seguimientos.SHEET_PREFIX}1", f"{seguimientos.SHEET_PREFIX}2", seguimientos.SHEET_FINAL],
+            "editable_sheet": base_sheet,
+            "suggested_sheet": base_sheet,
+            "next_followup": 1,
+            "message": "Empieza por la ficha inicial del proceso.",
+        }
+        base_payload = {
+            "fecha_visita": "2026-04-07",
+            "modalidad": "Presencial",
+            "nombre_empresa": "Empresa Demo",
+            "cedula": "10101010",
+            "seguimiento_fechas_1_3": ["", "", ""],
+            "seguimiento_fechas_4_6": ["", "", ""],
+        }
+        editor = self._make_editor(
+            workflow=workflow,
+            case_record=case_record,
+            base_payload=base_payload,
+        )
+        editor._saved_followup_indices_in_session = [1, 2]
+        editor._last_saved_followup_index = 2
+        candidates = [
+            {"followup_index": 1},
+            {"followup_index": 2},
+            {"followup_index": 3},
+        ]
+
+        self.assertEqual(editor._resolve_default_pdf_followup_index(candidates, [1]), 1)
+        self.assertEqual(editor._resolve_default_pdf_followup_index(candidates, []), 2)
+
+        editor._saved_followup_indices_in_session = []
+        editor._last_saved_followup_index = None
+        self.assertEqual(editor._resolve_default_pdf_followup_index(candidates, []), 3)
 
 
 if __name__ == "__main__":

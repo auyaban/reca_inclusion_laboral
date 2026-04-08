@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.1.2 - 2026-04-08
+
+Esta version hace mas seguro el guardado de `Seguimientos`, evita escrituras innecesarias en Google Sheets y deja mas flexible el cierre en PDF.
+
+### Cambios principales
+
+- `Guardar etapa` ahora compara primero contra Google Sheets y solo escribe los campos que realmente cambiaron.
+- Si no hay cambios nuevos para aplicar, el flujo evita sincronizaciones innecesarias, limpia borradores locales obsoletos y avisa al usuario sin tocar la hoja remota.
+- La confirmacion de sobreescritura ahora tambien muestra cambios detectados en otras etapas cuando existen borradores locales pendientes.
+- El dialogo de PDF permite exportar solo la ficha inicial o la ficha inicial junto con un seguimiento visible.
+- El bloque de resultado del caso se aclara como informativo para reducir la expectativa de que se escriba manualmente desde esa etapa.
+
+### Como afecta a los usuarios
+
+- El riesgo de pisar informacion ya diligenciada baja cuando se retoman varias etapas del mismo caso.
+- Guardar una etapa sin cambios reales deja de producir un flujo confuso o escrituras redundantes.
+- El profesional puede cerrar el caso en PDF con mas control, incluso cuando solo necesita la ficha inicial.
+
 ## 2.0.16 - 2026-04-07
 
 Esta version corrige una regresion al reabrir borradores de `Condiciones de Vacante` en la seccion final de asistentes.

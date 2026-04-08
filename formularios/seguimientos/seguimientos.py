@@ -166,6 +166,84 @@ PONDERADO_USER_MAP = {
     "discapacidad": "U18",
 }
 
+BASE_SHEET_FIELD_MAP = {
+    "fecha_visita": "D8",
+    "modalidad": "R8",
+    "nombre_empresa": "D9",
+    "ciudad_empresa": "R9",
+    "direccion_empresa": "D10",
+    "nit_empresa": "R10",
+    "correo_1": "D11",
+    "telefono_empresa": "R11",
+    "contacto_empresa": "D12",
+    "cargo": "R12",
+    "asesor": "D13",
+    "sede_empresa": "R13",
+    "nombre_vinculado": "A16",
+    "cedula": "E16",
+    "telefono_vinculado": "I16",
+    "correo_vinculado": "K16",
+    "contacto_emergencia": "P16",
+    "parentesco": "S16",
+    "telefono_emergencia": "U16",
+    "cargo_vinculado": "A18",
+    "certificado_discapacidad": "E18",
+    "certificado_porcentaje": "I18",
+    "discapacidad": "N18",
+    "tipo_contrato": "C20",
+    "fecha_inicio_contrato": "M20",
+    "fecha_fin_contrato": "T20",
+    "apoyos_ajustes": "E21",
+}
+
+BASE_SHEET_FIELD_LABELS = {
+    "fecha_visita": "Fecha de visita",
+    "modalidad": "Modalidad",
+    "nombre_empresa": "Nombre empresa",
+    "ciudad_empresa": "Ciudad/Municipio",
+    "direccion_empresa": "Direccion",
+    "nit_empresa": "NIT",
+    "correo_1": "Correo",
+    "telefono_empresa": "Telefonos",
+    "contacto_empresa": "Contacto empresa",
+    "cargo": "Cargo empresa",
+    "asesor": "Asesor",
+    "sede_empresa": "Sede Compensar",
+    "nombre_vinculado": "Nombre",
+    "cedula": "Cedula",
+    "telefono_vinculado": "Telefono",
+    "correo_vinculado": "Correo vinculado",
+    "contacto_emergencia": "Contacto emergencia",
+    "parentesco": "Parentesco",
+    "telefono_emergencia": "Telefono emergencia",
+    "cargo_vinculado": "Cargo",
+    "certificado_discapacidad": "Certificado discapacidad",
+    "certificado_porcentaje": "Porcentaje certificado",
+    "discapacidad": "Discapacidad",
+    "tipo_contrato": "Tipo contrato",
+    "fecha_inicio_contrato": "Fecha inicio contrato",
+    "fecha_fin_contrato": "Fecha fin contrato",
+    "apoyos_ajustes": "Apoyos y ajustes razonables",
+}
+
+FOLLOWUP_SHEET_FIELD_MAP = {
+    "modalidad": "E8",
+    "seguimiento_numero": "P8",
+    "fecha_seguimiento": FOLLOWUP_DATE_VALUE_CELL,
+    "tipo_apoyo": "J31",
+    "situacion_encontrada": "A43",
+    "estrategias_ajustes": "A45",
+}
+
+FOLLOWUP_SHEET_FIELD_LABELS = {
+    "modalidad": "Modalidad",
+    "seguimiento_numero": "Seguimiento #",
+    "fecha_seguimiento": "Fecha seguimiento",
+    "tipo_apoyo": "Tipo de apoyo",
+    "situacion_encontrada": "Situacion encontrada",
+    "estrategias_ajustes": "Estrategias y ajustes",
+}
+
 def register_form():
     return {
         "id": FORM_ID,
@@ -507,38 +585,247 @@ def _build_ponderado_payload(base_payload):
     return payload
 
 
+def _append_sparse_update(
+    updates,
+    changes,
+    *,
+    range_name,
+    local_value,
+    remote_value,
+    label,
+    field_id,
+):
+    local_text = _get_str(local_value)
+    remote_text = _get_str(remote_value)
+    if not local_text or local_text == remote_text:
+        return
+    updates.append({"range": range_name, "value": local_text})
+    changes.append(
+        {
+            "field_id": str(field_id or "").strip(),
+            "label": _get_str(label),
+            "range": str(range_name or "").strip(),
+            "previous_value": remote_text,
+            "new_value": local_text,
+            "change_kind": "overwrite" if remote_text else "new",
+        }
+    )
+
+
+def _build_sparse_plan_result(*, spreadsheet_id, sheet_name, updates, changes, remote_payload=None):
+    changes_list = [dict(item or {}) for item in list(changes or [])]
+    overwrite_fields = [
+        dict(item) for item in changes_list if str(item.get("change_kind") or "").strip() == "overwrite"
+    ]
+    new_fields = [
+        dict(item) for item in changes_list if str(item.get("change_kind") or "").strip() == "new"
+    ]
+    return {
+        "spreadsheet_id": str(spreadsheet_id or "").strip(),
+        "sheet_name": str(sheet_name or "").strip(),
+        "remote_payload": dict(remote_payload or {}),
+        "updates": list(updates or []),
+        "changes": changes_list,
+        "overwrite_fields": overwrite_fields,
+        "new_fields": new_fields,
+        "has_changes": bool(updates),
+        "write_count": len(list(updates or [])),
+    }
+
+
+def _list_value(values, index):
+    current = list(values or [])
+    return current[index] if index < len(current) else ""
+
+
+def _attendee_value(values, index, field_id):
+    current = list(values or [])
+    entry = current[index] if index < len(current) and isinstance(current[index], dict) else {}
+    return entry.get(field_id, "")
+
+
+def _build_base_sheet_sparse_updates(payload, remote_payload, base_sheet_name=SHEET_BASE):
+    updates = []
+    changes = []
+    payload = dict(payload or {})
+    remote_payload = dict(remote_payload or {})
+
+    for field_id, cell in BASE_SHEET_FIELD_MAP.items():
+        _append_sparse_update(
+            updates,
+            changes,
+            range_name=f"'{base_sheet_name}'!{cell}",
+            local_value=payload.get(field_id, ""),
+            remote_value=remote_payload.get(field_id, ""),
+            label=BASE_SHEET_FIELD_LABELS.get(field_id, field_id),
+            field_id=field_id,
+        )
+
+    for idx, row in enumerate(range(23, 28), start=1):
+        _append_sparse_update(
+            updates,
+            changes,
+            range_name=f"'{base_sheet_name}'!B{row}",
+            local_value=_list_value(payload.get("funciones_1_5"), idx - 1),
+            remote_value=_list_value(remote_payload.get("funciones_1_5"), idx - 1),
+            label=f"Funcion {idx}",
+            field_id=f"funciones_1_5[{idx - 1}]",
+        )
+        _append_sparse_update(
+            updates,
+            changes,
+            range_name=f"'{base_sheet_name}'!N{row}",
+            local_value=_list_value(payload.get("funciones_6_10"), idx - 1),
+            remote_value=_list_value(remote_payload.get("funciones_6_10"), idx - 1),
+            label=f"Funcion {idx + 5}",
+            field_id=f"funciones_6_10[{idx - 1}]",
+        )
+
+    # El template solo almacena fecha_firma_contrato en PONDERADO FINAL!N18.
+    # Mantenemos esta excepción mínima para no perder ese dato al reabrir el caso.
+    _append_sparse_update(
+        updates,
+        changes,
+        range_name=f"'{SHEET_FINAL}'!{PONDERADO_USER_MAP['fecha_firma_contrato']}",
+        local_value=payload.get("fecha_firma_contrato", ""),
+        remote_value=remote_payload.get("fecha_firma_contrato", ""),
+        label="Fecha firma contrato",
+        field_id="fecha_firma_contrato",
+    )
+
+    return updates, changes
+
+
+def _followup_item_label(payload, remote_payload, index):
+    label = _list_value((payload or {}).get("item_labels"), index)
+    if label:
+        return label
+    label = _list_value((remote_payload or {}).get("item_labels"), index)
+    if label:
+        return label
+    return f"Item {index + 1}"
+
+
+def _followup_company_label(payload, remote_payload, index):
+    label = _list_value((payload or {}).get("empresa_item_labels"), index)
+    if label:
+        return label
+    label = _list_value((remote_payload or {}).get("empresa_item_labels"), index)
+    if label:
+        return label
+    return f"Empresa {index + 1}"
+
+
+def _build_followup_sheet_sparse_updates(
+    index,
+    payload,
+    remote_payload,
+    *,
+    base_sheet_name=SHEET_BASE,
+    base_remote_payload=None,
+):
+    sheet_name = _get_followup_sheet_name(index)
+    updates = []
+    changes = []
+    payload = dict(payload or {})
+    remote_payload = dict(remote_payload or {})
+    base_remote_payload = dict(base_remote_payload or {})
+
+    for field_id, cell in FOLLOWUP_SHEET_FIELD_MAP.items():
+        _append_sparse_update(
+            updates,
+            changes,
+            range_name=f"'{sheet_name}'!{cell}",
+            local_value=payload.get(field_id, ""),
+            remote_value=remote_payload.get(field_id, ""),
+            label=FOLLOWUP_SHEET_FIELD_LABELS.get(field_id, field_id),
+            field_id=field_id,
+        )
+
+    for i, row in enumerate(range(12, 31)):
+        item_label = _followup_item_label(payload, remote_payload, i)
+        _append_sparse_update(
+            updates,
+            changes,
+            range_name=f"'{sheet_name}'!G{row}",
+            local_value=_list_value(payload.get("item_observaciones"), i),
+            remote_value=_list_value(remote_payload.get("item_observaciones"), i),
+            label=f"Observacion del vinculado: {item_label}",
+            field_id=f"item_observaciones[{i}]",
+        )
+        _append_sparse_update(
+            updates,
+            changes,
+            range_name=f"'{sheet_name}'!O{row}",
+            local_value=_list_value(payload.get("item_autoevaluacion"), i),
+            remote_value=_list_value(remote_payload.get("item_autoevaluacion"), i),
+            label=f"Autoevaluacion: {item_label}",
+            field_id=f"item_autoevaluacion[{i}]",
+        )
+        _append_sparse_update(
+            updates,
+            changes,
+            range_name=f"'{sheet_name}'!R{row}",
+            local_value=_list_value(payload.get("item_eval_empresa"), i),
+            remote_value=_list_value(remote_payload.get("item_eval_empresa"), i),
+            label=f"Evaluacion de empresa: {item_label}",
+            field_id=f"item_eval_empresa[{i}]",
+        )
+
+    for i, row in enumerate(range(34, 42)):
+        company_label = _followup_company_label(payload, remote_payload, i)
+        _append_sparse_update(
+            updates,
+            changes,
+            range_name=f"'{sheet_name}'!J{row}",
+            local_value=_list_value(payload.get("empresa_eval"), i),
+            remote_value=_list_value(remote_payload.get("empresa_eval"), i),
+            label=f"Evaluacion empresarial: {company_label}",
+            field_id=f"empresa_eval[{i}]",
+        )
+        _append_sparse_update(
+            updates,
+            changes,
+            range_name=f"'{sheet_name}'!L{row}",
+            local_value=_list_value(payload.get("empresa_observacion"), i),
+            remote_value=_list_value(remote_payload.get("empresa_observacion"), i),
+            label=f"Observacion empresarial: {company_label}",
+            field_id=f"empresa_observacion[{i}]",
+        )
+
+    for i, row in enumerate(range(47, 51), start=1):
+        _append_sparse_update(
+            updates,
+            changes,
+            range_name=f"'{sheet_name}'!D{row}",
+            local_value=_attendee_value(payload.get("asistentes"), i - 1, "nombre"),
+            remote_value=_attendee_value(remote_payload.get("asistentes"), i - 1, "nombre"),
+            label=f"Asistente {i} nombre",
+            field_id=f"asistentes[{i - 1}].nombre",
+        )
+        _append_sparse_update(
+            updates,
+            changes,
+            range_name=f"'{sheet_name}'!N{row}",
+            local_value=_attendee_value(payload.get("asistentes"), i - 1, "cargo"),
+            remote_value=_attendee_value(remote_payload.get("asistentes"), i - 1, "cargo"),
+            label=f"Asistente {i} cargo",
+            field_id=f"asistentes[{i - 1}].cargo",
+        )
+
+    followup_date_range = _get_followup_date_cell(base_sheet_name, index)
+    if followup_date_range:
+        local_date = _get_str(payload.get("fecha_seguimiento"))
+        remote_date = _get_followup_date_from_base(base_remote_payload, index)
+        if local_date and local_date != remote_date:
+            updates.append({"range": followup_date_range, "value": local_date})
+
+    return updates, changes
+
+
 def _build_base_sheet_updates(payload, base_sheet_name=SHEET_BASE):
     updates = []
-    mapping = {
-        "fecha_visita": "D8",
-        "modalidad": "R8",
-        "nombre_empresa": "D9",
-        "ciudad_empresa": "R9",
-        "direccion_empresa": "D10",
-        "nit_empresa": "R10",
-        "correo_1": "D11",
-        "telefono_empresa": "R11",
-        "contacto_empresa": "D12",
-        "cargo": "R12",
-        "asesor": "D13",
-        "sede_empresa": "R13",
-        "nombre_vinculado": "A16",
-        "cedula": "E16",
-        "telefono_vinculado": "I16",
-        "correo_vinculado": "K16",
-        "contacto_emergencia": "P16",
-        "parentesco": "S16",
-        "telefono_emergencia": "U16",
-        "cargo_vinculado": "A18",
-        "certificado_discapacidad": "E18",
-        "certificado_porcentaje": "I18",
-        "discapacidad": "N18",
-        "tipo_contrato": "C20",
-        "fecha_inicio_contrato": "M20",
-        "fecha_fin_contrato": "T20",
-        "apoyos_ajustes": "E21",
-    }
-    for field_id, cell in mapping.items():
+    for field_id, cell in BASE_SHEET_FIELD_MAP.items():
         updates.append({"range": f"'{base_sheet_name}'!{cell}", "value": payload.get(field_id, "")})
     for idx, row in enumerate(range(23, 28)):
         updates.append({"range": f"'{base_sheet_name}'!B{row}", "value": (payload.get('funciones_1_5') or [''] * 5)[idx] if idx < len(payload.get('funciones_1_5') or []) else ""})
@@ -1457,27 +1744,59 @@ def get_base_payload(case_ref):
     }
     return _normalize_base_payload(payload)
 
-
-def save_base_payload(case_ref, payload, overwrite=True):
+def build_base_save_plan(case_ref, payload, *, overwrite=True, save_mode="full"):
     spreadsheet_id = _get_spreadsheet_id_from_case_ref(case_ref)
     base_sheet_name = str(get_case_meta(case_ref).get("base_sheet_name") or SHEET_BASE)
-    if not overwrite:
-        existing = get_base_payload(case_ref)
-        merged = dict(existing)
-        for key, value in (payload or {}).items():
-            if isinstance(value, list):
-                current_list = list(existing.get(key) or [])
-                merged_list = []
-                for idx, item in enumerate(value):
-                    current_value = current_list[idx] if idx < len(current_list) else ""
-                    merged_list.append(current_value if str(current_value or "").strip() else item)
-                merged[key] = merged_list
-            else:
-                current_value = existing.get(key)
-                merged[key] = current_value if str(current_value or "").strip() else value
-        payload = merged
-    updates = _build_base_sheet_updates(payload, base_sheet_name=base_sheet_name)
-    batch_write_sheet_updates(spreadsheet_id, updates)
+    if str(save_mode or "full").strip().lower() != "diff":
+        if not overwrite:
+            existing = get_base_payload(case_ref)
+            merged = dict(existing)
+            for key, value in (payload or {}).items():
+                if isinstance(value, list):
+                    current_list = list(existing.get(key) or [])
+                    merged_list = []
+                    for idx, item in enumerate(value):
+                        current_value = current_list[idx] if idx < len(current_list) else ""
+                        merged_list.append(current_value if str(current_value or "").strip() else item)
+                    merged[key] = merged_list
+                else:
+                    current_value = existing.get(key)
+                    merged[key] = current_value if str(current_value or "").strip() else value
+            payload = merged
+        updates = _build_base_sheet_updates(payload, base_sheet_name=base_sheet_name)
+        return _build_sparse_plan_result(
+            spreadsheet_id=spreadsheet_id,
+            sheet_name=base_sheet_name,
+            updates=updates,
+            changes=[],
+            remote_payload={},
+        )
+
+    remote_payload = get_base_payload(case_ref)
+    updates, changes = _build_base_sheet_sparse_updates(
+        payload,
+        remote_payload,
+        base_sheet_name=base_sheet_name,
+    )
+    return _build_sparse_plan_result(
+        spreadsheet_id=spreadsheet_id,
+        sheet_name=base_sheet_name,
+        updates=updates,
+        changes=changes,
+        remote_payload=remote_payload,
+    )
+
+
+def save_base_payload(case_ref, payload, overwrite=True, *, save_mode="full"):
+    plan = build_base_save_plan(
+        case_ref,
+        payload,
+        overwrite=overwrite,
+        save_mode=save_mode,
+    )
+    if plan.get("updates"):
+        batch_write_sheet_updates(plan["spreadsheet_id"], plan["updates"])
+    return plan
 
 
 def _get_followup_sheet_name(index):
@@ -1533,13 +1852,45 @@ def get_followup_payload(case_ref, index):
     return _normalize_empty_followup_payload(payload, index, base_payload=base_payload)
 
 
-def save_followup_payload(case_ref, index, payload):
+def build_followup_save_plan(case_ref, index, payload, *, save_mode="full"):
     base_sheet_name = str(get_case_meta(case_ref).get("base_sheet_name") or SHEET_BASE)
-    updates = _build_followup_sheet_updates(index, payload)
-    followup_date_range = _get_followup_date_cell(base_sheet_name, index)
-    if followup_date_range:
-        updates.append({"range": followup_date_range, "value": _get_str(payload.get("fecha_seguimiento"))})
-    batch_write_sheet_updates(_get_spreadsheet_id_from_case_ref(case_ref), updates)
+    spreadsheet_id = _get_spreadsheet_id_from_case_ref(case_ref)
+    if str(save_mode or "full").strip().lower() != "diff":
+        updates = _build_followup_sheet_updates(index, payload)
+        followup_date_range = _get_followup_date_cell(base_sheet_name, index)
+        if followup_date_range:
+            updates.append({"range": followup_date_range, "value": _get_str(payload.get("fecha_seguimiento"))})
+        return _build_sparse_plan_result(
+            spreadsheet_id=spreadsheet_id,
+            sheet_name=_get_followup_sheet_name(index),
+            updates=updates,
+            changes=[],
+            remote_payload={},
+        )
+
+    remote_payload = get_followup_payload(case_ref, index)
+    base_remote_payload = get_base_payload(case_ref)
+    updates, changes = _build_followup_sheet_sparse_updates(
+        index,
+        payload,
+        remote_payload,
+        base_sheet_name=base_sheet_name,
+        base_remote_payload=base_remote_payload,
+    )
+    return _build_sparse_plan_result(
+        spreadsheet_id=spreadsheet_id,
+        sheet_name=_get_followup_sheet_name(index),
+        updates=updates,
+        changes=changes,
+        remote_payload=remote_payload,
+    )
+
+
+def save_followup_payload(case_ref, index, payload, *, save_mode="full"):
+    plan = build_followup_save_plan(case_ref, index, payload, save_mode=save_mode)
+    if plan.get("updates"):
+        batch_write_sheet_updates(plan["spreadsheet_id"], plan["updates"])
+    return plan
 
 
 def get_workflow_state(case_ref):

@@ -22027,7 +22027,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
                 current_value = ""
             current = self._normalize_overwrite_value(current_value)
             original = self._normalize_overwrite_value(entry.get("original_value"))
-            changed = bool(original) and current != original
+            changed = bool(original and current) and current != original
             for widget in list(entry.get("widgets") or []):
                 self._set_widget_overwrite_state(widget, changed)
             if changed:
@@ -22043,27 +22043,57 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
     def _refresh_overwrite_highlights(self):
         self._get_overwrite_changes()
 
-    def _build_overwrite_warning_message(self, changes):
+    def _build_overwrite_warning_message(self, changes, hidden_changes=None):
         labels = [str((item or {}).get("label") or "").strip() for item in list(changes or []) if str((item or {}).get("label") or "").strip()]
-        if not labels:
+        hidden_entries = [
+            {
+                "sheet_title": str((item or {}).get("sheet_title") or "").strip(),
+                "label": str((item or {}).get("label") or "").strip(),
+            }
+            for item in list(hidden_changes or [])
+            if str((item or {}).get("label") or "").strip()
+        ]
+        if not labels and not hidden_entries:
             return ""
-        preview = labels[:8]
-        details = "\n".join(f"- {label}" for label in preview)
-        remaining = len(labels) - len(preview)
-        if remaining > 0:
-            details += f"\n- y {remaining} campo(s) más"
-        return (
-            "Se van a sobreescribir datos que ya estaban diligenciados en esta etapa:\n\n"
-            f"{details}\n\n"
-            "Los campos marcados en amarillo cambiarán su valor actual.\n"
-            "¿Quieres guardar estos cambios?"
-        )
+        sections = []
+        if labels:
+            preview = labels[:8]
+            details = "\n".join(f"- {label}" for label in preview)
+            remaining = len(labels) - len(preview)
+            if remaining > 0:
+                details += f"\n- y {remaining} campo(s) más"
+            sections.append(
+                "En esta etapa se van a sobreescribir datos ya diligenciados:\n\n"
+                f"{details}\n\n"
+                "Los campos marcados en amarillo cambiarán su valor actual."
+            )
+        if hidden_entries:
+            preview = hidden_entries[:8]
+            details = "\n".join(
+                f"- {item['sheet_title']}: {item['label']}" if item["sheet_title"] else f"- {item['label']}"
+                for item in preview
+            )
+            remaining = len(hidden_entries) - len(preview)
+            if remaining > 0:
+                details += f"\n- y {remaining} cambio(s) más en otras etapas"
+            sections.append(
+                "También se detectaron sobreescrituras en otras etapas con borradores locales:\n\n"
+                f"{details}"
+            )
+        sections.append("¿Quieres guardar estos cambios?")
+        return "\n\n".join(sections)
 
-    def _confirm_overwrite_changes(self):
+    def _confirm_overwrite_changes(self, *, hidden_changes=None):
         changes = self._get_overwrite_changes()
-        if not changes:
+        hidden_entries = [dict(item or {}) for item in list(hidden_changes or []) if dict(item or {})]
+        if not changes and not hidden_entries:
             return True
         labels = [str(item.get("label") or "").strip() for item in changes if str(item.get("label") or "").strip()]
+        labels.extend(
+            f"{str(item.get('sheet_title') or '').strip()}: {str(item.get('label') or '').strip()}".strip(": ")
+            for item in hidden_entries
+            if str(item.get("label") or "").strip()
+        )
         preview = ", ".join(labels[:4])
         if len(labels) > 4:
             preview = f"{preview} y {len(labels) - 4} campo(s) más"
@@ -22075,7 +22105,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         return bool(
             messagebox.askyesno(
                 "Confirmar sobreescritura",
-                self._build_overwrite_warning_message(changes),
+                self._build_overwrite_warning_message(changes, hidden_entries),
                 parent=self,
             )
         )
@@ -22485,6 +22515,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         save_kind = str(request.get("save_kind") or "").strip()
         payload = dict(request.get("payload") or {})
         idx = request.get("followup_index")
+        prebuilt_plan = dict(request.get("save_plan") or {})
 
         def _progress(status, percent):
             if callable(progress):
@@ -22494,7 +22525,14 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         if save_kind == "base":
             _progress("Guardando la ficha inicial...", 42)
             try:
-                seguimientos.save_base_payload(self.case_target, payload)
+                if prebuilt_plan and not bool(prebuilt_plan.get("has_changes")):
+                    save_result = prebuilt_plan
+                else:
+                    save_result = seguimientos.save_base_payload(
+                        self.case_target,
+                        payload,
+                        save_mode="diff",
+                    )
             except PermissionError as exc:
                 raise RuntimeError(
                     "No se pudieron guardar los cambios del caso."
@@ -22502,7 +22540,15 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         elif save_kind == "followup":
             _progress(f"Guardando seguimiento {idx}...", 42)
             try:
-                seguimientos.save_followup_payload(self.case_target, idx, payload)
+                if prebuilt_plan and not bool(prebuilt_plan.get("has_changes")):
+                    save_result = prebuilt_plan
+                else:
+                    save_result = seguimientos.save_followup_payload(
+                        self.case_target,
+                        idx,
+                        payload,
+                        save_mode="diff",
+                    )
             except PermissionError as exc:
                 raise RuntimeError(
                     "No se pudieron guardar los cambios del seguimiento."
@@ -22510,8 +22556,9 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         else:
             raise RuntimeError("No se pudo identificar la hoja que se intenta guardar.")
 
+        has_changes = bool((save_result or {}).get("has_changes"))
         sync_warning = ""
-        if str(trigger or "").strip().lower() == "manual":
+        if has_changes and str(trigger or "").strip().lower() == "manual":
             _progress("Confirmando los cambios del caso...", 72)
             if save_kind == "followup":
                 _progress("Actualizando el estado del seguimiento...", 88)
@@ -22534,6 +22581,8 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             "sheet": sheet,
             "sync_warning": sync_warning,
             "fingerprint": str(request.get("fingerprint") or ""),
+            "has_changes": has_changes,
+            "save_plan": save_result if isinstance(save_result, dict) else {},
         }
 
     def _add_labeled_entry(self, parent, row, label, var, width=40, readonly=False):
@@ -23699,8 +23748,8 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         tk.Label(
             card,
             text=(
-                "Este bloque consolida automáticamente el resultado del caso.\n"
-                "No se diligencia manualmente: se actualiza al guardar la ficha inicial y los seguimientos."
+                "Este bloque es solo visual.\n"
+                "No se diligencia manualmente ni se escribe desde Guardar etapa."
             ),
             bg=COLOR_LIGHT_BG,
             justify="left",
@@ -23903,6 +23952,67 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             return True
         return self._validate_base_payload(request.get("payload") or {}, focus_invalid=focus_invalid)
 
+    def _build_sheet_save_plan(self, request):
+        request = dict(request or {})
+        save_kind = str(request.get("save_kind") or "").strip()
+        payload = dict(request.get("payload") or {})
+        if save_kind == "base":
+            return seguimientos.build_base_save_plan(
+                self.case_target,
+                payload,
+                save_mode="diff",
+            )
+        if save_kind == "followup":
+            followup_index = int(request.get("followup_index") or 0)
+            if followup_index <= 0:
+                raise RuntimeError("No se pudo identificar el seguimiento a guardar.")
+            return seguimientos.build_followup_save_plan(
+                self.case_target,
+                followup_index,
+                payload,
+                save_mode="diff",
+            )
+        raise RuntimeError("No se pudo identificar la hoja que se intenta guardar.")
+
+    def _build_hidden_overwrite_entries(self, prepared_requests, current_sheet):
+        entries = []
+        current_name = str(current_sheet or "").strip()
+        for request in list(prepared_requests or []):
+            request_data = dict(request or {})
+            if str(request_data.get("sheet") or "").strip() == current_name:
+                continue
+            sheet_title = self._sheet_title(request_data.get("sheet"))
+            save_plan = dict(request_data.get("save_plan") or {})
+            for change in list(save_plan.get("overwrite_fields") or []):
+                label = str((change or {}).get("label") or "").strip()
+                if not label:
+                    continue
+                entries.append(
+                    {
+                        "sheet_title": sheet_title,
+                        "label": label,
+                    }
+                )
+        return entries
+
+    def _build_pdf_followup_options(self):
+        options = []
+        for sheet_name in list(self.sheet_options or []):
+            current = str(sheet_name or "").strip()
+            if not current.startswith(seguimientos.SHEET_PREFIX):
+                continue
+            match = re.search(r"(\d+)$", current)
+            if not match:
+                continue
+            options.append(
+                {
+                    "sheet_name": current,
+                    "followup_index": int(match.group(1)),
+                    "title": self._sheet_title(current),
+                }
+            )
+        return sorted(options, key=lambda item: int(item.get("followup_index") or 0))
+
     def _build_pending_sheet_save_requests(self, current_sheet):
         requests_by_sheet = {}
         local_drafts = _list_followup_local_sheet_drafts(self.case_target)
@@ -23948,78 +24058,30 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             requests.append(request)
         return requests
 
-    def _ask_generate_followup_pdf(self, *, has_followups):
-        message = (
-            "Las etapas con cambios quedaron guardadas en Google Sheets.\n\n"
-            "¿Deseas generar el PDF de cierre ahora?"
-        )
-        if has_followups:
-            message = (
-                "Las etapas con cambios quedaron guardadas en Google Sheets.\n\n"
-                "¿Deseas generar el PDF de cierre ahora? "
-                "Luego podrás elegir el seguimiento que irá junto con la ficha inicial."
-            )
-        return bool(messagebox.askyesno("Generar PDF", message, parent=self))
-
-    def _resolve_default_pdf_followup_index(self, candidates, saved_followups_in_batch):
-        candidate_indices = {
-            int(item.get("followup_index") or 0)
-            for item in list(candidates or [])
-            if int(item.get("followup_index") or 0) > 0
-        }
-        preferred = []
-        if saved_followups_in_batch:
-            preferred.append(int(saved_followups_in_batch[-1]))
-        if self._last_saved_followup_index:
-            preferred.append(int(self._last_saved_followup_index))
-        preferred.extend(reversed(list(self._saved_followup_indices_in_session or [])))
-        for idx in preferred:
-            if idx in candidate_indices:
-                return idx
-        ordered_candidates = sorted(candidate_indices)
-        return ordered_candidates[-1] if ordered_candidates else None
-
-    def _prompt_pdf_followup_choice(self, candidates, *, default_index=None):
-        items = [dict(item or {}) for item in list(candidates or [])]
-        if not items:
-            return None
-
-        options = []
-        option_by_label = {}
-        for item in items:
-            idx = int(item.get("followup_index") or 0)
-            if idx <= 0:
-                continue
-            title = str(item.get("title") or f"Seguimiento {idx}").strip()
-            fecha = str(item.get("fecha_seguimiento") or "").strip()
-            label = f"{title} ({fecha})" if fecha else title
-            options.append((label, idx))
-            option_by_label[label] = idx
-        if not options:
-            return None
-
-        default_label = options[-1][0]
-        for label, idx in options:
-            if idx == int(default_index or 0):
-                default_label = label
-                break
-
+    def _prompt_pdf_export_choice(self, followup_options):
+        items = [dict(item or {}) for item in list(followup_options or []) if dict(item or {})]
         dialog = tk.Toplevel(self)
-        dialog.title("Seleccionar seguimiento")
+        dialog.title("Generar PDF")
         dialog.configure(bg=COLOR_LIGHT_BG)
         dialog.resizable(False, False)
         dialog.transient(self)
         dialog.grab_set()
 
-        result = {"value": None}
-        selected_var = tk.StringVar(value=default_label)
+        result = {"confirmed": False, "followup_index": None}
+        selected_var = tk.StringVar(value="")
+        summary_var = tk.StringVar(value="Se exportará: Ficha inicial del proceso.")
+        option_by_label = {
+            str(item.get("title") or f"Seguimiento {item.get('followup_index')}").strip(): int(item.get("followup_index") or 0)
+            for item in items
+            if int(item.get("followup_index") or 0) > 0
+        }
 
         body = tk.Frame(dialog, bg=COLOR_LIGHT_BG, padx=24, pady=20)
         body.pack(fill="both", expand=True)
 
         tk.Label(
             body,
-            text="Elige el seguimiento que irá en el PDF.",
+            text="¿Deseas sacar el acta en PDF?",
             font=FONT_SECTION,
             fg=COLOR_PURPLE,
             bg=COLOR_LIGHT_BG,
@@ -24027,7 +24089,11 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         ).pack(fill="x")
         tk.Label(
             body,
-            text="La ficha inicial del proceso siempre se incluirá en el mismo PDF.",
+            text=(
+                "La ficha inicial del proceso siempre se incluirá en el PDF.\n"
+                "Puedes dejar el selector vacío para exportar solo esa hoja, "
+                "o agregar una hoja de seguimiento visible."
+            ),
             font=FONT_LABEL,
             bg=COLOR_LIGHT_BG,
             fg="#333333",
@@ -24036,24 +24102,65 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             anchor="w",
         ).pack(fill="x", pady=(8, 10))
 
-        combo = ttk.Combobox(
+        combo = None
+        if items:
+            tk.Label(
+                body,
+                text="Hoja de seguimiento a agregar:",
+                font=FONT_LABEL,
+                bg=COLOR_LIGHT_BG,
+                anchor="w",
+            ).pack(fill="x")
+            combo = ttk.Combobox(
+                body,
+                textvariable=selected_var,
+                values=["", *list(option_by_label.keys())],
+                state="readonly",
+                width=48,
+            )
+            combo.pack(fill="x", pady=(6, 0))
+            tk.Label(
+                body,
+                text="Déjalo vacío para exportar solo la ficha inicial.",
+                font=("Arial", 9),
+                bg=COLOR_LIGHT_BG,
+                fg="#5B5563",
+                anchor="w",
+            ).pack(fill="x", pady=(4, 0))
+
+        summary_label = tk.Label(
             body,
-            textvariable=selected_var,
-            values=[label for label, _idx in options],
-            state="readonly",
-            width=48,
+            textvariable=summary_var,
+            font=FONT_LABEL,
+            bg=COLOR_LIGHT_BG,
+            fg="#333333",
+            justify="left",
+            wraplength=420,
+            anchor="w",
         )
-        combo.pack(fill="x")
+        summary_label.pack(fill="x", pady=(12, 0))
 
         actions = tk.Frame(body, bg=COLOR_LIGHT_BG)
         actions.pack(fill="x", pady=(18, 0))
 
+        def _refresh_summary(_event=None):
+            selected_label = str(selected_var.get() or "").strip()
+            followup_index = option_by_label.get(selected_label)
+            if followup_index:
+                summary_var.set(
+                    f"Se exportará: Ficha inicial del proceso + {selected_label}."
+                )
+            else:
+                summary_var.set("Se exportará: Ficha inicial del proceso.")
+
         def _accept():
-            result["value"] = option_by_label.get(str(selected_var.get() or "").strip())
+            result["confirmed"] = True
+            result["followup_index"] = option_by_label.get(str(selected_var.get() or "").strip())
             dialog.destroy()
 
         def _cancel():
-            result["value"] = None
+            result["confirmed"] = False
+            result["followup_index"] = None
             dialog.destroy()
 
         ttk.Button(actions, text="Cancelar", command=_cancel).pack(side="right")
@@ -24062,6 +24169,8 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             padx=(0, 8),
         )
 
+        if combo is not None:
+            combo.bind("<<ComboboxSelected>>", _refresh_summary)
         dialog.protocol("WM_DELETE_WINDOW", _cancel)
         dialog.update_idletasks()
         width = max(dialog.winfo_reqwidth(), 470)
@@ -24071,11 +24180,12 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         dialog.geometry(f"{width}x{height}+{x}+{y}")
         dialog.lift()
         try:
-            combo.focus_set()
+            if combo is not None:
+                combo.focus_set()
         except Exception:
             pass
         dialog.wait_window()
-        return result["value"]
+        return result
 
     def _start_followup_pdf_export(self, *, followup_index=None):
         def _worker(progress):
@@ -24127,6 +24237,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             )
             sheet_url = str((self.case_record or {}).get("webViewLink") or self.case_path or "").strip()
             company_name = str((result or {}).get("company_name") or "").strip()
+            selected_followup = int(followup_index or 0) if str(followup_index or "").strip() else 0
             if self.winfo_exists():
                 try:
                     self._refresh_workflow_state(preferred_sheet=self.sheet_var.get())
@@ -24151,8 +24262,15 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
                     "quedó guardada en Google Sheets."
                 ),
                 pdf_status_text=(
-                    "El PDF se está generando con la ficha inicial y el seguimiento seleccionado. "
-                    "Estará disponible en la carpeta de Drive en unos segundos."
+                    (
+                        "El PDF se está generando con la ficha inicial y el seguimiento seleccionado. "
+                        "Estará disponible en la carpeta de Drive en unos segundos."
+                    )
+                    if selected_followup > 0
+                    else (
+                        "El PDF se está generando solo con la ficha inicial del proceso. "
+                        "Estará disponible en la carpeta de Drive en unos segundos."
+                    )
                 ),
             )
             if (not close_before_dialog) and self.winfo_exists():
@@ -24206,150 +24324,210 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
             self.status_var.set("No hay cambios pendientes para guardar en este caso.")
             _show_inline_feedback(self, "No hay cambios pendientes para guardar.", state="warning")
             return
-        if not self._confirm_overwrite_changes():
-            self.status_var.set("Guardado cancelado. Revisa los campos resaltados en amarillo.")
-            return
 
-        def _worker(progress):
+        def _prepare_worker(progress):
             total = max(1, len(requests))
-            saved_requests = []
-            sync_warnings = []
+            prepared_requests = []
             for position, request in enumerate(requests, start=1):
                 stage_title = self._sheet_title(request.get("sheet"))
-                start_percent = int(((position - 1) * 100) / total)
-                end_percent = int((position * 100) / total)
+                mapped = int(((position - 1) * 100) / total)
+                progress(f"Revisando {stage_title} ({position}/{total})", max(6, min(mapped, 92)))
+                prepared_request = dict(request)
+                prepared_request["save_plan"] = self._build_sheet_save_plan(request)
+                prepared_requests.append(prepared_request)
+            return {
+                "prepared_requests": prepared_requests,
+            }
 
-                def _stage_progress(status, percent):
+        def _run_apply_job(changed_requests):
+            def _worker(progress):
+                total = max(1, len(changed_requests))
+                saved_requests = []
+                sync_warnings = []
+                for position, request in enumerate(changed_requests, start=1):
+                    stage_title = self._sheet_title(request.get("sheet"))
+                    start_percent = int(((position - 1) * 100) / total)
+                    end_percent = int((position * 100) / total)
+
+                    def _stage_progress(status, percent):
+                        try:
+                            percent_value = int(percent or 0)
+                        except Exception:
+                            percent_value = 0
+                        percent_value = max(0, min(100, percent_value))
+                        mapped = start_percent + int(((end_percent - start_percent) * percent_value) / 100)
+                        progress(f"{status} ({position}/{total})", max(6, min(mapped, 98)))
+
                     try:
-                        percent_value = int(percent or 0)
-                    except Exception:
-                        percent_value = 0
-                    percent_value = max(0, min(100, percent_value))
-                    mapped = start_percent + int(((end_percent - start_percent) * percent_value) / 100)
-                    progress(f"{status} ({position}/{total})", max(6, min(mapped, 98)))
+                        result = self._execute_sheet_save_worker(
+                            request,
+                            trigger="manual",
+                            progress=_stage_progress,
+                        )
+                    except Exception as exc:
+                        raise RuntimeError(f"No se pudo guardar {stage_title}.\n{exc}") from exc
 
-                try:
-                    result = self._execute_sheet_save_worker(
-                        request,
-                        trigger="manual",
-                        progress=_stage_progress,
+                    try:
+                        _delete_followup_local_sheet_draft(self.case_target, request.get("sheet"))
+                    except Exception as exc:
+                        _log_capture(
+                            "followup_editor_local_draft_clear_failed "
+                            f"case={self.case_target!r} sheet={request.get('sheet')!r} err={exc}"
+                        )
+
+                    saved_entry = dict(request)
+                    saved_entry["sync_warning"] = str((result or {}).get("sync_warning") or "").strip()
+                    saved_entry["fingerprint"] = str((result or {}).get("fingerprint") or request.get("fingerprint") or "")
+                    saved_entry["has_changes"] = bool((result or {}).get("has_changes"))
+                    saved_entry["save_plan"] = dict((result or {}).get("save_plan") or request.get("save_plan") or {})
+                    saved_requests.append(saved_entry)
+                    if saved_entry["sync_warning"]:
+                        sync_warnings.append(saved_entry["sync_warning"])
+
+                return {
+                    "saved_requests": saved_requests,
+                    "sync_warnings": sync_warnings,
+                }
+
+            def _on_success(result):
+                saved_requests = [
+                    dict(item or {})
+                    for item in list((result or {}).get("saved_requests") or [])
+                    if bool((item or {}).get("has_changes"))
+                ]
+                sync_warnings = [str(item or "").strip() for item in list((result or {}).get("sync_warnings") or []) if str(item or "").strip()]
+                self._sheet_autosave_pending_request = None
+                if not saved_requests:
+                    self.status_var.set("No hubo cambios nuevos para escribir en Google Sheets.")
+                    _show_inline_feedback(
+                        self,
+                        "No hubo cambios nuevos para guardar en Google Sheets.",
+                        state="warning",
                     )
-                except Exception as exc:
-                    raise RuntimeError(f"No se pudo guardar {stage_title}.\n{exc}") from exc
+                    return
 
+                saved_titles = []
+                current_sheet_saved = False
+                for request in saved_requests:
+                    sheet_name = str(request.get("sheet") or "").strip()
+                    if not sheet_name:
+                        continue
+                    saved_titles.append(self._sheet_title(sheet_name))
+                    self._mark_session_sheet_saved(request)
+                    if sheet_name == str(sheet or "").strip():
+                        self._sheet_autosave_last_fingerprint = str(request.get("fingerprint") or "")
+                        current_sheet_saved = True
+                if not current_sheet_saved:
+                    self._sheet_autosave_last_fingerprint = str(self._sheet_autosave_last_fingerprint or "")
+
+                hub = self._get_hub_window()
+                if hub and hasattr(hub, "_refresh_drafts_badge"):
+                    try:
+                        hub._refresh_drafts_badge()
+                    except Exception:
+                        pass
+                if sync_warnings:
+                    for warning in sync_warnings:
+                        _log_capture(f"[UI] context=sync_case_record err={warning}")
+                    _show_inline_feedback(
+                        self,
+                        "Las etapas se guardaron, pero quedó pendiente la sincronización del caso.",
+                        state="warning",
+                    )
+                if not sync_warnings:
+                    joined_titles = ", ".join(saved_titles[:3])
+                    if len(saved_titles) > 3:
+                        joined_titles = f"{joined_titles} y {len(saved_titles) - 3} etapa(s) más"
+                    self.status_var.set(f"Etapas guardadas: {joined_titles}.")
+                if isinstance(self.owner, SeguimientosWindow):
+                    self.owner.case_record = self.case_record
+                    self.owner.case_path = self.case_path
+                    self.owner.path_var.set(
+                        (self.case_record or {}).get("webViewLink") or self.case_path
+                    )
+                    self.owner._refresh_suggestion()
+                self._refresh_workflow_state(preferred_sheet=sheet)
+                self._render_selected_sheet()
+                if (
+                    sheet == str(self.base_sheet_name or "").strip()
+                    and not previous_base_completed
+                    and bool((self.workflow or {}).get("base_completed"))
+                ):
+                    followup_1 = f"{seguimientos.SHEET_PREFIX}1"
+                    if followup_1 in list(self.sheet_options or []):
+                        followup_title = self._sheet_title_by_name.get(followup_1, "Seguimiento 1")
+                        self.status_var.set(
+                            f"Ficha inicial completa. {followup_title} quedó listo para continuar."
+                        )
+
+                pdf_choice = self._prompt_pdf_export_choice(self._build_pdf_followup_options())
+                if not bool((pdf_choice or {}).get("confirmed")):
+                    self.status_var.set("Las etapas se guardaron. La generación del PDF fue cancelada.")
+                    return
+                self._start_followup_pdf_export(
+                    followup_index=(pdf_choice or {}).get("followup_index"),
+                )
+
+            self._run_loading_job(
+                title="Guardando etapa",
+                initial_status="Preparando el guardado...",
+                worker=_worker,
+                on_success=_on_success,
+                on_error_context="save_sheet",
+            )
+
+        def _on_prepared(result):
+            prepared_requests = [dict(item or {}) for item in list((result or {}).get("prepared_requests") or [])]
+            changed_requests = []
+            cleared_any_draft = False
+            for request in prepared_requests:
+                save_plan = dict(request.get("save_plan") or {})
+                if bool(save_plan.get("has_changes")):
+                    changed_requests.append(request)
+                    continue
                 try:
                     _delete_followup_local_sheet_draft(self.case_target, request.get("sheet"))
+                    cleared_any_draft = True
                 except Exception as exc:
                     _log_capture(
                         "followup_editor_local_draft_clear_failed "
                         f"case={self.case_target!r} sheet={request.get('sheet')!r} err={exc}"
                     )
-
-                saved_entry = dict(request)
-                saved_entry["sync_warning"] = str((result or {}).get("sync_warning") or "").strip()
-                saved_entry["fingerprint"] = str((result or {}).get("fingerprint") or request.get("fingerprint") or "")
-                saved_requests.append(saved_entry)
-                if saved_entry["sync_warning"]:
-                    sync_warnings.append(saved_entry["sync_warning"])
-
-            return {
-                "saved_requests": saved_requests,
-                "sync_warnings": sync_warnings,
-            }
-
-        def _on_success(result):
-            saved_requests = list((result or {}).get("saved_requests") or [])
-            sync_warnings = [str(item or "").strip() for item in list((result or {}).get("sync_warnings") or []) if str(item or "").strip()]
-            self._sheet_autosave_pending_request = None
-            saved_titles = []
-            saved_followups_in_batch = []
-            current_sheet_saved = False
-            for request in saved_requests:
-                sheet_name = str(request.get("sheet") or "").strip()
-                if not sheet_name:
-                    continue
-                saved_titles.append(self._sheet_title(sheet_name))
-                self._mark_session_sheet_saved(request)
-                if sheet_name == str(sheet or "").strip():
-                    self._sheet_autosave_last_fingerprint = str(request.get("fingerprint") or "")
-                    current_sheet_saved = True
-                if str(request.get("save_kind") or "").strip() == "followup":
-                    try:
-                        idx = int(request.get("followup_index") or 0)
-                    except Exception:
-                        idx = 0
-                    if idx > 0:
-                        saved_followups_in_batch.append(idx)
-            if not current_sheet_saved:
-                self._sheet_autosave_last_fingerprint = str(self._sheet_autosave_last_fingerprint or "")
-            hub = self._get_hub_window()
-            if hub and hasattr(hub, "_refresh_drafts_badge"):
-                try:
-                    hub._refresh_drafts_badge()
-                except Exception:
-                    pass
-            if sync_warnings:
-                for warning in sync_warnings:
-                    _log_capture(f"[UI] context=sync_case_record err={warning}")
-                _show_inline_feedback(
-                    self,
-                    "Las etapas se guardaron, pero quedó pendiente la sincronización del caso.",
-                    state="warning",
-                )
-            if not sync_warnings:
-                joined_titles = ", ".join(saved_titles[:3])
-                if len(saved_titles) > 3:
-                    joined_titles = f"{joined_titles} y {len(saved_titles) - 3} etapa(s) más"
-                self.status_var.set(f"Etapas guardadas: {joined_titles}.")
-            if isinstance(self.owner, SeguimientosWindow):
-                self.owner.case_record = self.case_record
-                self.owner.case_path = self.case_path
-                self.owner.path_var.set(
-                    (self.case_record or {}).get("webViewLink") or self.case_path
-                )
-                self.owner._refresh_suggestion()
-            self._refresh_workflow_state(preferred_sheet=sheet)
-            self._render_selected_sheet()
-            if (
-                sheet == str(self.base_sheet_name or "").strip()
-                and not previous_base_completed
-                and bool((self.workflow or {}).get("base_completed"))
-            ):
-                followup_1 = f"{seguimientos.SHEET_PREFIX}1"
-                if followup_1 in list(self.sheet_options or []):
-                    followup_title = self._sheet_title_by_name.get(followup_1, "Seguimiento 1")
-                    self.status_var.set(
-                        f"Ficha inicial completa. {followup_title} quedó listo para continuar."
+                if str(request.get("sheet") or "").strip() == str(sheet or "").strip():
+                    self._sheet_autosave_last_fingerprint = str(
+                        request.get("fingerprint") or self._sheet_autosave_last_fingerprint or ""
                     )
 
-            had_dirty_changes = any(bool(request.get("_was_dirty")) for request in saved_requests)
-            if not had_dirty_changes:
-                return
-            candidates = seguimientos.list_pdf_followup_candidates(self.case_target)
-            if not self._ask_generate_followup_pdf(has_followups=bool(candidates)):
+            if cleared_any_draft:
+                hub = self._get_hub_window()
+                if hub and hasattr(hub, "_refresh_drafts_badge"):
+                    try:
+                        hub._refresh_drafts_badge()
+                    except Exception:
+                        pass
+
+            if not changed_requests:
+                self._sheet_autosave_pending_request = None
+                self.status_var.set("No hubo cambios nuevos para guardar en Google Sheets.")
+                _show_inline_feedback(
+                    self,
+                    "No hubo cambios nuevos para guardar en Google Sheets.",
+                    state="warning",
+                )
                 return
 
-            followup_index = None
-            if candidates:
-                default_index = self._resolve_default_pdf_followup_index(
-                    candidates,
-                    saved_followups_in_batch,
-                )
-                followup_index = self._prompt_pdf_followup_choice(
-                    candidates,
-                    default_index=default_index,
-                )
-                if followup_index is None:
-                    self.status_var.set("Las etapas se guardaron. La generación del PDF fue cancelada.")
-                    return
+            hidden_overwrites = self._build_hidden_overwrite_entries(changed_requests, sheet)
+            if not self._confirm_overwrite_changes(hidden_changes=hidden_overwrites):
+                self.status_var.set("Guardado cancelado. Revisa los campos resaltados en amarillo.")
+                return
 
-            self._start_followup_pdf_export(followup_index=followup_index)
+            _run_apply_job(changed_requests)
 
         self._run_loading_job(
-            title="Guardando etapa",
-            initial_status="Preparando el guardado...",
-            worker=_worker,
-            on_success=_on_success,
+            title="Revisando cambios",
+            initial_status="Comparando con Google Sheets...",
+            worker=_prepare_worker,
+            on_success=_on_prepared,
             on_error_context="save_sheet",
         )
 

@@ -190,7 +190,7 @@ class EvaluacionAccesibilidadWindowTests(_TkTestCase):
             "Mixto",
         )
 
-    def test_section_1_nombre_suggestions_prioritize_global_lookup_over_assigned_cache(self) -> None:
+    def test_section_1_nombre_suggestions_use_cached_company_index_before_assigned_cache(self) -> None:
         window = self._create_window()
         window._empresa_names_cache = ["Empresa Asignada"]
         search_widget = window.fields["nombre_busqueda"]
@@ -198,14 +198,14 @@ class EvaluacionAccesibilidadWindowTests(_TkTestCase):
         search_widget.insert(0, "Em")
 
         with patch.object(
-            app.evaluacion_accesibilidad,
-            "get_empresas_by_nombre_prefix",
+            app,
+            "_get_company_name_suggestions_from_index",
             return_value=["Empresa Global", "Empresa Global 2"],
         ) as lookup:
             app._section1_update_nombre_suggestions(window)
 
         self.assertEqual(tuple(search_widget.cget("values")), ("Empresa Global", "Empresa Global 2"))
-        lookup.assert_called_once_with("Em", limit=0)
+        lookup.assert_called_once_with("Em", limit=50)
 
     def test_section_5_hides_suggested_adjustments_until_aplica_is_selected(self) -> None:
         window = self._create_window()

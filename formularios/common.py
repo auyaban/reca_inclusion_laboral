@@ -828,10 +828,106 @@ _SENSITIVE_CACHE_KEYS = {
 }
 _OFFLINE_DB_LOCK = threading.Lock()
 _OFFLINE_DB_READY = False
+_LOCAL_PAYLOAD_CACHE_LOCK = threading.Lock()
+_LOCAL_PAYLOAD_CACHE = {}
 
 
 def _get_cache_dir():
     return _get_local_app_cache_dir()
+
+
+def _json_clone(value):
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False))
+    except Exception:
+        return value
+
+
+def _normalize_cache_key(cache_key):
+    text = str(cache_key or "").strip().lower()
+    if not text:
+        return ""
+    return re.sub(r"[^a-z0-9_.-]+", "_", text)
+
+
+def _get_named_cache_path(cache_key):
+    normalized = _normalize_cache_key(cache_key)
+    if not normalized:
+        return ""
+    cache_dir = os.path.join(_get_cache_dir(), "payload_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    return os.path.join(cache_dir, f"{normalized}.json")
+
+
+def _load_named_cache_entry(cache_key):
+    normalized = _normalize_cache_key(cache_key)
+    if not normalized:
+        return None
+    with _LOCAL_PAYLOAD_CACHE_LOCK:
+        memory_entry = _LOCAL_PAYLOAD_CACHE.get(normalized)
+        if isinstance(memory_entry, dict):
+            return _json_clone(memory_entry)
+    path = _get_named_cache_path(normalized)
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    entry = {
+        "saved_at": float(payload.get("saved_at") or 0.0),
+        "payload": payload.get("payload"),
+    }
+    with _LOCAL_PAYLOAD_CACHE_LOCK:
+        _LOCAL_PAYLOAD_CACHE[normalized] = _json_clone(entry)
+    return _json_clone(entry)
+
+
+def _store_named_cache(cache_key, payload):
+    normalized = _normalize_cache_key(cache_key)
+    if not normalized:
+        return
+    entry = {
+        "saved_at": float(time.time()),
+        "payload": _json_clone(payload),
+    }
+    path = _get_named_cache_path(normalized)
+    if path:
+        _atomic_write_json(path, entry)
+    with _LOCAL_PAYLOAD_CACHE_LOCK:
+        _LOCAL_PAYLOAD_CACHE[normalized] = _json_clone(entry)
+
+
+def _load_named_cache(cache_key, ttl_seconds=0, allow_stale=False):
+    entry = _load_named_cache_entry(cache_key)
+    if not isinstance(entry, dict):
+        return None
+    saved_at = float(entry.get("saved_at") or 0.0)
+    if not allow_stale and ttl_seconds:
+        age_seconds = max(0.0, time.time() - saved_at)
+        if age_seconds > float(ttl_seconds):
+            return None
+    return _json_clone(entry.get("payload"))
+
+
+def _get_cached_payload(cache_key, loader, ttl_seconds=86400, force=False, allow_stale_on_error=True):
+    stale_entry = _load_named_cache_entry(cache_key)
+    if not force:
+        cached_payload = _load_named_cache(cache_key, ttl_seconds=ttl_seconds, allow_stale=False)
+        if cached_payload is not None:
+            return cached_payload
+    payload = None
+    try:
+        payload = loader()
+    except Exception:
+        if allow_stale_on_error and isinstance(stale_entry, dict):
+            return _json_clone(stale_entry.get("payload"))
+        raise
+    _store_named_cache(cache_key, payload)
+    return _json_clone(payload)
 
 
 def _summarize_failed_queue_error(exc):
@@ -1608,7 +1704,7 @@ def _supabase_upsert(table, rows, env_path=".env", on_conflict=None):
         token = _supabase_get_access_token(env_path=env_path)
         headers = _supabase_headers(supabase_key, bearer_token=token)
         headers["Content-Type"] = "application/json"
-        headers["Prefer"] = "resolution=merge-duplicates"
+        headers["Prefer"] = "resolution=merge-duplicates,return=minimal"
         request = urllib.request.Request(url, data=body, headers=headers, method="POST")
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
@@ -1656,7 +1752,7 @@ def _supabase_patch(table, filters, values, env_path=".env"):
         token = _supabase_get_access_token(env_path=env_path)
         headers = _supabase_headers(supabase_key, bearer_token=token)
         headers["Content-Type"] = "application/json"
-        headers["Prefer"] = "return=representation"
+        headers["Prefer"] = "return=minimal"
         request = urllib.request.Request(url, data=body, headers=headers, method="PATCH")
         try:
             with urllib.request.urlopen(request, timeout=60) as response:

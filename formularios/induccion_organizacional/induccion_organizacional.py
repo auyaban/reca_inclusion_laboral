@@ -24,6 +24,7 @@ import time
 
 from formularios.evaluacion_programa import evaluacion_accesibilidad
 from formularios.common import (
+    _get_cached_payload,
     _get_local_app_cache_dir,
     _normalize_cedula,
     _sanitize_filename,
@@ -42,6 +43,7 @@ from logging_utils import log_excel_event
 FORM_ID = "induccion_organizacional"
 FORM_NAME = "Induccion Organizacional"
 SHEET_NAME = "6. INDUCCIÓN ORGANIZACIONAL"
+_USUARIOS_RECA_CEDULAS_CACHE_TTL_SECONDS = 86400
 
 FORM_CACHE = {}
 SECTION_1_CACHE = {}
@@ -564,13 +566,24 @@ def get_form_cache():
 
 
 def get_usuarios_reca_cedulas(env_path=".env"):
-    params = {
-        "select": "cedula_usuario",
-        "cedula_usuario": "not.is.null",
-        "order": "cedula_usuario.asc",
-    }
-    data = _supabase_get("usuarios_reca", params, env_path=env_path)
-    return [row.get("cedula_usuario") for row in data if row.get("cedula_usuario")]
+    def _loader():
+        params = {
+            "select": "cedula_usuario",
+            "cedula_usuario": "not.is.null",
+            "order": "cedula_usuario.asc",
+        }
+        data = _supabase_get("usuarios_reca", params, env_path=env_path)
+        return [row.get("cedula_usuario") for row in data if row.get("cedula_usuario")]
+
+    return list(
+        _get_cached_payload(
+            "usuarios_reca_cedulas_v1",
+            _loader,
+            ttl_seconds=_USUARIOS_RECA_CEDULAS_CACHE_TTL_SECONDS,
+            allow_stale_on_error=True,
+        )
+        or []
+    )
 
 
 def get_usuario_reca_by_cedula(cedula, env_path=".env"):

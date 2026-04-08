@@ -111,8 +111,11 @@ from formularios.common import (
     _load_env_file,
     _extract_public_error_detail,
     _get_local_app_cache_dir,
+    _get_cached_payload,
+    _load_named_cache_entry,
     _normalize_decimal_value,
     _next_available_file_path,
+    _store_named_cache,
     probe_supabase_service,
 )
 from formularios.finalize_validation import ValidationIssue, format_issues_for_message
@@ -5654,6 +5657,7 @@ _ASESORES_AGENCIA_CACHE = {
     "nombres": [],
 }
 _ASISTENTES_PROF_CACHE_TTL = 300
+_REMOTE_CATALOG_TTL_SECONDS = 86400
 
 
 def _asistentes_norm(value):
@@ -5687,8 +5691,8 @@ def _get_asistentes_profesionales_catalog(force=False):
     ):
         return cached
 
-    try:
-        rows = _supabase_get_paged(
+    def _loader():
+        return _supabase_get_paged(
             "profesionales",
             {
                 "select": "nombre_profesional,cargo_profesional",
@@ -5697,6 +5701,15 @@ def _get_asistentes_profesionales_catalog(force=False):
             env_path=".env",
             page_size=500,
             max_pages=20,
+        )
+
+    try:
+        rows = _get_cached_payload(
+            "catalog_profesionales_v1",
+            _loader,
+            ttl_seconds=_REMOTE_CATALOG_TTL_SECONDS,
+            force=force,
+            allow_stale_on_error=True,
         )
     except Exception as exc:
         _log_capture(f"[ASISTENTES] no se pudo leer profesionales: {exc}")
@@ -5736,8 +5749,8 @@ def _get_asesores_agencia_catalog(force=False):
     ):
         return cached
 
-    try:
-        rows = _supabase_get_paged(
+    def _loader():
+        return _supabase_get_paged(
             "asesores",
             {
                 "select": "nombre",
@@ -5746,6 +5759,15 @@ def _get_asesores_agencia_catalog(force=False):
             env_path=".env",
             page_size=500,
             max_pages=20,
+        )
+
+    try:
+        rows = _get_cached_payload(
+            "catalog_asesores_v1",
+            _loader,
+            ttl_seconds=_REMOTE_CATALOG_TTL_SECONDS,
+            force=force,
+            allow_stale_on_error=True,
         )
     except Exception as exc:
         _log_capture(f"[ASESORES] no se pudo leer asesores: {exc}")
@@ -5775,24 +5797,39 @@ def _get_interpretes_catalog(force=False):
     ):
         return cached
 
-    rows = None
-    for select_clause in ("nombre", "nombre_interprete"):
-        try:
-            rows = _supabase_get_paged(
-                "interpretes",
-                {
-                    "select": select_clause,
-                    "order": f"{select_clause}.asc",
-                },
-                env_path=".env",
-                page_size=500,
-                max_pages=20,
-            )
-            if rows is not None:
-                break
-        except Exception:
-            rows = None
-            continue
+    def _loader():
+        rows = None
+        for select_clause in ("nombre", "nombre_interprete"):
+            try:
+                rows = _supabase_get_paged(
+                    "interpretes",
+                    {
+                        "select": select_clause,
+                        "order": f"{select_clause}.asc",
+                    },
+                    env_path=".env",
+                    page_size=500,
+                    max_pages=20,
+                )
+                if rows is not None:
+                    break
+            except Exception:
+                rows = None
+                continue
+        if rows is None:
+            raise RuntimeError("No se pudo leer catalogo de interpretes.")
+        return rows
+
+    try:
+        rows = _get_cached_payload(
+            "catalog_interpretes_v1",
+            _loader,
+            ttl_seconds=_REMOTE_CATALOG_TTL_SECONDS,
+            force=force,
+            allow_stale_on_error=True,
+        )
+    except Exception:
+        rows = None
 
     if rows is None:
         _log_capture("[INTERPRETES] no se pudo leer catalogo de interpretes.")
@@ -7793,6 +7830,252 @@ def _normalize_company_search_text(value):
     return text.casefold()
 
 
+_COMPANY_CATALOG_CACHE_KEY = "empresas_catalog_v2"
+_COMPANY_CATALOG_FULL_SYNC_TTL_SECONDS = 86400
+_COMPANY_CATALOG_INCREMENTAL_INTERVAL_SECONDS = 600
+_COMPANY_CATALOG_MEMORY = {
+    "loaded_at": 0.0,
+    "rows": [],
+    "last_sync": "",
+}
+
+
+def _normalize_company_nit_value(value):
+    return "".join(str(value or "").split())
+
+
+def _company_catalog_select_clauses():
+    return [
+        "id,nombre_empresa,nit_empresa,ciudad_empresa,profesional_asignado,estado,comentarios_empresas,updated_at",
+        "id,nombre_empresa,nit_empresa,ciudad_empresa,profesional_asignado,estado,comentarios,updated_at",
+        "id,nombre_empresa,nit_empresa,ciudad_empresa,profesional_asignado,updated_at",
+    ]
+
+
+def _normalize_company_catalog_row(row):
+    item = dict(row or {})
+    item["id"] = str(item.get("id") or "").strip()
+    item["nombre_empresa"] = str(item.get("nombre_empresa") or "").strip()
+    item["nit_empresa"] = _normalize_company_nit_value(item.get("nit_empresa"))
+    item["ciudad_empresa"] = str(item.get("ciudad_empresa") or "").strip()
+    item["profesional_asignado"] = str(item.get("profesional_asignado") or "").strip()
+    item["estado"] = str(item.get("estado") or "").strip()
+    comments_value = (
+        item.get("comentarios_empresas")
+        or item.get("comentarios_empresa")
+        or item.get("comentarios")
+        or item.get("comentario_empresa")
+        or ""
+    )
+    comments_value = str(comments_value or "").strip()
+    item["comentarios_empresas"] = comments_value
+    item["comentarios_empresa"] = comments_value
+    item["comentarios"] = comments_value
+    item["updated_at"] = str(item.get("updated_at") or "").strip()
+    return item
+
+
+def _fetch_company_catalog_rows(updated_since=None):
+    params_base = {}
+    updated_since_text = str(updated_since or "").strip()
+    if updated_since_text:
+        params_base["updated_at"] = f"gte.{updated_since_text}"
+        params_base["order"] = "updated_at.asc"
+    else:
+        params_base["order"] = "nombre_empresa.asc"
+    last_exc = None
+    for select_clause in _company_catalog_select_clauses():
+        params = dict(params_base)
+        params["select"] = select_clause
+        try:
+            rows = _supabase_get_paged(
+                "empresas",
+                params,
+                page_size=500,
+                max_pages=200,
+            )
+            return [_normalize_company_catalog_row(row) for row in list(rows or []) if isinstance(row, dict)]
+        except Exception as exc:
+            last_exc = exc
+            continue
+    if last_exc is not None:
+        raise last_exc
+    return []
+
+
+def _company_catalog_last_sync(rows):
+    values = [str((row or {}).get("updated_at") or "").strip() for row in list(rows or []) if str((row or {}).get("updated_at") or "").strip()]
+    return max(values) if values else ""
+
+
+def _merge_company_catalog_rows(base_rows, delta_rows):
+    merged = {}
+    for row in list(base_rows or []) + list(delta_rows or []):
+        if not isinstance(row, dict):
+            continue
+        normalized = _normalize_company_catalog_row(row)
+        row_key = normalized.get("id") or f"{normalized.get('nombre_empresa', '').casefold()}|{normalized.get('nit_empresa', '')}"
+        if not row_key:
+            continue
+        merged[row_key] = normalized
+    return list(merged.values())
+
+
+def _set_company_catalog_memory(rows, last_sync):
+    _COMPANY_CATALOG_MEMORY["loaded_at"] = float(time.time())
+    _COMPANY_CATALOG_MEMORY["rows"] = [dict(item) for item in list(rows or []) if isinstance(item, dict)]
+    _COMPANY_CATALOG_MEMORY["last_sync"] = str(last_sync or "").strip()
+
+
+def _load_company_catalog(force=False):
+    now = time.time()
+    memory_rows = [dict(item) for item in list(_COMPANY_CATALOG_MEMORY.get("rows") or []) if isinstance(item, dict)]
+    memory_age = max(0.0, now - float(_COMPANY_CATALOG_MEMORY.get("loaded_at") or 0.0))
+    if not force and memory_rows and memory_age < _COMPANY_CATALOG_INCREMENTAL_INTERVAL_SECONDS:
+        return memory_rows
+
+    cache_entry = _load_named_cache_entry(_COMPANY_CATALOG_CACHE_KEY) or {}
+    cached_payload = cache_entry.get("payload") if isinstance(cache_entry, dict) else {}
+    cached_rows = [dict(item) for item in list((cached_payload or {}).get("rows") or []) if isinstance(item, dict)]
+    cached_rows = [_normalize_company_catalog_row(row) for row in cached_rows]
+    cached_last_sync = str((cached_payload or {}).get("last_sync") or _company_catalog_last_sync(cached_rows)).strip()
+    saved_at = float((cache_entry or {}).get("saved_at") or 0.0)
+    disk_age = max(0.0, now - saved_at)
+
+    if force or not cached_rows or disk_age >= _COMPANY_CATALOG_FULL_SYNC_TTL_SECONDS:
+        try:
+            fresh_rows = _fetch_company_catalog_rows()
+        except Exception:
+            if cached_rows:
+                _set_company_catalog_memory(cached_rows, cached_last_sync)
+                return cached_rows
+            raise
+        fresh_last_sync = _company_catalog_last_sync(fresh_rows)
+        _store_named_cache(
+            _COMPANY_CATALOG_CACHE_KEY,
+            {"rows": fresh_rows, "last_sync": fresh_last_sync},
+        )
+        _set_company_catalog_memory(fresh_rows, fresh_last_sync)
+        return fresh_rows
+
+    rows = cached_rows
+    last_sync = cached_last_sync
+    if disk_age >= _COMPANY_CATALOG_INCREMENTAL_INTERVAL_SECONDS and last_sync:
+        try:
+            delta_rows = _fetch_company_catalog_rows(updated_since=last_sync)
+        except Exception:
+            delta_rows = []
+        if delta_rows:
+            rows = _merge_company_catalog_rows(rows, delta_rows)
+            last_sync = _company_catalog_last_sync(rows) or last_sync
+            _store_named_cache(
+                _COMPANY_CATALOG_CACHE_KEY,
+                {"rows": rows, "last_sync": last_sync},
+            )
+        else:
+            _store_named_cache(
+                _COMPANY_CATALOG_CACHE_KEY,
+                {"rows": rows, "last_sync": last_sync},
+            )
+
+    _set_company_catalog_memory(rows, last_sync)
+    return rows
+
+
+def _load_company_search_index(force=False):
+    result = []
+    seen = set()
+    for row in _load_company_catalog(force=force):
+        company_id = str(row.get("id") or "").strip()
+        nombre = str(row.get("nombre_empresa") or "").strip()
+        nit = _normalize_company_nit_value(row.get("nit_empresa"))
+        if not nombre and not nit:
+            continue
+        dedupe_key = company_id or f"{nombre.casefold()}|{nit}"
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        result.append(
+            {
+                "id": company_id,
+                "nombre_empresa": nombre,
+                "nit_empresa": nit,
+            }
+        )
+    return result
+
+
+def _get_company_name_cache(force=False):
+    names = []
+    seen = set()
+    try:
+        rows = _load_company_search_index(force=force)
+    except Exception:
+        return []
+    for row in rows:
+        name = str(row.get("nombre_empresa") or "").strip()
+        if not name:
+            continue
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+    return names
+
+
+def _get_company_name_suggestions_from_index(prefix, *, limit=50):
+    query = _normalize_company_search_text(prefix)
+    if not query:
+        return []
+    starts = []
+    contains = []
+    seen = set()
+    try:
+        rows = _load_company_search_index(force=False)
+    except Exception:
+        return []
+    for row in rows:
+        name = str(row.get("nombre_empresa") or "").strip()
+        if not name:
+            continue
+        key = name.casefold()
+        if key in seen:
+            continue
+        normalized = _normalize_company_search_text(name)
+        if normalized.startswith(query):
+            starts.append(name)
+            seen.add(key)
+        elif query in normalized:
+            contains.append(name)
+            seen.add(key)
+    return (starts + contains)[: max(1, int(limit or 50))]
+
+
+def _get_company_nit_suggestions_from_index(prefix, *, limit=12):
+    query = _normalize_company_nit_value(prefix)
+    if not query:
+        return []
+    labels = []
+    seen = set()
+    try:
+        rows = _load_company_search_index(force=False)
+    except Exception:
+        return []
+    for row in rows:
+        nit = _normalize_company_nit_value(row.get("nit_empresa"))
+        name = str(row.get("nombre_empresa") or "").strip()
+        if not nit or nit in seen:
+            continue
+        if not nit.startswith(query):
+            continue
+        seen.add(nit)
+        labels.append(f"{nit} - {name}" if name else nit)
+        if len(labels) >= max(1, int(limit or 12)):
+            break
+    return labels
+
+
 def _is_combobox_posted(widget):
     """Return True if the ttk.Combobox dropdown is currently visible."""
     try:
@@ -7945,18 +8228,7 @@ def _section1_update_nombre_suggestions(self, open_dropdown=False):
         entry["values"] = []
         _hide_empresa_autocomplete_popup(self)
         return
-    suggestions = []
-    lookup = getattr(self, "_empresa_lookup", None)
-    if lookup and hasattr(lookup, "get_empresas_by_nombre_prefix"):
-        try:
-            suggestions = lookup.get_empresas_by_nombre_prefix(prefix, limit=0)
-        except TypeError:
-            try:
-                suggestions = lookup.get_empresas_by_nombre_prefix(prefix)
-            except Exception:
-                suggestions = []
-        except Exception:
-            suggestions = []
+    suggestions = _get_company_name_suggestions_from_index(prefix, limit=50)
     if not suggestions:
         cache = getattr(self, "_empresa_names_cache", None)
         if cache:
@@ -10162,33 +10434,7 @@ class HubWindow(tk.Tk):
             or "sandra pachon" in full_name
             or "sara zambrano" in full_name
         )
-
-        def _fetch_empresas(select_clause):
-            return _supabase_get_paged(
-                "empresas",
-                {"select": select_clause},
-                page_size=1000,
-                max_pages=50,
-            )
-
-        try:
-            empresas = _fetch_empresas(
-                "id,nombre_empresa,nit_empresa,ciudad_empresa,profesional_asignado,estado,comentarios_empresas"
-            )
-        except Exception:
-            try:
-                empresas = _fetch_empresas(
-                    "id,nombre_empresa,nit_empresa,ciudad_empresa,profesional_asignado,estado,comentarios_empresas,comentarios"
-                )
-            except Exception:
-                empresas = _fetch_empresas(
-                    "id,nombre_empresa,nit_empresa,ciudad_empresa,profesional_asignado"
-                )
-            for row in empresas:
-                row.setdefault("estado", "")
-                row.setdefault("comentarios_empresas", "")
-                if not row.get("comentarios_empresas"):
-                    row["comentarios_empresas"] = row.get("comentarios_empresa") or row.get("comentarios") or ""
+        empresas = _load_company_catalog(force=False)
         if can_view_all:
             assigned = [row for row in empresas if (row.get("nombre_empresa") or "").strip()]
             assigned.sort(key=lambda r: self._norm_match(r.get("nombre_empresa") or ""))
@@ -10690,6 +10936,9 @@ class HubWindow(tk.Tk):
                     section_cache.clear()
             except Exception:
                 pass
+        _COMPANY_CATALOG_MEMORY["loaded_at"] = 0.0
+        _COMPANY_CATALOG_MEMORY["rows"] = []
+        _COMPANY_CATALOG_MEMORY["last_sync"] = ""
 
     def _refresh_database_cache(self):
         if self._refresh_db_btn:
@@ -10702,6 +10951,7 @@ class HubWindow(tk.Tk):
             rows = []
             try:
                 self._clear_form_memory_caches()
+                _load_company_catalog(force=True)
                 rows = self._get_assigned_companies()
             except Exception as exc:
                 err = exc
@@ -11338,7 +11588,7 @@ class HubWindow(tk.Tk):
         window._form_id = form_id
         window._form_name = form_name
         window._form_meta = dict(form_meta or {})
-        window._empresa_names_cache = getattr(self, "_empresa_names_cache", [])
+        window._empresa_names_cache = getattr(self, "_empresa_names_cache", []) or _get_company_name_cache()
         module = FORM_MODULE_MAP.get(form_id)
         if (
             supports_drafts
@@ -20620,22 +20870,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         if len(prefix) < 2:
             combo["values"] = ()
             return
-        try:
-            rows = seguimientos.get_empresas_by_nombre_prefix(prefix, limit=12)
-        except Exception:
-            rows = []
-        values = []
-        seen = set()
-        for row in rows:
-            name = str(row.get("nombre_empresa") or "").strip()
-            if not name:
-                continue
-            key = name.casefold()
-            if key in seen:
-                continue
-            seen.add(key)
-            values.append(name)
-        combo["values"] = values
+        combo["values"] = _get_company_name_suggestions_from_index(prefix, limit=12)
 
     def _update_company_nit_suggestions(self, _event=None):
         combo = self.company_nit_entry
@@ -20645,23 +20880,7 @@ class SeguimientosWindow(tk.Toplevel, FormMousewheelMixin):
         if len(prefix) < 2:
             combo["values"] = ()
             return
-        try:
-            rows = seguimientos.get_empresas_by_nit_prefix(prefix, limit=12)
-        except Exception:
-            rows = []
-        values = []
-        seen = set()
-        for row in rows:
-            nit = "".join(str(row.get("nit_empresa") or "").split())
-            name = str(row.get("nombre_empresa") or "").strip()
-            if not nit:
-                continue
-            label = f"{nit} - {name}" if name else nit
-            if nit in seen:
-                continue
-            seen.add(nit)
-            values.append(label)
-        combo["values"] = values
+        combo["values"] = _get_company_nit_suggestions_from_index(prefix, limit=12)
 
     def _apply_linked_company_to_ui(self):
         linked_name = str((self.linked_company or {}).get("nombre_empresa") or "").strip()
@@ -22388,22 +22607,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
         if len(prefix) < 2:
             combo["values"] = ()
             return
-        try:
-            rows = seguimientos.get_empresas_by_nombre_prefix(prefix, limit=12)
-        except Exception:
-            rows = []
-        values = []
-        seen = set()
-        for row in rows:
-            name = str(row.get("nombre_empresa") or "").strip()
-            if not name:
-                continue
-            key = name.casefold()
-            if key in seen:
-                continue
-            seen.add(key)
-            values.append(name)
-        combo["values"] = values
+        combo["values"] = _get_company_name_suggestions_from_index(prefix, limit=12)
 
     def _search_selected_or_typed_company_name(self, _event=None):
         combo = self.company_name_combo

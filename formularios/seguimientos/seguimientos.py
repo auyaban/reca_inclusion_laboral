@@ -37,6 +37,7 @@ from openpyxl import load_workbook
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 
 from formularios.common import (
+    _get_cached_payload,
     _get_desktop_dir,
     _load_env_file,
     _merge_company_row_with_cache,
@@ -69,6 +70,7 @@ SEGUIMIENTOS_FOLDER_NAME = "SEGUIMIENTOS"
 DEFAULT_SEGUIMIENTOS_TEMPLATE_ID = ""
 GOOGLE_SHEETS_MIME = "application/vnd.google-apps.spreadsheet"
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_USUARIOS_RECA_CEDULAS_CACHE_TTL_SECONDS = 86400
 
 SHEET_BASE = "9. SEGUIMIENTO AL PROCESO DE INCLUSIÓN LABORAL"
 LEGACY_SHEET_BASE = "9.  SEGUIMIENTO AL PROCESO DE INCLUSION LABORAL"
@@ -1615,13 +1617,24 @@ def _legacy_suggest_next_step(case_ref):
 
 
 def get_usuarios_reca_cedulas(env_path=".env"):
-    params = {
-        "select": "cedula_usuario",
-        "cedula_usuario": "not.is.null",
-        "order": "cedula_usuario.asc",
-    }
-    data = _supabase_get("usuarios_reca", params, env_path=env_path)
-    return [row.get("cedula_usuario") for row in data if row.get("cedula_usuario")]
+    def _loader():
+        params = {
+            "select": "cedula_usuario",
+            "cedula_usuario": "not.is.null",
+            "order": "cedula_usuario.asc",
+        }
+        data = _supabase_get("usuarios_reca", params, env_path=env_path)
+        return [row.get("cedula_usuario") for row in data if row.get("cedula_usuario")]
+
+    return list(
+        _get_cached_payload(
+            "usuarios_reca_cedulas_v1",
+            _loader,
+            ttl_seconds=_USUARIOS_RECA_CEDULAS_CACHE_TTL_SECONDS,
+            allow_stale_on_error=True,
+        )
+        or []
+    )
 
 
 def get_usuario_reca_by_cedula(cedula, env_path=".env"):
@@ -1706,9 +1719,8 @@ def get_empresas_by_nombre_prefix(prefix, env_path=".env", limit=50):
     text = str(prefix or "").strip()
     if not text:
         return []
-    select_cols = ",".join(sorted(set(SECTION_1_SUPABASE_MAP.values()) | {"nit_empresa"}))
     params = {
-        "select": select_cols,
+        "select": "nombre_empresa,nit_empresa",
         "nombre_empresa": f"ilike.{text}%",
         "order": "nombre_empresa.asc",
         "limit": int(limit),
@@ -1720,9 +1732,8 @@ def get_empresas_by_nit_prefix(prefix, env_path=".env", limit=10):
     text = "".join(str(prefix or "").split())
     if not text:
         return []
-    select_cols = ",".join(sorted(set(SECTION_1_SUPABASE_MAP.values()) | {"nit_empresa"}))
     params = {
-        "select": select_cols,
+        "select": "nombre_empresa,nit_empresa",
         "nit_empresa": f"like.{text}%",
         "order": "nit_empresa.asc",
         "limit": int(limit),

@@ -9558,7 +9558,7 @@ class HubWindow(tk.Tk):
 
         subtitle = tk.Label(
             left,
-            text="Selecciona el formulario que necesitas diligenciar",
+            text="Selecciona el formulario que necesitas diligenciar hoy",
             font=("Arial", 11),
             fg="#333333",
             bg=COLOR_LIGHT_BG,

@@ -303,24 +303,24 @@ EXCEL_MAPPING = {
         "observaciones_peligros": "E147",
     },
     "section_6": {
-        "start_row": 150,
+        "start_row": 153,
         "discapacidad_col": "A",
         "descripcion_col": "G",
         "base_rows": 4,
     },
     "section_7": {
-        "observaciones_recomendaciones": "A156",
+        "observaciones_recomendaciones": "A159",
     },
     "section_8": {
-        "start_row": 158,
+        "start_row": 161,
         "name_col": "E",
         "cargo_col": "L",
         "rows": 3,
     },
 }
 
-SECTION_7_TITLE_ROW = 155
-SECTION_8_TITLE_ROW = 157
+SECTION_7_TITLE_ROW = 158
+SECTION_8_TITLE_ROW = 160
 
 
 def ws_write(ws, cell, value):
@@ -1115,7 +1115,7 @@ def _build_dynamic_layout(cache_data=None):
     cache = FORM_CACHE if cache_data is None else (cache_data or {})
     section_6_cfg = EXCEL_MAPPING.get("section_6", {})
     section_6_rows = list(cache.get("section_6") or [])
-    section_6_start_row = int(section_6_cfg.get("start_row", 150) or 150)
+    section_6_start_row = int(section_6_cfg.get("start_row", 153) or 153)
     section_6_base_rows = int(section_6_cfg.get("base_rows", 4) or 4)
     section_6_extra_rows = max(0, len(section_6_rows) - section_6_base_rows)
 

@@ -21560,20 +21560,55 @@ class _SeguimientoDateField(tk.Frame):
         for button in list(self.quick_buttons or []):
             button.config(state="normal" if enabled else "disabled")
 
+    def _set_entry_text(self, value):
+        text = str(value or "")
+        try:
+            state = str(self.entry.cget("state") or "")
+        except Exception:
+            state = "normal"
+        try:
+            if state != "normal":
+                self.entry.config(state="normal")
+            self.entry.delete(0, tk.END)
+            if text:
+                self.entry.insert(0, text)
+        finally:
+            try:
+                if state != "normal":
+                    self.entry.config(state=state)
+            except Exception:
+                pass
+
     def set(self, value):
         if self.allow_text_values:
-            self.var.set(str(value or ""))
+            text = str(value or "")
+            self.var.set(text)
+            self._set_entry_text(text)
             return
         normalized = self._parse_date(value)
         self.var.set(normalized.strftime("%Y-%m-%d") if normalized else "")
 
     def get(self):
+        try:
+            if self.allow_text_values and self.entry.winfo_exists():
+                return str(self.entry.get() or "")
+        except Exception:
+            pass
         return str(self.var.get() or "")
 
     def clear(self):
+        if self.allow_text_values:
+            self.var.set("")
+            self._set_entry_text("")
+            return
         self.var.set("")
 
     def _set_quick_value(self, value):
+        if self.allow_text_values:
+            text = str(value or "")
+            self.var.set(text)
+            self._set_entry_text(text)
+            return
         self.var.set(str(value or ""))
 
     def open_picker(self):
@@ -21622,7 +21657,7 @@ class _SeguimientoDateField(tk.Frame):
         dialog.wait_window()
 
         if result["value"] is not None:
-            self.var.set(result["value"].strftime("%Y-%m-%d"))
+            self.set(result["value"].strftime("%Y-%m-%d"))
 
 # ── VENTANA: SeguimientoEditorWindow — editor de un seguimiento individual ───
 
@@ -21985,6 +22020,7 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
                     widget._overwrite_original_readonly_bg = original_readonly_bg
                 try:
                     widget.configure(
+                        bg=COLOR_FIELD_WARNING_BG if changed else original_bg,
                         readonlybackground=COLOR_FIELD_WARNING_BG if changed else original_readonly_bg
                     )
                 except Exception:
@@ -23780,6 +23816,11 @@ class SeguimientoEditorWindow(tk.Toplevel, FormMousewheelMixin):
 
     def _collect_base_payload(self):
         payload = {k: v.get().strip() for k, v in self.base_vars.items()}
+        for field_id, field in list(self.base_date_widgets.items()):
+            try:
+                payload[field_id] = field.get().strip()
+            except Exception:
+                continue
         payload["apoyos_ajustes"] = self.base_text["apoyos_ajustes"].get("1.0", tk.END).strip()
         payload["funciones_1_5"] = [e.get().strip() for e in self.base_func_entries_1]
         payload["funciones_6_10"] = [e.get().strip() for e in self.base_func_entries_2]

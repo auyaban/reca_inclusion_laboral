@@ -1155,6 +1155,27 @@ def ensure_case_record(cedula, user_row, is_compensar):
         raise ValueError("Cédula inválida.")
     existing = find_case_record(normalized, user_row.get("nombre_usuario"))
     if existing:
+        source = str(existing.get("source") or "").strip()
+        max_seguimientos = int(existing.get("max_seguimientos") or (6 if bool(is_compensar) else 3))
+        if source == "legacy_local":
+            service = _get_drive_service()
+            seguimientos_folder_id = _ensure_seguimientos_folder(service)
+            folder_name = build_case_folder_name(user_row.get("nombre_usuario"), normalized)
+            case_folder_id = drive_upload._get_or_create_folder(service, seguimientos_folder_id, folder_name)
+            migrated = _create_native_case_record(
+                service,
+                case_folder_id,
+                folder_name,
+                normalized,
+                user_row,
+                max_seguimientos,
+                seed_path=existing.get("local_path"),
+            )
+            return {
+                "record": migrated,
+                "created": False,
+                "max_seguimientos": max_seguimientos,
+            }
         save_base_payload(existing, _build_base_payload_from_user_row(user_row), overwrite=False)
         try:
             existing["max_seguimientos"] = int(

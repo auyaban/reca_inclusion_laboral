@@ -20,6 +20,7 @@ Entry points para app.py:
 
 Depende de: google_sheets_client, formularios/common, formularios/finalize_validation
 """
+import copy
 import os
 import json
 import time
@@ -55,6 +56,7 @@ FORM_ID = "contratacion_incluyente"
 FORM_NAME = "Contratacion Incluyente"
 SHEET_NAME = "5. CONTRATACIÓN INCLUYENTE"
 _USUARIOS_RECA_CEDULAS_CACHE_TTL_SECONDS = 86400
+SECTION_HISTORY_LIMIT = 10
 
 TEMPLATE_VARIANT_INDIVIDUAL = "individual"
 TEMPLATE_VARIANT_GROUP_2_PLUS = "group_2_plus"
@@ -636,12 +638,63 @@ def clear_form_cache():
     SECTION_1_CACHE.clear()
 
 
-def set_section_cache(section_id, payload):
+def _has_meaningful_values(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if str(key or "").startswith("_"):
+                continue
+            if _has_meaningful_values(item):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_has_meaningful_values(item) for item in value)
+    return str(value or "").strip() != ""
+
+
+def _record_section_history(section_id, payload, source="manual"):
+    if not section_id or str(section_id).startswith("_"):
+        return
+    if not _has_meaningful_values(payload):
+        return
+    history_root = FORM_CACHE.setdefault("_section_history", {})
+    if not isinstance(history_root, dict):
+        history_root = {}
+        FORM_CACHE["_section_history"] = history_root
+    entries = history_root.setdefault(section_id, [])
+    if not isinstance(entries, list):
+        entries = []
+        history_root[section_id] = entries
+    snapshot = copy.deepcopy(payload)
+    if entries:
+        last_entry = entries[-1] if isinstance(entries[-1], dict) else {}
+        if last_entry.get("payload") == snapshot:
+            return
+    entries.append(
+        {
+            "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "source": str(source or "manual").strip() or "manual",
+            "payload": snapshot,
+        }
+    )
+    if len(entries) > SECTION_HISTORY_LIMIT:
+        del entries[:-SECTION_HISTORY_LIMIT]
+
+
+def set_section_cache(section_id, payload, *, source="manual"):
     if not section_id:
         raise ValueError("section_id requerido")
-    if payload is None:
-        payload = {}
-    FORM_CACHE[section_id] = payload
+    normalized_payload = payload if payload is not None else {}
+    if section_id == "section_1":
+        SECTION_1_CACHE.clear()
+        if isinstance(normalized_payload, dict):
+            SECTION_1_CACHE.update(normalized_payload)
+    elif section_id == "section_2" and isinstance(normalized_payload, list):
+        normalized_payload = _normalize_section_2_payload(normalized_payload)
+    FORM_CACHE[section_id] = normalized_payload
+    FORM_CACHE["_last_saved_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    FORM_CACHE["_last_saved_section"] = section_id
+    FORM_CACHE["_last_saved_source"] = str(source or "manual").strip() or "manual"
+    _record_section_history(section_id, normalized_payload, source=source)
 
 
 def get_form_cache():
@@ -881,7 +934,6 @@ def confirm_section_1(company_data, user_inputs):
     SECTION_1_CACHE.update(payload)
     set_section_cache("section_1", payload)
     FORM_CACHE["_last_section"] = "section_1"
-    save_cache_to_file()
     return payload
 
 
@@ -891,7 +943,6 @@ def confirm_section_2(payload):
     payload = _normalize_section_2_payload(payload)
     set_section_cache("section_2", payload)
     FORM_CACHE["_last_section"] = "section_2"
-    save_cache_to_file()
     return payload
 
 
@@ -900,7 +951,6 @@ def confirm_section_6(payload):
         raise ValueError("section_6 requerida")
     set_section_cache("section_6", payload)
     FORM_CACHE["_last_section"] = "section_6"
-    save_cache_to_file()
     return payload
 
 
@@ -909,20 +959,18 @@ def confirm_section_7(payload):
         raise ValueError("section_7 requerida")
     set_section_cache("section_7", payload)
     FORM_CACHE["_last_section"] = "section_7"
-    save_cache_to_file()
     return payload
 
 
-def sync_usuarios_reca(env_path=".env"):
-    data = FORM_CACHE.get("section_2")
-    if not data and cache_file_exists():
-        load_cache_from_file()
-        data = FORM_CACHE.get("section_2")
+def sync_usuarios_reca(cache=None, env_path=".env"):
+    cache_data = FORM_CACHE if cache is None else (cache or {})
+    data = cache_data.get("section_2")
     if not data:
         return 0
 
-    empresa_nit = (SECTION_1_CACHE.get("nit_empresa") or "").strip()
-    empresa_nombre = (SECTION_1_CACHE.get("nombre_empresa") or "").strip()
+    section_1 = cache_data.get("section_1") or {}
+    empresa_nit = str(section_1.get("nit_empresa") or SECTION_1_CACHE.get("nit_empresa") or "").strip()
+    empresa_nombre = str(section_1.get("nombre_empresa") or SECTION_1_CACHE.get("nombre_empresa") or "").strip()
     rows = []
     for entry in data:
         cedula = _normalize_cedula(entry.get("cedula"))
@@ -1156,12 +1204,6 @@ def _build_auto_resize_excluded_rows(num_vinculados=1):
 def _build_section_1_writes(payload):
     if not payload:
         payload = SECTION_1_CACHE
-    if not payload:
-        try:
-            if load_cache_from_file():
-                payload = FORM_CACHE.get("section_1", {}) or SECTION_1_CACHE
-        except Exception:
-            payload = payload or {}
     writes = []
     for key, cell in SECTION_1_CELL_MAP.items():
         if key in payload:
@@ -1240,32 +1282,32 @@ def validate_before_finalize(cache=None):
     return issues
 
 
-def export_to_excel(clear_cache=True):
-    if not FORM_CACHE.get("section_1") and cache_file_exists():
-        load_cache_from_file()
-    raise_validation_error(validate_before_finalize())
+def export_to_excel(clear_cache=True, cache=None):
+    cache_data = FORM_CACHE if cache is None else (cache or {})
+    raise_validation_error(validate_before_finalize(cache_data))
 
     from google_sheets_client import get_master_template_id
     from drive_upload import publish_sheet_from_template
 
-    vinculados = _get_section_2_entries(FORM_CACHE.get("section_2", []))
+    vinculados = _get_section_2_entries(cache_data.get("section_2", []))
     num_vinculados = len(vinculados)
 
     _log_excel(f"START export_all (Google Sheets) vinculados={num_vinculados}")
 
-    empresa_nombre = SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
+    section_1 = cache_data.get("section_1") or {}
+    empresa_nombre = section_1.get("nombre_empresa") or SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
     base_name = _sanitize_filename(empresa_nombre)
 
     writes = []
-    writes.extend(_build_section_1_writes(FORM_CACHE.get("section_1", {})))
+    writes.extend(_build_section_1_writes(section_1))
     writes.extend(_build_section_2_writes(vinculados))
-    writes.extend(_build_section_6_writes(FORM_CACHE.get("section_6", {}), num_vinculados=num_vinculados))
-    writes.extend(_build_section_7_writes(FORM_CACHE.get("section_7", []), num_vinculados=num_vinculados))
+    writes.extend(_build_section_6_writes(cache_data.get("section_6", {}), num_vinculados=num_vinculados))
+    writes.extend(_build_section_7_writes(cache_data.get("section_7", []), num_vinculados=num_vinculados))
     row_insertions = []
     row_insertions.extend(_build_section_2_row_insertions(vinculados))
     row_insertions.extend(
         _build_section_7_row_insertions(
-            FORM_CACHE.get("section_7", []),
+            cache_data.get("section_7", []),
             num_vinculados=num_vinculados,
         )
     )
@@ -1288,9 +1330,8 @@ def export_to_excel(clear_cache=True):
 
     # Capturar datos del cache ANTES de limpiarlo
     tipo_acta = "contratacion_individual" if num_vinculados <= 1 else "contratacion_grupal"
-    section_1 = FORM_CACHE.get("section_1") or {}
     fecha_visita_raw = str(section_1.get("fecha_visita") or "").strip()
-    section_7_raw = FORM_CACHE.get("section_7") or []
+    section_7_raw = cache_data.get("section_7") or []
     asistentes = [
         {"nombre": str(a.get("nombre") or "").strip(), "cargo": str(a.get("cargo") or "").strip()}
         for a in (section_7_raw if isinstance(section_7_raw, list) else [])
@@ -1322,7 +1363,7 @@ def export_to_excel(clear_cache=True):
     else:
         extra_name = str(num_vinculados) if num_vinculados > 1 else None
 
-    if clear_cache:
+    if clear_cache and cache is None:
         clear_cache_file()
         clear_form_cache()
 

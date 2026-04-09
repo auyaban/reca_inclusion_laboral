@@ -737,7 +737,6 @@ def confirm_section_1(company_data, user_inputs):
     SECTION_1_CACHE.update(payload)
     set_section_cache("section_1", payload)
     FORM_CACHE["_last_section"] = "section_1"
-    save_cache_to_file()
     return payload
 
 
@@ -746,7 +745,6 @@ def confirm_section_2(payload):
         raise ValueError("section_2 requerida")
     set_section_cache("section_2", payload)
     FORM_CACHE["_last_section"] = "section_2"
-    save_cache_to_file()
     return payload
 
 
@@ -755,7 +753,6 @@ def confirm_section_3(payload):
         raise ValueError("section_3 requerida")
     set_section_cache("section_3", payload)
     FORM_CACHE["_last_section"] = "section_3"
-    save_cache_to_file()
     return payload
 
 
@@ -764,7 +761,6 @@ def confirm_section_4(payload):
         raise ValueError("section_4 requerida")
     set_section_cache("section_4", payload)
     FORM_CACHE["_last_section"] = "section_4"
-    save_cache_to_file()
     return payload
 
 
@@ -773,7 +769,6 @@ def confirm_section_5(payload):
         raise ValueError("section_5 requerida")
     set_section_cache("section_5", payload)
     FORM_CACHE["_last_section"] = "section_5"
-    save_cache_to_file()
     return payload
 
 
@@ -782,7 +777,6 @@ def confirm_section_6(payload):
         raise ValueError("section_6 requerida")
     set_section_cache("section_6", payload)
     FORM_CACHE["_last_section"] = "section_6"
-    save_cache_to_file()
     return payload
 
 
@@ -791,7 +785,6 @@ def confirm_section_7(payload):
         raise ValueError("section_7 requerida")
     set_section_cache("section_7", payload)
     FORM_CACHE["_last_section"] = "section_7"
-    save_cache_to_file()
     return payload
 
 
@@ -800,7 +793,6 @@ def confirm_section_8(payload):
         raise ValueError("section_8 requerida")
     set_section_cache("section_8", payload)
     FORM_CACHE["_last_section"] = "section_8"
-    save_cache_to_file()
     return payload
 
 
@@ -809,7 +801,6 @@ def confirm_section_9(payload):
         raise ValueError("section_9 requerida")
     set_section_cache("section_9", payload)
     FORM_CACHE["_last_section"] = "section_9"
-    save_cache_to_file()
     return payload
 
 
@@ -1159,14 +1150,15 @@ def validate_before_finalize(cache=None):
     return issues
 
 
-def _validate_cache_before_export():
-    section_3 = FORM_CACHE.get("section_3", {})
+def _validate_cache_before_export(cache=None):
+    cache_data = FORM_CACHE if cache is None else (cache or {})
+    section_3 = cache_data.get("section_3", {})
     if _has_meaningful_values(section_3):
-        issues = validate_before_finalize()
+        issues = validate_before_finalize(cache_data)
         raise_validation_error(issues)
         return
     later_sections_have_data = any(
-        _has_meaningful_values(FORM_CACHE.get(section_id))
+        _has_meaningful_values(cache_data.get(section_id))
         for section_id in ("section_4", "section_5", "section_6", "section_7", "section_8", "section_9")
     )
     if later_sections_have_data:
@@ -1177,31 +1169,31 @@ def _validate_cache_before_export():
     raise RuntimeError("La seccion 3 no tiene informacion diligenciada. Revisa esa seccion antes de finalizar.")
 
 
-def export_to_excel(clear_cache=True):
-    if not FORM_CACHE.get("section_1") and cache_file_exists():
-        load_cache_from_file()
-    _validate_cache_before_export()
+def export_to_excel(clear_cache=True, cache=None):
+    cache_data = FORM_CACHE if cache is None else (cache or {})
+    _validate_cache_before_export(cache_data)
 
     from google_sheets_client import get_master_template_id
     from drive_upload import publish_sheet_from_template
 
-    empresa_nombre = SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
+    section_1 = cache_data.get("section_1") or {}
+    empresa_nombre = section_1.get("nombre_empresa") or SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
     base_name = _sanitize_filename(empresa_nombre)
-    total_vinculados = len(FORM_CACHE.get("section_2", []) or [])
+    total_vinculados = len(cache_data.get("section_2", []) or [])
 
     writes = []
-    writes.extend(_build_section_1_writes(FORM_CACHE.get("section_1", {})))
-    writes.extend(_build_section_2_writes(FORM_CACHE.get("section_2", [])))
-    writes.extend(_build_section_3_writes(FORM_CACHE.get("section_3", {}), total_vinculados=total_vinculados))
-    writes.extend(_build_section_4_writes(FORM_CACHE.get("section_4", {}), total_vinculados=total_vinculados))
-    writes.extend(_build_section_5_writes(FORM_CACHE.get("section_5", {}), total_vinculados=total_vinculados))
-    writes.extend(_build_section_6_writes(FORM_CACHE.get("section_6", {}), total_vinculados=total_vinculados))
-    writes.extend(_build_section_7_writes(FORM_CACHE.get("section_7", {}), total_vinculados=total_vinculados))
-    writes.extend(_build_section_8_writes(FORM_CACHE.get("section_8", {}), total_vinculados=total_vinculados))
-    writes.extend(_build_section_9_writes(FORM_CACHE.get("section_9", []), total_vinculados=total_vinculados))
+    writes.extend(_build_section_1_writes(section_1))
+    writes.extend(_build_section_2_writes(cache_data.get("section_2", [])))
+    writes.extend(_build_section_3_writes(cache_data.get("section_3", {}), total_vinculados=total_vinculados))
+    writes.extend(_build_section_4_writes(cache_data.get("section_4", {}), total_vinculados=total_vinculados))
+    writes.extend(_build_section_5_writes(cache_data.get("section_5", {}), total_vinculados=total_vinculados))
+    writes.extend(_build_section_6_writes(cache_data.get("section_6", {}), total_vinculados=total_vinculados))
+    writes.extend(_build_section_7_writes(cache_data.get("section_7", {}), total_vinculados=total_vinculados))
+    writes.extend(_build_section_8_writes(cache_data.get("section_8", {}), total_vinculados=total_vinculados))
+    writes.extend(_build_section_9_writes(cache_data.get("section_9", []), total_vinculados=total_vinculados))
     row_insertions = []
-    row_insertions.extend(_build_section_2_row_insertions(FORM_CACHE.get("section_2", [])))
-    row_insertions.extend(_build_section_9_row_insertions(FORM_CACHE.get("section_9", []), total_vinculados=total_vinculados))
+    row_insertions.extend(_build_section_2_row_insertions(cache_data.get("section_2", [])))
+    row_insertions.extend(_build_section_9_row_insertions(cache_data.get("section_9", []), total_vinculados=total_vinculados))
 
     result = publish_sheet_from_template(
         template_id=get_master_template_id(),
@@ -1212,9 +1204,8 @@ def export_to_excel(clear_cache=True):
     )
 
     # Capturar datos del cache ANTES de limpiarlo
-    section_1 = FORM_CACHE.get("section_1") or {}
     fecha_visita_raw = str(section_1.get("fecha_visita") or "").strip()
-    section_9_raw = FORM_CACHE.get("section_9") or []
+    section_9_raw = cache_data.get("section_9") or []
     asistentes = [
         {"nombre": str(a.get("nombre") or "").strip(), "cargo": str(a.get("cargo") or "").strip()}
         for a in (section_9_raw if isinstance(section_9_raw, list) else [])
@@ -1233,7 +1224,7 @@ def export_to_excel(clear_cache=True):
         "participantes": [],
     }
 
-    if clear_cache:
+    if clear_cache and cache is None:
         clear_cache_file()
         clear_form_cache()
 

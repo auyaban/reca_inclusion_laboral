@@ -433,7 +433,6 @@ def confirm_section_1(company_data, user_inputs):
     SECTION_1_CACHE.update(payload)
     set_section_cache("section_1", payload)
     FORM_CACHE["_last_section"] = "section_1"
-    save_cache_to_file()
     return payload
 
 
@@ -442,7 +441,6 @@ def confirm_section_2(payload):
         raise ValueError("section_2 requerida")
     set_section_cache("section_2", payload)
     FORM_CACHE["_last_section"] = "section_2"
-    save_cache_to_file()
     return payload
 
 
@@ -451,7 +449,6 @@ def confirm_section_2_1(payload):
         raise ValueError("section_2_1 requerida")
     set_section_cache("section_2_1", payload)
     FORM_CACHE["_last_section"] = "section_2_1"
-    save_cache_to_file()
     return payload
 
 
@@ -460,7 +457,6 @@ def confirm_section_3(payload):
         raise ValueError("section_3 requerida")
     set_section_cache("section_3", payload)
     FORM_CACHE["_last_section"] = "section_3"
-    save_cache_to_file()
     return payload
 
 
@@ -469,7 +465,6 @@ def confirm_section_4(payload):
         raise ValueError("section_4 requerida")
     set_section_cache("section_4", payload)
     FORM_CACHE["_last_section"] = "section_4"
-    save_cache_to_file()
     return payload
 
 
@@ -478,7 +473,6 @@ def confirm_section_5(payload):
         raise ValueError("section_5 requerida")
     set_section_cache("section_5", payload)
     FORM_CACHE["_last_section"] = "section_5"
-    save_cache_to_file()
     return payload
 
 
@@ -487,7 +481,6 @@ def confirm_section_6(payload):
         raise ValueError("section_6 requerida")
     set_section_cache("section_6", payload)
     FORM_CACHE["_last_section"] = "section_6"
-    save_cache_to_file()
     return payload
 
 
@@ -496,7 +489,6 @@ def confirm_section_7(payload):
         raise ValueError("section_7 requerida")
     set_section_cache("section_7", payload)
     FORM_CACHE["_last_section"] = "section_7"
-    save_cache_to_file()
     return payload
 
 
@@ -505,7 +497,6 @@ def confirm_section_8(payload):
         raise ValueError("section_8 requerida")
     set_section_cache("section_8", payload)
     FORM_CACHE["_last_section"] = "section_8"
-    save_cache_to_file()
     return payload
 
 
@@ -1425,10 +1416,9 @@ def validate_before_finalize(cache=None):
     return issues
 
 
-def export_to_excel(progress_callback=None):
-    if not FORM_CACHE.get("section_1") and cache_file_exists():
-        load_cache_from_file()
-    raise_validation_error(validate_before_finalize())
+def export_to_excel(progress_callback=None, cache=None):
+    cache_data = FORM_CACHE if cache is None else (cache or {})
+    raise_validation_error(validate_before_finalize(cache_data))
 
     from google_sheets_client import get_master_template_id
     from drive_upload import publish_sheet_from_template
@@ -1448,7 +1438,7 @@ def export_to_excel(progress_callback=None):
         "section_8",
     ]
     for section_id in section_order:
-        payload = FORM_CACHE.get(section_id, {})
+        payload = cache_data.get(section_id, {})
         _log_excel(f"SECTION export_all section={section_id}")
         if progress_callback:
             progress_callback(section_id)
@@ -1457,9 +1447,10 @@ def export_to_excel(progress_callback=None):
     checkbox_cells = [w for w in writes if w.get("_checkbox")]
     writes = [{k: v for k, v in w.items() if k != "_checkbox"} for w in writes]
 
-    empresa_nombre = SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
+    section_1 = cache_data.get("section_1") or {}
+    empresa_nombre = section_1.get("nombre_empresa") or SECTION_1_CACHE.get("nombre_empresa") or "Empresa"
     base_name = _sanitize_filename(empresa_nombre)
-    row_insertions = _build_row_insertions(FORM_CACHE)
+    row_insertions = _build_row_insertions(cache_data)
 
     result = publish_sheet_from_template(
         template_id=get_master_template_id(),
@@ -1473,11 +1464,10 @@ def export_to_excel(progress_callback=None):
     _log_excel("SUCCESS export_all (Google Sheets)")
 
     # Construir metadata para embeber en el PDF (usada por RECA ODS)
-    section_1 = FORM_CACHE.get("section_1") or {}
-    section_2 = FORM_CACHE.get("section_2") or {}
+    section_2 = cache_data.get("section_2") or {}
     fecha_visita_raw = str(section_1.get("fecha_visita") or "").strip()
     nombre_vacante = str(section_2.get("nombre_vacante") or "").strip()
-    section_8_raw = FORM_CACHE.get("section_8") or []
+    section_8_raw = cache_data.get("section_8") or []
     asistentes = []
     if isinstance(section_8_raw, list):
         asistentes = [
@@ -1497,8 +1487,9 @@ def export_to_excel(progress_callback=None):
         "participantes": [],
     }
 
-    clear_cache_file()
-    clear_form_cache()
+    if cache is None:
+        clear_cache_file()
+        clear_form_cache()
 
     return {
         "output_path": result.get("webViewLink", ""),

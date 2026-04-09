@@ -150,6 +150,55 @@ class SyncUsuariosRecaShapeTests(unittest.TestCase):
         self.assertEqual(captured["rows"][0]["nombre_usuario"], "Ana final")
         self.assertEqual(captured["rows"][0]["telefono_oferente"], "3001112233")
 
+    def test_seleccion_sync_usuarios_reca_prefers_explicit_cache_over_form_cache(self) -> None:
+        seleccion.FORM_CACHE["section_2"] = [
+            {"cedula": "111", "nombre_oferente": "Incorrecto"},
+        ]
+        explicit_cache = {
+            "section_2": [
+                {"cedula": "222", "nombre_oferente": "Correcto"},
+            ]
+        }
+        captured = {}
+
+        def _fake_upsert(table, rows, env_path=".env", on_conflict=None):
+            captured["rows"] = rows
+            return {"status": "synced"}
+
+        with patch.object(seleccion, "_supabase_upsert_with_queue", side_effect=_fake_upsert):
+            count = seleccion.sync_usuarios_reca(cache=explicit_cache)
+
+        self.assertEqual(count, 1)
+        self.assertEqual(captured["rows"][0]["cedula_usuario"], "222")
+        self.assertEqual(captured["rows"][0]["nombre_usuario"], "Correcto")
+
+    def test_contratacion_sync_usuarios_reca_prefers_explicit_cache_over_form_cache(self) -> None:
+        contratacion.FORM_CACHE["section_2"] = [
+            {"cedula": "111", "nombre_oferente": "Incorrecto"},
+        ]
+        contratacion.SECTION_1_CACHE["nit_empresa"] = "legacy-nit"
+        contratacion.SECTION_1_CACHE["nombre_empresa"] = "Legacy"
+        explicit_cache = {
+            "section_1": {"nit_empresa": "900123456", "nombre_empresa": "Empresa Correcta"},
+            "section_2": [
+                {"cedula": "333", "nombre_oferente": "Correcto"},
+            ],
+        }
+        captured = {}
+
+        def _fake_upsert(table, rows, env_path=".env", on_conflict=None):
+            captured["rows"] = rows
+            return {"status": "synced"}
+
+        with patch.object(contratacion, "_supabase_upsert_with_queue", side_effect=_fake_upsert):
+            count = contratacion.sync_usuarios_reca(cache=explicit_cache)
+
+        self.assertEqual(count, 1)
+        self.assertEqual(captured["rows"][0]["cedula_usuario"], "333")
+        self.assertEqual(captured["rows"][0]["nombre_usuario"], "Correcto")
+        self.assertEqual(captured["rows"][0]["empresa_nit"], "900123456")
+        self.assertEqual(captured["rows"][0]["empresa_nombre"], "Empresa Correcta")
+
 
 if __name__ == "__main__":
     unittest.main()

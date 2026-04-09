@@ -627,7 +627,6 @@ def confirm_section_1(company_data, user_inputs):
     SECTION_1_CACHE.update(payload)
     set_section_cache("section_1", payload)
     FORM_CACHE["_last_section"] = "section_1"
-    save_cache_to_file()
     return payload
 
 
@@ -646,7 +645,6 @@ def confirm_section_3_item8(checkbox_values):
         payload[key] = bool(checkbox_values.get(key, default_value))
     set_section_cache("section_3_item_8", payload)
     FORM_CACHE["_last_section"] = "section_3_item_8"
-    save_cache_to_file()
     return payload
 
 
@@ -659,7 +657,6 @@ def confirm_section_4(notes_text):
     payload = {"acuerdos_observaciones": str(notes_text)}
     set_section_cache("section_4", payload)
     FORM_CACHE["_last_section"] = "section_4"
-    save_cache_to_file()
     return payload
 
 
@@ -691,7 +688,6 @@ def confirm_section_5(asistentes):
         raise ValueError("Debe ingresar al menos un nombre de asistente")
     set_section_cache("section_5", payload)
     FORM_CACHE["_last_section"] = "section_5"
-    save_cache_to_file()
     return payload
 
 
@@ -829,17 +825,13 @@ def validate_before_finalize(cache=None):
 
 
 def export_to_excel(cache=None):
-    if cache is None:
-        cache = FORM_CACHE
-    if not cache.get("section_1") and cache_file_exists():
-        load_cache_from_file()
-        cache = FORM_CACHE
-    raise_validation_error(validate_before_finalize(cache))
+    cache_data = FORM_CACHE if cache is None else (cache or {})
+    raise_validation_error(validate_before_finalize(cache_data))
 
     from google_sheets_client import get_master_template_id
     from drive_upload import publish_sheet_from_template
 
-    section_1 = cache.get("section_1") or {}
+    section_1 = cache_data.get("section_1") or {}
     tipo_visita_raw = section_1.get("tipo_visita") or "Presentacion"
     sheet_name = _resolve_sheet_name(tipo_visita_raw)
 
@@ -852,10 +844,10 @@ def export_to_excel(cache=None):
 
     writes = []
     writes.extend(_build_section_1_writes(sheet_name, section_1))
-    writes.extend(_build_section_3_item8_writes(sheet_name, cache.get("section_3_item_8", {})))
-    writes.extend(_build_section_4_writes(sheet_name, cache.get("section_4", {})))
-    writes.extend(_build_section_5_writes(sheet_name, cache.get("section_5", [])))
-    row_insertions = _build_section_5_row_insertions(sheet_name, cache.get("section_5", []))
+    writes.extend(_build_section_3_item8_writes(sheet_name, cache_data.get("section_3_item_8", {})))
+    writes.extend(_build_section_4_writes(sheet_name, cache_data.get("section_4", {})))
+    writes.extend(_build_section_5_writes(sheet_name, cache_data.get("section_5", [])))
+    row_insertions = _build_section_5_row_insertions(sheet_name, cache_data.get("section_5", []))
 
     checkbox_cells = [w for w in writes if w.get("_checkbox")]
     writes = [{k: v for k, v in w.items() if k != "_checkbox"} for w in writes]
@@ -870,15 +862,16 @@ def export_to_excel(cache=None):
     )
 
     _log_excel("SUCCESS export_all")
-    clear_cache_file()
-    clear_form_cache()
+    if cache is None:
+        clear_cache_file()
+        clear_form_cache()
 
     # Determinar tipo_acta según tipo_visita
     tipo_acta = "reactivacion_programa" if tipo_visita == "reactivacion" else "presentacion_programa"
 
     # Construir metadata para embeber en el PDF (usada por RECA ODS)
     fecha_visita_raw = section_1.get("fecha_visita") or ""
-    asistentes_raw = cache.get("section_5") or []
+    asistentes_raw = cache_data.get("section_5") or []
     asistentes = [
         {"nombre": str(a.get("nombre") or "").strip(), "cargo": str(a.get("cargo") or "").strip()}
         for a in asistentes_raw

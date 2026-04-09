@@ -54,6 +54,7 @@ import hmac
 import secrets
 import json
 import copy
+import inspect
 import urllib.error
 import urllib.request
 import webbrowser
@@ -207,12 +208,16 @@ _TOAST_DURATIONS = {
     "error": 9000,
 }
 DRAFTS_FILE_NAME = "form_drafts_il.json"
+FORM_PROCESS_DRAFTS_DIR_NAME = "form_drafts"
 COMPLETED_FORMS_FILE_NAME = "completed_forms_il.json"
 OFFLINE_AUTH_FILE_NAME = "offline_auth_users.json"
 LOGIN_CREDENTIALS_FILE_NAME = "login_credentials.json"
 DRIVE_UPLOAD_QUEUE_FILE_NAME = "drive_upload_queue.json"
 DRIVE_UPLOAD_FAILED_FILE_NAME = "drive_upload_failed.json"
 FOLLOWUP_LOCAL_DRAFTS_FILE_NAME = "seguimientos_local_drafts.json"
+FORM_DRAFTS_INDEX_VERSION = 2
+FORM_PROCESS_DRAFT_VERSION = 3
+FORM_PROCESS_DRAFT_TYPE = "form_process"
 COMPLETED_FORMS_RETENTION_DAYS = 30
 TEST_FILL_DEFAULT_TEXT = "Pendiente"
 COMPLETED_FORM_ID_ALIASES = {
@@ -268,18 +273,151 @@ WINDOW_CLASS_FORM_ID_MAP = {
     "SeguimientosWindow": "seguimientos",
     "LSCWindow": "interprete_lsc",
 }
+WINDOW_DRAFT_CACHE_EXCLUDED_FORM_IDS = frozenset({"seguimientos", "interprete_lsc"})
 
 
 # ── HELPERS: Autosave, estado de formulario y borradores ────────────────────
 
 
-def _autosave_section(module, section_key, collect_fn):
+def _resolve_window_form_id(window, module=None):
+    if window is None:
+        return str(getattr(module, "FORM_ID", "") or "").strip()
+    form_id = str(getattr(window, "_form_id", "") or "").strip()
+    if form_id:
+        return form_id
+    form_id = str(WINDOW_CLASS_FORM_ID_MAP.get(window.__class__.__name__, "") or "").strip()
+    if form_id:
+        return form_id
+    return str(getattr(module, "FORM_ID", "") or "").strip()
+
+
+def _uses_window_draft_cache(form_id):
+    normalized = str(form_id or "").strip()
+    return bool(normalized and normalized in FORM_MODULE_MAP and normalized not in WINDOW_DRAFT_CACHE_EXCLUDED_FORM_IDS)
+
+
+def _window_uses_window_draft_cache(window, module=None):
+    return _uses_window_draft_cache(_resolve_window_form_id(window, module))
+
+
+def _ensure_window_draft_cache(window, module=None):
+    cache = getattr(window, "_draft_cache", None)
+    if isinstance(cache, dict):
+        return cache
+    if not _window_uses_window_draft_cache(window, module):
+        if module is not None and hasattr(module, "get_form_cache"):
+            try:
+                cache = copy.deepcopy(module.get_form_cache() or {})
+            except Exception:
+                cache = {}
+        else:
+            cache = {}
+    else:
+        cache = {}
+    window._draft_cache = cache
+    return window._draft_cache
+
+
+def _clone_window_draft_cache(window, module=None):
+    return copy.deepcopy(_ensure_window_draft_cache(window, module))
+
+
+def _sync_window_cache_to_module(window, module):
+    if not module:
+        return {}
+    cache_snapshot = _clone_window_draft_cache(window, module)
+    _set_module_cache_snapshot(module, cache_snapshot)
+    return cache_snapshot
+
+
+def _sync_module_cache_to_window(window, module):
+    if not module:
+        return _clone_window_draft_cache(window, module)
+    try:
+        cache_snapshot = copy.deepcopy(module.get_form_cache() or {})
+    except Exception:
+        form_cache = getattr(module, "FORM_CACHE", None)
+        cache_snapshot = copy.deepcopy(form_cache or {}) if isinstance(form_cache, dict) else {}
+    window._draft_cache = cache_snapshot
+    return _clone_window_draft_cache(window, module)
+
+
+def _get_runtime_form_cache(window, module=None):
+    if _window_uses_window_draft_cache(window, module):
+        return _ensure_window_draft_cache(window, module)
+    if module is not None and hasattr(module, "get_form_cache"):
+        try:
+            return module.get_form_cache() or {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _get_runtime_section_cache(window, module, section_key, default=None):
+    cache = _get_runtime_form_cache(window, module)
+    if not isinstance(cache, dict):
+        return copy.deepcopy(default)
+    value = cache.get(section_key, default)
+    return copy.deepcopy(value)
+
+
+def _infer_window_from_callback(callback):
+    closure = getattr(callback, "__closure__", None) or ()
+    for cell in closure:
+        try:
+            value = cell.cell_contents
+        except ValueError:
+            continue
+        if hasattr(value, "winfo_exists") and hasattr(value, "_current_section"):
+            return value
+    return None
+
+
+def _set_runtime_section_cache(window, module, section_key, payload, *, source="manual", update_last_section=True):
+    if _window_uses_window_draft_cache(window, module):
+        _sync_window_cache_to_module(window, module)
+        if module is not None and hasattr(module, "set_section_cache"):
+            try:
+                module.set_section_cache(section_key, payload, source=source)
+            except TypeError:
+                module.set_section_cache(section_key, payload)
+        else:
+            cache = _ensure_window_draft_cache(window, module)
+            cache[section_key] = copy.deepcopy(payload if payload is not None else {})
+        form_cache = getattr(module, "FORM_CACHE", None)
+        if isinstance(form_cache, dict):
+            if update_last_section:
+                form_cache["_last_section"] = section_key
+            form_cache["_last_saved_source"] = str(source or "manual").strip() or "manual"
+            form_cache["_last_saved_at"] = _draft_now_iso()
+            form_cache["_last_saved_section"] = section_key
+        return _sync_module_cache_to_window(window, module)
+
+    try:
+        module.set_section_cache(section_key, payload, source=source)
+    except TypeError:
+        module.set_section_cache(section_key, payload)
+    if update_last_section:
+        form_cache = getattr(module, "FORM_CACHE", None)
+        if isinstance(form_cache, dict):
+            form_cache["_last_section"] = section_key
+    return copy.deepcopy(module.get_form_cache() or {}) if hasattr(module, "get_form_cache") else {}
+
+
+def _autosave_section(module, section_key, collect_fn, *, window=None):
     """Guarda silenciosamente los datos de la seccion actual al cache local.
     Se llama al navegar hacia atras para no perder el trabajo."""
     try:
+        if window is None:
+            window = _infer_window_from_callback(collect_fn)
         payload = collect_fn()
         existing_payload = {}
-        if hasattr(module, "get_form_cache"):
+        if window is not None and _window_uses_window_draft_cache(window, module):
+            try:
+                existing_payload = (_get_runtime_form_cache(window, module) or {}).get(section_key)
+            except Exception:
+                existing_payload = {}
+        elif hasattr(module, "get_form_cache"):
             try:
                 existing_payload = (module.get_form_cache() or {}).get(section_key)
             except Exception:
@@ -298,11 +436,14 @@ def _autosave_section(module, section_key, collect_fn):
                 "reason=empty_payload_after_collect"
             )
             return
-        try:
-            module.set_section_cache(section_key, payload, source="autosave")
-        except TypeError:
-            module.set_section_cache(section_key, payload)
-        module.save_cache_to_file()
+        _set_runtime_section_cache(
+            window,
+            module,
+            section_key,
+            payload,
+            source="autosave",
+            update_last_section=True,
+        )
     except Exception:
         pass
 
@@ -373,12 +514,29 @@ def _attach_autoexpand(widget, min_h=3, max_h=20):
             widget.edit_modified(False)
         except Exception:
             pass
-    widget.bind("<<Modified>>", lambda _event=None: widget.after_idle(_resize), add="+")
-    widget.bind("<KeyRelease>", lambda _event=None: widget.after_idle(_resize), add="+")
-    widget.bind("<<Paste>>", lambda _event=None: widget.after_idle(_resize), add="+")
-    widget.bind("<<Cut>>", lambda _event=None: widget.after_idle(_resize), add="+")
+
+    def _schedule_resize(_event=None):
+        try:
+            widget.after_idle(_resize)
+        except Exception:
+            pass
+
+    widget._autoexpand_refresh = _schedule_resize
+    widget.bind("<<Modified>>", _schedule_resize, add="+")
+    widget.bind("<KeyRelease>", _schedule_resize, add="+")
+    widget.bind("<<Paste>>", _schedule_resize, add="+")
+    widget.bind("<<Cut>>", _schedule_resize, add="+")
     _attach_text_list_support(widget)
-    widget.after_idle(_resize)
+    _schedule_resize()
+
+
+def _refresh_autoexpand(widget):
+    refresh_fn = getattr(widget, "_autoexpand_refresh", None)
+    if callable(refresh_fn):
+        try:
+            refresh_fn()
+        except Exception:
+            pass
 
 
 _TEXT_LIST_LINE_RE = re.compile(
@@ -545,6 +703,18 @@ def _clear_local_resume_state(module):
         pass
 
 
+def _clear_legacy_form_cache_file(module):
+    try:
+        if (
+            hasattr(module, "cache_file_exists")
+            and hasattr(module, "clear_cache_file")
+            and module.cache_file_exists()
+        ):
+            module.clear_cache_file()
+    except Exception:
+        pass
+
+
 def _collect_asistente_rows(rows):
     """Normaliza filas de asistentes y descarta las vacías."""
     values = []
@@ -667,6 +837,21 @@ def _get_drafts_path():
     return os.path.join(_get_local_cache_dir(), DRAFTS_FILE_NAME)
 
 
+def _get_form_drafts_dir():
+    return os.path.join(_get_local_cache_dir(), FORM_PROCESS_DRAFTS_DIR_NAME)
+
+
+def _build_process_draft_id(form_id):
+    normalized_form_id = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(form_id or "").strip()).strip("-") or "form"
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    suffix = uuid.uuid4().hex[:4]
+    return f"{normalized_form_id}-{stamp}-{suffix}"
+
+
+def _get_process_draft_path(draft_id):
+    return os.path.join(_get_form_drafts_dir(), f"{str(draft_id or '').strip()}.json")
+
+
 def _get_completed_forms_path():
     return os.path.join(_get_local_cache_dir(), COMPLETED_FORMS_FILE_NAME)
 
@@ -692,6 +877,9 @@ def _get_followup_local_drafts_path():
 
 
 def _atomic_write_json_file(path, payload):
+    folder = os.path.dirname(str(path or "").strip())
+    if folder:
+        os.makedirs(folder, exist_ok=True)
     tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
     with open(tmp_path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, indent=2)
@@ -1979,30 +2167,248 @@ def _save_offline_auth_store(data):
 # ── HELPERS: Borradores de formulario (drafts.json) ─────────────────────────
 
 
+def _draft_now_iso():
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _build_form_process_draft_document(
+    *,
+    draft_id,
+    form_id,
+    form_name,
+    user_login,
+    company_key,
+    company_name,
+    created_at,
+    updated_at,
+    last_section,
+    cache,
+    draft_session_key="",
+):
+    payload = {
+        "draft_id": str(draft_id or "").strip(),
+        "draft_type": FORM_PROCESS_DRAFT_TYPE,
+        "draft_format_version": FORM_PROCESS_DRAFT_VERSION,
+        "form_id": str(form_id or "").strip(),
+        "form_name": str(form_name or form_id or "").strip(),
+        "user_login": str(user_login or "").strip(),
+        "company_key": str(company_key or "").strip(),
+        "company_name": str(company_name or "").strip(),
+        "created_at": str(created_at or "").strip(),
+        "updated_at": str(updated_at or "").strip(),
+        "last_section": str(last_section or "").strip(),
+        "cache": copy.deepcopy(cache if isinstance(cache, dict) else {}),
+    }
+    session_key = str(draft_session_key or "").strip()
+    if session_key:
+        payload["draft_session_key"] = session_key
+    return payload
+
+
+def _build_form_process_draft_summary(doc, *, draft_path=""):
+    if not isinstance(doc, dict):
+        return None
+    draft_id = str(doc.get("draft_id") or "").strip()
+    if not draft_id:
+        return None
+    path = str(draft_path or doc.get("draft_path") or "").strip() or _get_process_draft_path(draft_id)
+    try:
+        draft_version = max(
+            FORM_PROCESS_DRAFT_VERSION,
+            int(doc.get("draft_format_version") or FORM_PROCESS_DRAFT_VERSION),
+        )
+    except Exception:
+        draft_version = FORM_PROCESS_DRAFT_VERSION
+    return {
+        "draft_id": draft_id,
+        "draft_type": FORM_PROCESS_DRAFT_TYPE,
+        "draft_format_version": draft_version,
+        "draft_path": path,
+        "form_id": str(doc.get("form_id") or "").strip(),
+        "form_name": str(doc.get("form_name") or doc.get("form_id") or "").strip(),
+        "company_key": str(doc.get("company_key") or "").strip(),
+        "company_name": str(doc.get("company_name") or "Sin empresa").strip() or "Sin empresa",
+        "created_at": str(doc.get("created_at") or "").strip(),
+        "updated_at": str(doc.get("updated_at") or doc.get("created_at") or "").strip(),
+        "last_section": str(doc.get("last_section") or "").strip(),
+    }
+
+
+def _load_process_draft_document(path):
+    target = str(path or "").strip()
+    if not target or not os.path.exists(target):
+        return None
+    try:
+        with open(target, "r", encoding="utf-8") as handle:
+            data = json.load(handle) or {}
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _save_process_draft_document(doc, *, draft_path=""):
+    if not isinstance(doc, dict):
+        return ""
+    draft_id = str(doc.get("draft_id") or "").strip()
+    if not draft_id:
+        return ""
+    target_path = str(draft_path or doc.get("draft_path") or "").strip() or _get_process_draft_path(draft_id)
+    folder = os.path.dirname(target_path)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    payload = copy.deepcopy(doc)
+    payload["draft_path"] = target_path
+    _atomic_write_json_file(target_path, payload)
+    return target_path
+
+
+def _delete_process_draft_document(path):
+    target = str(path or "").strip()
+    if not target:
+        return False
+    try:
+        if os.path.exists(target):
+            os.remove(target)
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _draft_entry_has_embedded_payload(entry):
+    if not isinstance(entry, dict):
+        return False
+    return (
+        isinstance(entry.get("cache"), dict)
+        or isinstance(entry.get("ui_snapshot"), list)
+        or isinstance(entry.get("legacy_ui_snapshot"), list)
+    )
+
+
+def _migrate_embedded_process_draft_entry(user_login, entry):
+    if not isinstance(entry, dict):
+        return None, None
+    form_id = str(entry.get("form_id") or "").strip()
+    if not form_id:
+        return None, None
+    draft_id = str(entry.get("draft_id") or "").strip() or _build_process_draft_id(form_id)
+    cache = entry.get("cache")
+    if not isinstance(cache, dict):
+        cache = {}
+    created_at = str(entry.get("created_at") or "").strip() or _draft_now_iso()
+    updated_at = str(entry.get("updated_at") or entry.get("created_at") or "").strip() or created_at
+    last_section = str(
+        entry.get("last_section")
+        or entry.get("ui_section")
+        or cache.get("_last_section")
+        or "section_1"
+    ).strip()
+    company_key = str(entry.get("company_key") or "").strip() or _extract_draft_company_key(cache)
+    company_name = (
+        str(entry.get("company_name") or "").strip()
+        or _extract_draft_company_name(cache)
+        or "Sin empresa"
+    )
+    doc = _build_form_process_draft_document(
+        draft_id=draft_id,
+        form_id=form_id,
+        form_name=str(entry.get("form_name") or form_id).strip(),
+        user_login=str(user_login or "").strip(),
+        company_key=company_key,
+        company_name=company_name,
+        created_at=created_at,
+        updated_at=updated_at,
+        last_section=last_section,
+        cache=cache,
+        draft_session_key=str(entry.get("draft_session_key") or "").strip(),
+    )
+    legacy_snapshot = copy.deepcopy(entry.get("ui_snapshot") or [])
+    if isinstance(legacy_snapshot, list) and legacy_snapshot:
+        doc["legacy_ui_snapshot"] = legacy_snapshot
+        doc["legacy_ui_section"] = str(entry.get("ui_section") or last_section).strip()
+        doc["legacy_source_format_version"] = max(1, int(entry.get("draft_format_version") or 1))
+    draft_path = _save_process_draft_document(doc)
+    summary = _build_form_process_draft_summary(doc, draft_path=draft_path)
+    return doc, summary
+
+
+def _normalize_drafts_store(data):
+    payload = data if isinstance(data, dict) else {}
+    changed = not isinstance(data, dict)
+    users = payload.get("users")
+    if not isinstance(users, dict):
+        users = {}
+        changed = True
+
+    normalized_users = {}
+    for user_login, entries in users.items():
+        normalized_entries = []
+        seen_ids = set()
+        if not isinstance(entries, list):
+            changed = True
+            entries = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                changed = True
+                continue
+            draft_id = str(entry.get("draft_id") or "").strip()
+            if draft_id and draft_id in seen_ids:
+                changed = True
+                continue
+            if _draft_entry_has_embedded_payload(entry) or not str(entry.get("draft_path") or "").strip():
+                _doc, summary = _migrate_embedded_process_draft_entry(user_login, entry)
+                if summary is None:
+                    changed = True
+                    continue
+                normalized_entries.append(summary)
+                seen_ids.add(str(summary.get("draft_id") or ""))
+                changed = True
+                continue
+
+            draft_path = str(entry.get("draft_path") or "").strip()
+            doc = _load_process_draft_document(draft_path)
+            if not isinstance(doc, dict):
+                _log_capture(
+                    f"[DRAFT] dropping_missing_process_file draft_id={draft_id} path={draft_path}"
+                )
+                changed = True
+                continue
+            summary = _build_form_process_draft_summary(doc, draft_path=draft_path)
+            if summary is None:
+                changed = True
+                continue
+            normalized_entries.append(summary)
+            seen_ids.add(str(summary.get("draft_id") or ""))
+            if any(key in entry for key in ("cache", "ui_snapshot", "ui_section", "draft_session_key")):
+                changed = True
+        normalized_users[str(user_login or "").strip()] = normalized_entries
+
+    normalized = {"version": FORM_DRAFTS_INDEX_VERSION, "users": normalized_users}
+    if int(payload.get("version") or 0) != FORM_DRAFTS_INDEX_VERSION:
+        changed = True
+    return normalized, changed
+
+
 def _load_drafts_store():
     path = _get_drafts_path()
     if not os.path.exists(path):
-        return {"version": 1, "users": {}}
+        return {"version": FORM_DRAFTS_INDEX_VERSION, "users": {}}
     try:
         with open(path, "r", encoding="utf-8") as handle:
             data = json.load(handle) or {}
     except Exception:
-        return {"version": 1, "users": {}}
-    if not isinstance(data, dict):
-        return {"version": 1, "users": {}}
-    users = data.get("users")
-    if not isinstance(users, dict):
-        data["users"] = {}
-    data.setdefault("version", 1)
-    return data
+        return {"version": FORM_DRAFTS_INDEX_VERSION, "users": {}}
+    normalized, changed = _normalize_drafts_store(data)
+    if changed:
+        _save_drafts_store(normalized)
+    return normalized
 
 
 def _save_drafts_store(data):
-    path = _get_drafts_path()
-    tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as handle:
-        json.dump(data, handle, ensure_ascii=False, indent=2)
-    os.replace(tmp_path, path)
+    payload, _changed = _normalize_drafts_store(data)
+    _atomic_write_json_file(_get_drafts_path(), payload)
 
 
 def _extract_draft_company_name(cache_snapshot):
@@ -2035,6 +2441,17 @@ def _extract_draft_company_key(cache_snapshot):
     return "sin_clave"
 
 
+def _section1_cache_can_create_process_draft(cache_snapshot):
+    if not isinstance(cache_snapshot, dict):
+        return False
+    section_1 = cache_snapshot.get("section_1")
+    if not isinstance(section_1, dict) or not _cache_snapshot_has_meaningful_values(section_1):
+        return False
+    company_key = _extract_draft_company_key(cache_snapshot)
+    company_name = _extract_draft_company_name(cache_snapshot)
+    return company_key != "sin_clave" and bool(str(company_name or "").strip())
+
+
 def _resolve_form_meta(form_id):
     for item in get_forms():
         if str(item.get("id") or "") == str(form_id or ""):
@@ -2050,6 +2467,25 @@ def _form_supports_drafts(form_meta_or_id):
     if value is None:
         return True
     return bool(value)
+
+
+def _delete_process_draft_from_store(data, *, user_login, draft_id):
+    users = data.get("users", {}) if isinstance(data, dict) else {}
+    current = users.get(user_login, [])
+    if not isinstance(current, list):
+        return False
+    removed = None
+    updated = []
+    for row in current:
+        if removed is None and str((row or {}).get("draft_id") or "") == str(draft_id or ""):
+            removed = row
+            continue
+        updated.append(row)
+    if removed is None:
+        return False
+    users[user_login] = updated
+    _delete_process_draft_document((removed or {}).get("draft_path"))
+    return True
 
 
 # ── HELPERS: UI — widgets, feedback inline, wizard de progreso ───────────────
@@ -2758,6 +3194,124 @@ def _apply_input_snapshot(window, snapshot_rows):
     return applied
 
 
+def _clear_pending_draft_ui_snapshot(window):
+    try:
+        window._draft_restore_pending_ui_snapshot = None
+    except Exception:
+        pass
+
+
+def _apply_dynamic_snapshot_with_block_growth(
+    window,
+    snapshot_rows,
+    *,
+    add_block_fn=None,
+    block_count_fn=None,
+    max_blocks=50,
+):
+    rows = [row for row in snapshot_rows if isinstance(row, dict)]
+    total = len(rows)
+    if total <= 0:
+        return 0, 0, False
+
+    best_applied = -1
+    stagnant_attempts = 0
+    applied = 0
+
+    while True:
+        applied = _apply_input_snapshot(window, rows)
+        if applied >= total:
+            return applied, total, False
+
+        if applied > best_applied:
+            best_applied = applied
+            stagnant_attempts = 0
+        else:
+            stagnant_attempts += 1
+
+        current_blocks = 0
+        if callable(block_count_fn):
+            try:
+                current_blocks = max(0, int(block_count_fn() or 0))
+            except Exception:
+                current_blocks = 0
+
+        if not callable(add_block_fn) or current_blocks >= max_blocks or stagnant_attempts >= 2:
+            return applied, total, True
+
+        try:
+            add_block_fn()
+        except Exception:
+            return applied, total, True
+        try:
+            window.update_idletasks()
+        except Exception:
+            pass
+
+
+def _persist_restored_window_draft(window):
+    hub = getattr(window, "master", None)
+    if not hub or not hasattr(hub, "_persist_form_draft"):
+        return False
+    try:
+        hub._persist_form_draft(
+            window,
+            allow_empty=True,
+            silent=True,
+            toast_text="",
+            source="restore",
+        )
+        return True
+    except Exception as exc:
+        _log_capture(
+            f"[DRAFT] restore_persist_failed form={getattr(window, '_form_id', '')} err={exc}"
+        )
+        return False
+
+
+def _trim_dynamic_section_blocks(
+    window,
+    payload_rows,
+    *,
+    remove_block_fn=None,
+    ignored_keys=(),
+    minimum_blocks=1,
+):
+    if not callable(remove_block_fn):
+        return len(getattr(window, "oferente_blocks", []) or [])
+
+    ignored = {str(key or "").strip() for key in (ignored_keys or ())}
+    target_blocks = 0
+    for idx, row in enumerate(payload_rows or [], start=1):
+        if not isinstance(row, dict):
+            continue
+        has_content = False
+        for key, value in row.items():
+            if str(key or "").strip() in ignored:
+                continue
+            if isinstance(value, str):
+                if value.strip():
+                    has_content = True
+                    break
+            elif value not in (None, "", [], {}, ()):
+                has_content = True
+                break
+        if has_content:
+            target_blocks = idx
+
+    target_blocks = max(int(minimum_blocks or 1), target_blocks)
+    while len(getattr(window, "oferente_blocks", []) or []) > target_blocks:
+        try:
+            remove_block_fn()
+        except Exception:
+            break
+    try:
+        window.update_idletasks()
+    except Exception:
+        pass
+    return len(getattr(window, "oferente_blocks", []) or [])
+
+
 def _snapshot_has_meaningful_values(snapshot_rows):
     if not isinstance(snapshot_rows, list):
         return False
@@ -2851,7 +3405,10 @@ def _refresh_form_save_status(window):
     if not module or not hasattr(module, "get_form_cache"):
         return
     try:
-        cache_snapshot = module.get_form_cache() or {}
+        if _window_uses_window_draft_cache(window, module):
+            cache_snapshot = _clone_window_draft_cache(window, module)
+        else:
+            cache_snapshot = module.get_form_cache() or {}
     except Exception:
         return
     if not isinstance(cache_snapshot, dict):
@@ -2960,8 +3517,8 @@ def _bind_prefixed_dropdown_fields(fields_map, preferred_suffixes=("_nivel_apoyo
     for widget in widgets:
         widget._nivel_apoyo_observacion_sync = lambda _event=None, w=preferred_widget: _sync_from(w)
         widget._prefixed_dropdown_sync = lambda _event=None, w=widget: _sync_from(w)
-        widget.bind("<<ComboboxSelected>>", lambda _event, w=widget: _sync_from(w), add="+")
-        widget.bind("<FocusOut>", lambda _event, w=widget: _sync_from(w), add="+")
+        widget.bind("<<ComboboxSelected>>", lambda _event=None, w=widget: _sync_from(w), add="+")
+        widget.bind("<FocusOut>", lambda _event=None, w=widget: _sync_from(w), add="+")
 
     _sync_from(preferred_widget)
 
@@ -3200,13 +3757,12 @@ def _guard_form_action(window, *, action_label):
     if not module or not hasattr(module, "get_form_cache"):
         return False
     _run_pending_section_autosave(window)
-    if hasattr(module, "save_cache_to_file"):
-        try:
-            module.save_cache_to_file()
-        except Exception:
-            pass
     try:
-        cache_snapshot = copy.deepcopy(module.get_form_cache() or {})
+        if _window_uses_window_draft_cache(window, module):
+            _sync_module_cache_to_window(window, module)
+            cache_snapshot = _clone_window_draft_cache(window, module)
+        else:
+            cache_snapshot = copy.deepcopy(module.get_form_cache() or {})
     except Exception:
         cache_snapshot = {}
     missing_sections = _find_guarded_missing_sections(form_id, cache_snapshot)
@@ -3241,13 +3797,12 @@ def _guard_form_finalization(window, *, loading=None):
     ):
         return False
     _run_pending_section_autosave(window)
-    if hasattr(module, "save_cache_to_file"):
-        try:
-            module.save_cache_to_file()
-        except Exception:
-            pass
     try:
-        cache_snapshot = copy.deepcopy(module.get_form_cache() or {})
+        if _window_uses_window_draft_cache(window, module):
+            _sync_module_cache_to_window(window, module)
+            cache_snapshot = _clone_window_draft_cache(window, module)
+        else:
+            cache_snapshot = copy.deepcopy(module.get_form_cache() or {})
     except Exception:
         cache_snapshot = {}
     try:
@@ -3326,18 +3881,24 @@ def _consume_pending_draft_restore(window, form_id, module, section_routes, defa
     if not isinstance(cache_snapshot, dict):
         cache_snapshot = {}
     try:
+        window._draft_cache = copy.deepcopy(cache_snapshot)
         if hasattr(module, "clear_form_cache"):
             module.clear_form_cache()
         form_cache = getattr(module, "FORM_CACHE", None)
         if isinstance(form_cache, dict):
             form_cache.clear()
             form_cache.update(copy.deepcopy(cache_snapshot))
-        if hasattr(module, "save_cache_to_file"):
-            module.save_cache_to_file()
     except Exception:
         pass
 
     window._draft_restore_pending_ui_snapshot = pending.get("ui_snapshot")
+    try:
+        window._draft_restore_format_version = max(
+            1,
+            int(pending.get("draft_format_version") or 1),
+        )
+    except Exception:
+        window._draft_restore_format_version = 1
     window._draft_restore_target_section = str(
         pending.get("ui_section") or cache_snapshot.get("_last_section") or ""
     ).strip()
@@ -4636,17 +5197,36 @@ def _confirm_section1_and_continue(window, *, confirm_fn, next_step, extra_input
     except Exception as exc:
         _show_inline_feedback(window, _log_user_error("section_confirm", exc), state="error")
         return
+    try:
+        ensure_process_draft(window, silent=True)
+    except Exception as exc:
+        _log_capture(
+            f"[DRAFT] ensure_process_after_section1_failed form={getattr(window, '_form_id', '')} err={exc}"
+        )
     _clear_inline_feedback(window)
     next_step()
 
 
+def ensure_process_draft(window, *, silent=True):
+    hub = getattr(window, "master", None)
+    if hub is None or not hasattr(hub, "_persist_form_draft"):
+        return False
+    try:
+        return bool(
+            hub._persist_form_draft(
+                window,
+                allow_empty=False,
+                silent=silent,
+                toast_text="",
+                source="manual",
+            )
+        )
+    except Exception:
+        return False
+
+
 def _build_lsc_context(window, *, module, source_form, oferentes=None):
-    cache = {}
-    if module is not None and hasattr(module, "get_form_cache"):
-        try:
-            cache = module.get_form_cache() or {}
-        except Exception:
-            cache = {}
+    cache = _get_runtime_form_cache(window, module)
 
     section_1 = cache.get("section_1", {}) if isinstance(cache, dict) else {}
     company_data = getattr(window, "company_data", None)
@@ -4852,7 +5432,12 @@ def _launch_linked_lsc_window(window, *, context, return_to_final_section, main_
     _run_pending_section_autosave(window)
     form_id = getattr(window, "_form_id", "") or WINDOW_CLASS_FORM_ID_MAP.get(window.__class__.__name__, "")
     module = FORM_MODULE_MAP.get(form_id)
-    if module is not None and hasattr(module, "save_cache_to_file"):
+    if module is not None and _window_uses_window_draft_cache(window, module):
+        try:
+            _sync_module_cache_to_window(window, module)
+        except Exception:
+            pass
+    elif module is not None and hasattr(module, "save_cache_to_file"):
         try:
             module.save_cache_to_file()
         except Exception:
@@ -5278,13 +5863,41 @@ def _refresh_section1_continue_button(window):
         pass
 
 
+def _collect_section1_cache_payload(window):
+    payload = {}
+    company_data = getattr(window, "company_data", None)
+    if isinstance(company_data, dict):
+        payload.update(copy.deepcopy(company_data))
+    fields = getattr(window, "fields", {}) or {}
+    for field_id, widget in fields.items():
+        if str(field_id or "").strip() == "nombre_busqueda":
+            continue
+        try:
+            value = ui_feedback.get_widget_value(widget)
+        except Exception:
+            value = _get_input_value(widget)
+        if value in (None, ""):
+            continue
+        payload[field_id] = value
+    return payload
+
+
+def _install_section1_pending_autosave(window, module):
+    if module is None or not hasattr(module, "set_section_cache"):
+        return
+    window._pending_autosave = lambda m=module, w=window: _autosave_section(
+        m,
+        "section_1",
+        lambda current_window=w: _collect_section1_cache_payload(current_window),
+        window=w,
+    )
+
+
 def _restore_section1_cached_state(window, module, *, include_company_name=True):
-    if module is None or not hasattr(module, "get_form_cache"):
+    _install_section1_pending_autosave(window, module)
+    if module is None:
         return False
-    try:
-        cache = module.get_form_cache().get("section_1", {})
-    except Exception:
-        cache = {}
+    cache = _get_runtime_section_cache(window, module, "section_1", {})
     if not isinstance(cache, dict) or not cache:
         return False
 
@@ -6865,6 +7478,42 @@ def _clear_form_cache_safe(module):
         module.clear_form_cache()
 
 
+def _clear_runtime_form_session(window, module):
+    if _window_uses_window_draft_cache(window, module):
+        try:
+            window._draft_cache = {}
+        except Exception:
+            pass
+        if hasattr(module, "clear_form_cache"):
+            try:
+                module.clear_form_cache()
+            except Exception:
+                pass
+        return
+    _clear_form_cache_safe(module)
+
+
+def _invoke_finalize_worker(worker_fn, cache_snapshot):
+    try:
+        signature = inspect.signature(worker_fn)
+    except Exception:
+        return worker_fn()
+    parameters = list(signature.parameters.values())
+    if not parameters:
+        return worker_fn()
+    if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters):
+        return worker_fn(cache_snapshot=copy.deepcopy(cache_snapshot))
+    if "cache_snapshot" in signature.parameters:
+        return worker_fn(cache_snapshot=copy.deepcopy(cache_snapshot))
+    first_param = parameters[0]
+    if first_param.kind in (
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    ):
+        return worker_fn(copy.deepcopy(cache_snapshot))
+    return worker_fn()
+
+
 def _should_clear_form_cache_after_delivery(completion_result):
     status = str((completion_result or {}).get("status") or "").strip().lower()
     return status in {"synced", "local"}
@@ -6948,6 +7597,7 @@ def _start_background_finalization(
         pythoncom = None
         com_initialized = False
         module = FORM_MODULE_MAP.get(form_id)
+        uses_window_cache = _window_uses_window_draft_cache(window, module)
         original_cache_snapshot = {}
         export_cache_snapshot = {}
         review_result = None
@@ -6963,7 +7613,12 @@ def _start_background_finalization(
             except ImportError:
                 pythoncom = None
 
-            if module and hasattr(module, "get_form_cache"):
+            if uses_window_cache:
+                try:
+                    original_cache_snapshot = _clone_window_draft_cache(window, module)
+                except Exception:
+                    original_cache_snapshot = {}
+            elif module and hasattr(module, "get_form_cache"):
                 try:
                     original_cache_snapshot = copy.deepcopy(module.get_form_cache() or {})
                 except Exception:
@@ -6984,8 +7639,10 @@ def _start_background_finalization(
                     f"reason={review_result.reason!r}"
                 )
                 if review_result.status == "reviewed":
-                    _set_module_cache_snapshot(module, review_result.cache)
-                    restore_original_cache = True
+                    export_cache_snapshot = copy.deepcopy(getattr(review_result, "cache", {}) or {})
+                    if not uses_window_cache:
+                        _set_module_cache_snapshot(module, review_result.cache)
+                        restore_original_cache = True
                     _update_loading_async(
                         loading,
                         status="Ortografía revisada. Preparando acta...",
@@ -6998,7 +7655,14 @@ def _start_background_finalization(
                         progress=50,
                     )
 
-            export_result = worker_fn()
+            if not export_cache_snapshot:
+                export_cache_snapshot = copy.deepcopy(original_cache_snapshot or {})
+
+            export_result = (
+                _invoke_finalize_worker(worker_fn, export_cache_snapshot)
+                if uses_window_cache
+                else worker_fn()
+            )
             drive_job = None
             already_in_drive = False
             if isinstance(export_result, dict):
@@ -7023,7 +7687,9 @@ def _start_background_finalization(
                         "La publicación debe hacerse directamente en Google Sheets."
                     ),
                 )
-            if module and hasattr(module, "get_form_cache"):
+            if uses_window_cache:
+                export_cache_snapshot = copy.deepcopy(export_cache_snapshot or {})
+            elif module and hasattr(module, "get_form_cache"):
                 try:
                     export_cache_snapshot = copy.deepcopy(module.get_form_cache() or {})
                 except Exception:
@@ -7045,7 +7711,7 @@ def _start_background_finalization(
                             output_path=output_path,
                             session_id=hub.current_session_id,
                             app_version=get_version(),
-                            extra_context={"payload_source": "form_cache"},
+                            extra_context={"payload_source": "draft_session" if uses_window_cache else "form_cache"},
                         )
                     except Exception as exc:
                         _log_capture(
@@ -7260,8 +7926,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             self._show_section_1,
         ):
             return True
-        if presentacion_programa.cache_file_exists():
-            _clear_local_resume_state(presentacion_programa)
+        _clear_local_resume_state(presentacion_programa)
         return False
 
     def _build_header(self):
@@ -7449,11 +8114,17 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
                     justify="left",
                 ).grid(row=1, column=0, sticky="w", pady=(6, 0))
 
-        cached_checks = presentacion_programa.get_form_cache().get("section_3_item_8", {})
+        cached_checks = _get_runtime_section_cache(self, presentacion_programa, "section_3_item_8", {})
         for label, var in self.section3_check_vars.items():
             if label in cached_checks:
                 var.set(bool(cached_checks.get(label)))
 
+        self._pending_autosave = lambda: _autosave_section(
+            presentacion_programa,
+            "section_3_item_8",
+            lambda: {key: var.get() for key, var in self.section3_check_vars.items()},
+            window=self,
+        )
         _build_wizard_actions(
             content,
             back_command=self._show_section_2,
@@ -7507,14 +8178,19 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         self.section4_text.pack(fill="x", pady=(6, 16))
         _attach_autoexpand(self.section4_text, 10, 30)
 
-        cached_notes = presentacion_programa.get_form_cache().get("section_4", {}).get(
+        cached_notes = _get_runtime_section_cache(self, presentacion_programa, "section_4", {}).get(
             "acuerdos_observaciones"
         )
         if cached_notes:
             self.section4_text.delete("1.0", tk.END)
             self.section4_text.insert("1.0", cached_notes)
 
-        self._pending_autosave = lambda: _autosave_section(presentacion_programa, "section_4", lambda: {"acuerdos_observaciones": self.section4_text.get("1.0", tk.END).strip()})
+        self._pending_autosave = lambda: _autosave_section(
+            presentacion_programa,
+            "section_4",
+            lambda: {"acuerdos_observaciones": self.section4_text.get("1.0", tk.END).strip()},
+            window=self,
+        )
         _build_wizard_actions(
             section_frame,
             back_command=self._show_section_3,
@@ -7565,12 +8241,13 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         self._asesores_agencia_catalog = _get_asesores_agencia_catalog()
         self.section5_entries = []
         self.section5_frame = asistentes_frame
-        cached_asistentes = presentacion_programa.get_form_cache().get("section_5", [])
+        cached_asistentes = _get_runtime_section_cache(self, presentacion_programa, "section_5", [])
         self._render_section5_asistentes(cached_asistentes)
         self._pending_autosave = lambda: _autosave_section(
             presentacion_programa,
             "section_5",
             lambda: self._get_section5_asistentes_values(),
+            window=self,
         )
 
         _build_wizard_actions(
@@ -7621,7 +8298,7 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
         loading = LoadingDialog(self, title="Guardando")
         loading.set_status("Preparando acta...")
         loading.set_progress(30)
-        cache_snapshot = presentacion_programa.get_form_cache()
+        cache_snapshot = _clone_window_draft_cache(self, presentacion_programa)
         cache = cache_snapshot
         section_1 = cache.get("section_1", {})
         visit_type = (section_1.get("tipo_visita") or "Presentacion").strip()
@@ -7635,10 +8312,11 @@ class Section1Window(tk.Toplevel, FormMousewheelMixin):
             form_name=form_name,
             company_name=company_name,
             form_id="presentacion_programa",
-            worker_fn=lambda: _raise_finalize_stage(
+            worker_fn=lambda cache_snapshot=None: _raise_finalize_stage(
                 "preparando el acta",
-                presentacion_programa.export_to_excel,
+                lambda: presentacion_programa.export_to_excel(cache=cache_snapshot),
             ),
+            post_delivery_fn=lambda: _clear_runtime_form_session(self, presentacion_programa),
         )
 
     def _open_lsc_window(self):
@@ -10634,8 +11312,12 @@ class HubWindow(tk.Tk):
         self._drafts_btn.config(text=f"Borradores ({count})")
 
     def _capture_window_draft_state(self, window, module):
-        module.save_cache_to_file()
-        cache_snapshot = copy.deepcopy(module.get_form_cache() or {})
+        if _window_uses_window_draft_cache(window, module):
+            _sync_module_cache_to_window(window, module)
+            cache_snapshot = _clone_window_draft_cache(window, module)
+        else:
+            module.save_cache_to_file()
+            cache_snapshot = copy.deepcopy(module.get_form_cache() or {})
         ui_section = str(
             getattr(window, "_current_section", "")
             or cache_snapshot.get("_last_section")
@@ -10677,6 +11359,7 @@ class HubWindow(tk.Tk):
                 messagebox.showinfo("Guardar", "No se pudo guardar este formulario.")
             return False
 
+        _run_pending_section_autosave(window)
         try:
             cache_snapshot, ui_snapshot, ui_section = self._capture_window_draft_state(window, module)
         except Exception as exc:
@@ -10687,7 +11370,16 @@ class HubWindow(tk.Tk):
             return False
 
         draft_source = str(source or "manual").strip().lower() or "manual"
-        if draft_source == "autosave" and ui_section == "section_1":
+        creating_new_draft = not str(getattr(window, "_draft_id", "") or "").strip()
+        if draft_source == "autosave" and ui_section == "section_1" and creating_new_draft:
+            return False
+
+        if ui_section == "section_1" and creating_new_draft and not _section1_cache_can_create_process_draft(cache_snapshot):
+            if not silent and draft_source == "manual":
+                messagebox.showinfo(
+                    "Guardar",
+                    "Primero selecciona y confirma una empresa válida para crear el borrador del proceso.",
+                )
             return False
 
         if not allow_empty and not self._draft_state_has_content(cache_snapshot, ui_snapshot):
@@ -10699,7 +11391,6 @@ class HubWindow(tk.Tk):
             fingerprint_payload = {
                 "cache": cache_snapshot,
                 "ui_section": ui_section,
-                "ui_snapshot": ui_snapshot,
             }
             fingerprint = hashlib.sha1(
                 json.dumps(
@@ -10722,7 +11413,7 @@ class HubWindow(tk.Tk):
                 messagebox.showerror("Guardar", "No hay una sesión activa.")
             return False
 
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = _draft_now_iso()
         company_name = _extract_draft_company_name(cache_snapshot) or "Sin empresa"
         session_key = getattr(window, "_draft_session_key", "") or uuid.uuid4().hex
         window._draft_session_key = session_key
@@ -10744,41 +11435,34 @@ class HubWindow(tk.Tk):
                 if str(item.get("draft_id") or "") == draft_id:
                     existing = item
                     break
-        if existing is None:
-            for item in drafts:
-                if (
-                    str(item.get("form_id") or "") == form_id
-                    and str(item.get("company_key") or "") == company_key
-                ):
-                    existing = item
-                    break
 
         if existing is None:
-            draft_id = draft_id or str(uuid.uuid4())
-            existing = {
-                "draft_id": draft_id,
-                "form_id": form_id,
-                "form_name": form_name,
-                "company_key": company_key,
-                "company_name": company_name,
-                "draft_session_key": session_key,
-                "created_at": now,
-            }
+            draft_id = draft_id or _build_process_draft_id(form_id)
+            existing = {}
             drafts.append(existing)
-        else:
-            draft_id = str(existing.get("draft_id") or draft_id or uuid.uuid4())
-            existing["draft_id"] = draft_id
-
-        existing["updated_at"] = now
-        existing["last_section"] = ui_section or cache_snapshot.get("_last_section", "")
-        existing["cache"] = cache_snapshot
-        existing["company_key"] = company_key
-        existing["company_name"] = company_name
-        existing["ui_section"] = ui_section
-        existing["ui_snapshot"] = ui_snapshot
-        existing["draft_session_key"] = session_key
+        created_at = str(existing.get("created_at") or now).strip() or now
+        draft_id = str(existing.get("draft_id") or draft_id or _build_process_draft_id(form_id))
+        last_section = str(ui_section or cache_snapshot.get("_last_section") or "").strip()
+        doc = _build_form_process_draft_document(
+            draft_id=draft_id,
+            form_id=form_id,
+            form_name=form_name,
+            user_login=user_login,
+            company_key=company_key,
+            company_name=company_name,
+            created_at=created_at,
+            updated_at=now,
+            last_section=last_section,
+            cache=cache_snapshot,
+            draft_session_key=session_key,
+        )
+        draft_path = str(existing.get("draft_path") or "").strip() or _get_process_draft_path(draft_id)
 
         try:
+            draft_path = _save_process_draft_document(doc, draft_path=draft_path)
+            summary = _build_form_process_draft_summary(doc, draft_path=draft_path) or {}
+            existing.clear()
+            existing.update(summary)
             _save_drafts_store(data)
         except Exception as exc:
             if silent:
@@ -10878,14 +11562,8 @@ class HubWindow(tk.Tk):
         if not draft_id or not user_login:
             return False
         data = _load_drafts_store()
-        users = data.get("users", {})
-        current = users.get(user_login, [])
-        if not isinstance(current, list):
+        if not _delete_process_draft_from_store(data, user_login=user_login, draft_id=draft_id):
             return False
-        updated = [row for row in current if str(row.get("draft_id") or "") != draft_id]
-        if len(updated) == len(current):
-            return False
-        users[user_login] = updated
         _save_drafts_store(data)
         window._draft_id = ""
         window._draft_last_fingerprint = ""
@@ -11013,22 +11691,57 @@ class HubWindow(tk.Tk):
         if not module:
             messagebox.showerror("Borradores", "El formulario de este borrador ya no está disponible.")
             return
-        cache_snapshot = draft.get("cache")
+        draft_doc = None
+        draft_path = str(draft.get("draft_path") or "").strip()
+        if draft_path:
+            draft_doc = _load_process_draft_document(draft_path)
+            if not isinstance(draft_doc, dict):
+                messagebox.showerror("Borradores", "El archivo local del borrador no está disponible.")
+                return
+        elif isinstance(draft, dict):
+            draft_doc = dict(draft)
+
+        cache_snapshot = (draft_doc or {}).get("cache")
         if not isinstance(cache_snapshot, dict) or not cache_snapshot:
             messagebox.showerror("Borradores", "El borrador no tiene datos válidos.")
             return
 
-        form_meta = next((item for item in get_forms() if item.get("id") == form_id), None)
-        if not form_meta:
-            messagebox.showerror("Borradores", "No se encontró el formulario en el HUB.")
-            return
+        doc_last_section = str(
+            (draft_doc or {}).get("last_section")
+            or draft.get("last_section")
+            or cache_snapshot.get("_last_section")
+            or ""
+        ).strip()
+        legacy_snapshot = copy.deepcopy((draft_doc or {}).get("legacy_ui_snapshot") or [])
+        legacy_section = str((draft_doc or {}).get("legacy_ui_section") or doc_last_section).strip()
+        legacy_format = (draft_doc or {}).get("legacy_source_format_version")
+        ui_snapshot = []
+        ui_section = doc_last_section
+        try:
+            draft_format_version = int(
+                (draft_doc or {}).get("draft_format_version") or draft.get("draft_format_version") or 1
+            )
+        except Exception:
+            draft_format_version = 1
+        if draft_format_version < FORM_PROCESS_DRAFT_VERSION:
+            ui_snapshot = copy.deepcopy((draft_doc or {}).get("ui_snapshot") or draft.get("ui_snapshot") or [])
+            ui_section = str((draft_doc or {}).get("ui_section") or draft.get("ui_section") or doc_last_section).strip()
+        elif isinstance(legacy_snapshot, list) and legacy_snapshot:
+            ui_snapshot = legacy_snapshot
+            ui_section = legacy_section
+            try:
+                draft_format_version = max(1, int(legacy_format or 2))
+            except Exception:
+                draft_format_version = 2
+
         self._pending_draft_restore = {
             "form_id": form_id,
             "draft_id": str(draft.get("draft_id") or "").strip(),
-            "draft_session_key": str(draft.get("draft_session_key") or "").strip(),
+            "draft_session_key": str((draft_doc or {}).get("draft_session_key") or draft.get("draft_session_key") or "").strip(),
             "cache": copy.deepcopy(cache_snapshot),
-            "ui_section": str(draft.get("ui_section") or "").strip(),
-            "ui_snapshot": copy.deepcopy(draft.get("ui_snapshot") or []),
+            "ui_section": ui_section,
+            "ui_snapshot": ui_snapshot,
+            "draft_format_version": draft_format_version,
         }
         window = self._open_form(form_meta)
         if not window:
@@ -11036,9 +11749,20 @@ class HubWindow(tk.Tk):
             return
         if window:
             window._draft_id = str(draft.get("draft_id") or "").strip()
-            window._draft_session_key = str(draft.get("draft_session_key") or "").strip() or uuid.uuid4().hex
+            window._draft_session_key = (
+                str((draft_doc or {}).get("draft_session_key") or draft.get("draft_session_key") or "").strip()
+                or uuid.uuid4().hex
+            )
         ui_snapshot = getattr(window, "_draft_restore_pending_ui_snapshot", None)
         if not isinstance(ui_snapshot, list) or not ui_snapshot:
+            return
+
+        restore_hook = getattr(window, "_restore_draft_ui_snapshot", None)
+        if callable(restore_hook):
+            try:
+                window.after_idle(lambda rows=ui_snapshot, fn=restore_hook: fn(rows))
+            except Exception:
+                restore_hook(ui_snapshot)
             return
 
         def _try_apply(attempt=0):
@@ -11046,10 +11770,7 @@ class HubWindow(tk.Tk):
                 return
             applied = _apply_input_snapshot(window, ui_snapshot)
             if applied > 0 or attempt >= 12:
-                try:
-                    window._draft_restore_pending_ui_snapshot = None
-                except Exception:
-                    pass
+                _clear_pending_draft_ui_snapshot(window)
                 return
             window.after(150, lambda: _try_apply(attempt + 1))
 
@@ -11082,17 +11803,19 @@ class HubWindow(tk.Tk):
 
         tree = ttk.Treeview(
             box,
-            columns=("form", "empresa", "seccion", "actualizado"),
+            columns=("form", "empresa", "seccion", "creado", "actualizado"),
             show="headings",
             yscrollcommand=yscroll.set,
         )
         tree.heading("form", text="Formulario")
         tree.heading("empresa", text="Empresa")
         tree.heading("seccion", text="Última sección")
+        tree.heading("creado", text="Creado")
         tree.heading("actualizado", text="Actualizado")
         tree.column("form", width=220, anchor="w")
-        tree.column("empresa", width=280, anchor="w")
+        tree.column("empresa", width=240, anchor="w")
         tree.column("seccion", width=140, anchor="w")
+        tree.column("creado", width=170, anchor="w")
         tree.column("actualizado", width=170, anchor="w")
         tree.pack(side="left", fill="both", expand=True)
         yscroll.config(command=tree.yview)
@@ -11112,11 +11835,12 @@ class HubWindow(tk.Tk):
                     str(item.get("form_name") or item.get("form_id") or ""),
                     str(item.get("company_name") or "Sin empresa"),
                     str(item.get("last_section") or ""),
+                    str(item.get("created_at") or ""),
                     str(item.get("updated_at") or item.get("created_at") or ""),
                 ),
             )
         if not draft_by_iid:
-            tree.insert("", "end", iid="__empty__", values=("-", "No hay borradores guardados.", "-", "-"))
+            tree.insert("", "end", iid="__empty__", values=("-", "No hay borradores guardados.", "-", "-", "-"))
 
         actions = tk.Frame(frame, bg=COLOR_LIGHT_BG)
         actions.pack(fill="x", pady=(8, 0))
@@ -11150,9 +11874,7 @@ class HubWindow(tk.Tk):
                 return
             user_login = self._get_current_user_login()
             data = _load_drafts_store()
-            users = data.get("users", {})
-            current = users.get(user_login, [])
-            users[user_login] = [row for row in current if str(row.get("draft_id") or "") != draft_id]
+            _delete_process_draft_from_store(data, user_login=user_login, draft_id=draft_id)
             _save_drafts_store(data)
             tree.delete(sel)
             draft_by_iid.pop(sel, None)
@@ -11552,6 +12274,8 @@ class HubWindow(tk.Tk):
         window._form_meta = dict(form_meta or {})
         window._empresa_names_cache = getattr(self, "_empresa_names_cache", []) or _get_company_name_cache()
         module = FORM_MODULE_MAP.get(form_id)
+        if _uses_window_draft_cache(form_id) and not isinstance(getattr(window, "_draft_cache", None), dict):
+            window._draft_cache = {}
         if (
             supports_drafts
             and module
@@ -11631,7 +12355,7 @@ class HubWindow(tk.Tk):
 
             setattr(window, name, _make_wrapper(original, name))
         try:
-            cache = module.get_form_cache() if module and hasattr(module, "get_form_cache") else {}
+            cache = _get_runtime_form_cache(window, module)
             if isinstance(cache, dict) and cache.get("_last_section"):
                 window._current_section = str(cache.get("_last_section"))
         except Exception:
@@ -11820,8 +12544,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
             self._show_section_1,
         ):
             return True
-        if evaluacion_accesibilidad.cache_file_exists():
-            _clear_local_resume_state(evaluacion_accesibilidad)
+        _clear_local_resume_state(evaluacion_accesibilidad)
         return False
 
 
@@ -12005,7 +12728,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda f=self.section2_1_fields: _autosave_section(evaluacion_accesibilidad, "section_2_1", lambda: self._collect_section_fields(f))
+        self._pending_autosave = lambda f=self.section2_1_fields: _autosave_section(evaluacion_accesibilidad, "section_2_1", lambda: self._collect_section_fields(f), window=self)
         ttk.Button(actions, text="Regresar", command=self._show_section_1).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_2_1).pack(side="right")
     def _show_section_2_2(self):
@@ -12206,7 +12929,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda f=self.section2_2_fields: _autosave_section(evaluacion_accesibilidad, "section_2_2", lambda: self._collect_section_fields(f))
+        self._pending_autosave = lambda f=self.section2_2_fields: _autosave_section(evaluacion_accesibilidad, "section_2_2", lambda: self._collect_section_fields(f), window=self)
         ttk.Button(actions, text="Regresar", command=self._show_section_2).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_2_2).pack(side="right")
     def _show_section_2_3(self):
@@ -12423,7 +13146,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda f=self.section2_3_fields: _autosave_section(evaluacion_accesibilidad, "section_2_3", lambda: self._collect_section_fields(f))
+        self._pending_autosave = lambda f=self.section2_3_fields: _autosave_section(evaluacion_accesibilidad, "section_2_3", lambda: self._collect_section_fields(f), window=self)
         ttk.Button(actions, text="Regresar", command=self._show_section_2_2).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_2_3).pack(side="right")
 
@@ -12556,7 +13279,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda f=self.section2_4_fields: _autosave_section(evaluacion_accesibilidad, "section_2_4", lambda: self._collect_section_fields(f))
+        self._pending_autosave = lambda f=self.section2_4_fields: _autosave_section(evaluacion_accesibilidad, "section_2_4", lambda: self._collect_section_fields(f), window=self)
         ttk.Button(actions, text="Regresar", command=self._show_section_2_3).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_2_4).pack(side="right")
 
@@ -12689,7 +13412,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda f=self.section2_5_fields: _autosave_section(evaluacion_accesibilidad, "section_2_5", lambda: self._collect_section_fields(f))
+        self._pending_autosave = lambda f=self.section2_5_fields: _autosave_section(evaluacion_accesibilidad, "section_2_5", lambda: self._collect_section_fields(f), window=self)
         ttk.Button(actions, text="Regresar", command=self._show_section_2_4).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_2_5).pack(side="right")
 
@@ -12779,7 +13502,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda f=self.section2_6_fields: _autosave_section(evaluacion_accesibilidad, "section_2_6", lambda: self._collect_section_fields(f))
+        self._pending_autosave = lambda f=self.section2_6_fields: _autosave_section(evaluacion_accesibilidad, "section_2_6", lambda: self._collect_section_fields(f), window=self)
         ttk.Button(actions, text="Regresar", command=self._show_section_2_5).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_2_6).pack(side="right")
 
@@ -12914,7 +13637,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda f=self.section3_fields: _autosave_section(evaluacion_accesibilidad, "section_3", lambda: self._collect_section_fields(f))
+        self._pending_autosave = lambda f=self.section3_fields: _autosave_section(evaluacion_accesibilidad, "section_3", lambda: self._collect_section_fields(f), window=self)
         ttk.Button(actions, text="Regresar", command=self._show_section_2_6).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_3).pack(side="right")
     def _confirm_section_2_5(self):
@@ -13004,7 +13727,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         )
         level_combo.grid(row=0, column=1, sticky="w")
 
-        cached_level = evaluacion_accesibilidad.get_form_cache().get("section_4", {}).get("nivel_accesibilidad")
+        cached_level = _get_runtime_section_cache(self, evaluacion_accesibilidad, "section_4", {}).get("nivel_accesibilidad")
         if cached_level:
             self.section4_level_var.set(cached_level)
         elif suggestion:
@@ -13032,6 +13755,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
             evaluacion_accesibilidad,
             "section_4",
             self._collect_section4_payload,
+            window=self,
         )
         ttk.Button(actions, text="Regresar", command=self._show_section_3).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_4).pack(side="right")
@@ -13056,7 +13780,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         return value
 
     def _calculate_accessible_summary(self):
-        cache = evaluacion_accesibilidad.get_form_cache()
+        cache = _get_runtime_form_cache(self, evaluacion_accesibilidad)
         counts = {"si": 0, "no": 0, "parcial": 0}
         sections = [
             "section_2_1",
@@ -13255,6 +13979,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
             evaluacion_accesibilidad,
             "section_5",
             lambda: self._collect_evaluacion_section5_payload(f),
+            window=self,
         )
         ttk.Button(actions, text="Regresar", command=self._show_section_4).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_5).pack(side="right")
@@ -13315,7 +14040,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda f=self.section6_fields: _autosave_section(evaluacion_accesibilidad, "section_6", lambda: self._collect_section_fields(f))
+        self._pending_autosave = lambda f=self.section6_fields: _autosave_section(evaluacion_accesibilidad, "section_6", lambda: self._collect_section_fields(f), window=self)
         ttk.Button(actions, text="Regresar", command=self._show_section_5).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_6).pack(side="right")
 
@@ -13372,7 +14097,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda f=self.section7_fields: _autosave_section(evaluacion_accesibilidad, "section_7", lambda: self._collect_section_fields(f))
+        self._pending_autosave = lambda f=self.section7_fields: _autosave_section(evaluacion_accesibilidad, "section_7", lambda: self._collect_section_fields(f), window=self)
         ttk.Button(actions, text="Regresar", command=self._show_section_6).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_7).pack(side="right")
 
@@ -13426,12 +14151,12 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         )
         self._asesores_agencia_catalog = _get_asesores_agencia_catalog()
 
-        cached = evaluacion_accesibilidad.get_form_cache().get("section_8", [])
+        cached = _get_runtime_section_cache(self, evaluacion_accesibilidad, "section_8", [])
         self._render_section8_asistentes(cached)
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda: _autosave_section(evaluacion_accesibilidad, "section_8", lambda: [{"nombre": n.get().strip(), "cargo": c.get().strip()} for n, c in self.section8_entries])
+        self._pending_autosave = lambda: _autosave_section(evaluacion_accesibilidad, "section_8", lambda: [{"nombre": n.get().strip(), "cargo": c.get().strip()} for n, c in self.section8_entries], window=self)
         ttk.Button(actions, text="Regresar", command=self._show_section_7).pack(side="left")
         ttk.Button(actions, text="📞 Solicitar Intérprete LSC", command=self._open_lsc_window).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Finalizar", command=self._confirm_section_8).pack(side="right")
@@ -13522,14 +14247,14 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
         loading.set_status("Preparando exportación...")
         loading.set_progress(5)
 
-        cache_snapshot = evaluacion_accesibilidad.get_form_cache()
+        cache_snapshot = _clone_window_draft_cache(self, evaluacion_accesibilidad)
         section_order = list(evaluacion_accesibilidad.EXCEL_MAPPING.keys())
         total_steps = len(section_order) or 1
         cache = cache_snapshot
         section_1 = cache.get("section_1", {})
         company_name = section_1.get("nombre_empresa")
 
-        def _worker():
+        def _worker(cache_snapshot=None):
             def _on_progress(section_id):
                 try:
                     idx = section_order.index(section_id) + 1
@@ -13543,7 +14268,10 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
 
             return _raise_finalize_stage(
                 "preparando el acta",
-                lambda: evaluacion_accesibilidad.export_to_excel(progress_callback=_on_progress),
+                lambda: evaluacion_accesibilidad.export_to_excel(
+                    progress_callback=_on_progress,
+                    cache=cache_snapshot,
+                ),
             )
 
         _start_background_finalization(
@@ -13553,6 +14281,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
             company_name=company_name,
             form_id="evaluacion_accesibilidad",
             worker_fn=_worker,
+            post_delivery_fn=lambda: _clear_runtime_form_session(self, evaluacion_accesibilidad),
         )
 
     def _open_lsc_window(self):
@@ -13583,7 +14312,7 @@ class EvaluacionAccesibilidadWindow(tk.Toplevel, FormMousewheelMixin):
 
 
     def _prefill_section_fields(self, section_id, fields):
-        cache = evaluacion_accesibilidad.get_form_cache().get(section_id, {})
+        cache = _get_runtime_section_cache(self, evaluacion_accesibilidad, section_id, {})
         for field_id, widgets in fields.items():
             for key, widget in widgets.items():
                 if str(key).startswith("_"):
@@ -13852,8 +14581,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             self._show_section_1,
         ):
             return True
-        if condiciones_vacante.cache_file_exists():
-            _clear_local_resume_state(condiciones_vacante)
+        _clear_local_resume_state(condiciones_vacante)
         return False
 
     def _build_condiciones_section2_voice_banner(self, parent):
@@ -14009,12 +14737,12 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda f=self.section2_fields: _autosave_section(condiciones_vacante, "section_2", lambda: _collect_flat_fields(f))
+        self._pending_autosave = lambda f=self.section2_fields: _autosave_section(condiciones_vacante, "section_2", lambda: _collect_flat_fields(f), window=self)
         ttk.Button(actions, text="Regresar", command=self._show_section_1).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_2).pack(side="right")
 
     def _prefill_section2_fields(self):
-        cache = condiciones_vacante.get_form_cache().get("section_2", {})
+        cache = _get_runtime_section_cache(self, condiciones_vacante, "section_2", {})
         for field_id, widget in self.section2_fields.items():
             value = cache.get(field_id, "")
             if isinstance(widget, ttk.Combobox):
@@ -14330,12 +15058,12 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda f=self.section2_1_fields: _autosave_section(condiciones_vacante, "section_2_1", lambda: _collect_flat_fields(f))
+        self._pending_autosave = lambda f=self.section2_1_fields: _autosave_section(condiciones_vacante, "section_2_1", lambda: _collect_flat_fields(f), window=self)
         ttk.Button(actions, text="Regresar", command=self._show_section_2).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_2_1).pack(side="right")
 
     def _prefill_section2_1_fields(self):
-        cache = condiciones_vacante.get_form_cache().get("section_2_1", {})
+        cache = _get_runtime_section_cache(self, condiciones_vacante, "section_2_1", {})
         for field_id, widget in self.section2_1_fields.items():
             value = cache.get(field_id, "")
             if isinstance(widget, tk.BooleanVar):
@@ -14436,12 +15164,12 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda f=self.section3_fields: _autosave_section(condiciones_vacante, "section_3", lambda: _collect_flat_fields(f))
+        self._pending_autosave = lambda f=self.section3_fields: _autosave_section(condiciones_vacante, "section_3", lambda: _collect_flat_fields(f), window=self)
         ttk.Button(actions, text="Regresar", command=self._show_section_2_1).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_3).pack(side="right")
 
     def _prefill_section3_fields(self):
-        cache = condiciones_vacante.get_form_cache().get("section_3", {})
+        cache = _get_runtime_section_cache(self, condiciones_vacante, "section_3", {})
         for field_id, widget in self.section3_fields.items():
             value = cache.get(field_id, "")
             if isinstance(widget, ttk.Combobox):
@@ -14551,12 +15279,12 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda f=self.section4_fields: _autosave_section(condiciones_vacante, "section_4", lambda: {field_id: widget.get().strip() for field_id, widget in f.items()})
+        self._pending_autosave = lambda f=self.section4_fields: _autosave_section(condiciones_vacante, "section_4", lambda: {field_id: widget.get().strip() for field_id, widget in f.items()}, window=self)
         ttk.Button(actions, text="Regresar", command=self._show_section_3).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_4).pack(side="right")
 
     def _prefill_section4_fields(self):
-        cache = condiciones_vacante.get_form_cache().get("section_4", {})
+        cache = _get_runtime_section_cache(self, condiciones_vacante, "section_4", {})
         for field_id, widget in self.section4_fields.items():
             widget.set(cache.get(field_id, ""))
 
@@ -14661,12 +15389,12 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda f=self.section5_fields: _autosave_section(condiciones_vacante, "section_5", lambda: _collect_flat_fields(f))
+        self._pending_autosave = lambda f=self.section5_fields: _autosave_section(condiciones_vacante, "section_5", lambda: _collect_flat_fields(f), window=self)
         ttk.Button(actions, text="Regresar", command=self._show_section_4).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_5).pack(side="right")
 
     def _prefill_section5_fields(self):
-        cache = condiciones_vacante.get_form_cache().get("section_5", {})
+        cache = _get_runtime_section_cache(self, condiciones_vacante, "section_5", {})
         for field_id, widget in self.section5_fields.items():
             value = cache.get(field_id, "")
             if isinstance(widget, ttk.Combobox):
@@ -14749,7 +15477,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         )
         self.section6_remove_btn.pack(side="left", padx=(8, 0))
 
-        cached_rows = condiciones_vacante.get_form_cache().get("section_6", [])
+        cached_rows = _get_runtime_section_cache(self, condiciones_vacante, "section_6", [])
         if cached_rows:
             for idx, entry in enumerate(cached_rows):
                 if idx >= len(self.section6_rows):
@@ -14759,7 +15487,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda: _autosave_section(condiciones_vacante, "section_6", lambda: [{"discapacidad": r["combo"].get().strip(), "descripcion": r["descripcion"].get("1.0", tk.END).strip()} for r in self.section6_rows if r["combo"].get().strip() or r["descripcion"].get("1.0", tk.END).strip()])
+        self._pending_autosave = lambda: _autosave_section(condiciones_vacante, "section_6", lambda: [{"discapacidad": r["combo"].get().strip(), "descripcion": r["descripcion"].get("1.0", tk.END).strip()} for r in self.section6_rows if r["combo"].get().strip() or r["descripcion"].get("1.0", tk.END).strip()], window=self)
         ttk.Button(actions, text="Regresar", command=self._show_section_5).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_6).pack(side="right")
 
@@ -14880,7 +15608,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         self.section7_text.pack(fill="x", padx=24, pady=(4, 12))
         _attach_autoexpand(self.section7_text, 8, 25)
 
-        cached = condiciones_vacante.get_form_cache().get("section_7", {})
+        cached = _get_runtime_section_cache(self, condiciones_vacante, "section_7", {})
         cached_text = cached.get(condiciones_vacante.SECTION_7["field_id"])
         if cached_text:
             self.section7_text.delete("1.0", tk.END)
@@ -14888,7 +15616,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda: _autosave_section(condiciones_vacante, "section_7", lambda: {condiciones_vacante.SECTION_7["field_id"]: self.section7_text.get("1.0", tk.END).strip()})
+        self._pending_autosave = lambda: _autosave_section(condiciones_vacante, "section_7", lambda: {condiciones_vacante.SECTION_7["field_id"]: self.section7_text.get("1.0", tk.END).strip()}, window=self)
         ttk.Button(actions, text="Regresar", command=self._show_section_6).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_7).pack(side="right")
 
@@ -14947,7 +15675,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         )
         self._asesores_agencia_catalog = _get_asesores_agencia_catalog()
 
-        cached_rows = condiciones_vacante.get_form_cache().get("section_8", [])
+        cached_rows = _get_runtime_section_cache(self, condiciones_vacante, "section_8", [])
         self._render_section8_asistentes(cached_rows)
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
@@ -14956,6 +15684,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             condiciones_vacante,
             "section_8",
             lambda: self._get_section8_asistentes_values(),
+            window=self,
         )
         ttk.Button(actions, text="Regresar", command=self._show_section_7).pack(side="left")
         ttk.Button(actions, text="📞 Solicitar Intérprete LSC", command=self._open_lsc_window).pack(side="left", padx=(8, 0))
@@ -15052,7 +15781,7 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
         loading = LoadingDialog(self, title="Guardando")
         loading.set_status("Preparando acta...")
         loading.set_progress(30)
-        cache_snapshot = condiciones_vacante.get_form_cache()
+        cache_snapshot = _clone_window_draft_cache(self, condiciones_vacante)
         cache = cache_snapshot
         section_1 = cache.get("section_1", {})
         company_name = section_1.get("nombre_empresa")
@@ -15062,10 +15791,11 @@ class CondicionesVacanteWindow(tk.Toplevel, FormMousewheelMixin):
             form_name="Revision Condicion",
             company_name=company_name,
             form_id=getattr(self, "_form_id", self.FORM_META_ID),
-            worker_fn=lambda: _raise_finalize_stage(
+            worker_fn=lambda cache_snapshot=None: _raise_finalize_stage(
                 "preparando el acta",
-                condiciones_vacante.export_to_excel,
+                lambda: condiciones_vacante.export_to_excel(cache=cache_snapshot),
             ),
+            post_delivery_fn=lambda: _clear_runtime_form_session(self, condiciones_vacante),
         )
 
     def _open_lsc_window(self):
@@ -15179,8 +15909,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             self._show_section_1,
         ):
             return True
-        if module.cache_file_exists():
-            _clear_local_resume_state(module)
+        _clear_local_resume_state(module)
         return False
 
     def _build_header(self):
@@ -15394,7 +16123,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         return getattr(self, "_section1_labels", {}).get(field_id, field_id)
 
     def _prefill_section_1(self):
-        cache = self._seleccion_module.get_form_cache().get("section_1", {})
+        cache = _get_runtime_section_cache(self, self._seleccion_module, "section_1", {})
         if not cache:
             return
         self.company_data = cache
@@ -15619,6 +16348,77 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         _log_labs(
             f"subsection_preview_applied subsection={subsection_key} candidate_index={candidate_index} "
             f"fields={','.join(sorted(updates.keys()))} warnings={len(warnings)}"
+        )
+
+    def _collect_section_2_payload(self):
+        shared_widget = getattr(self, "section2_shared_desarrollo_widget", None)
+        shared_desarrollo = ""
+        if isinstance(shared_widget, tk.Text):
+            shared_desarrollo = shared_widget.get("1.0", tk.END).strip()
+        payload = []
+        for fields in getattr(self, "oferente_blocks", []):
+            entry = {}
+            for key, widget in (fields or {}).items():
+                if key == "desarrollo_actividad":
+                    continue
+                if isinstance(widget, ttk.Combobox):
+                    entry[key] = widget.get().strip()
+                elif isinstance(widget, tk.Text):
+                    entry[key] = widget.get("1.0", tk.END).strip()
+                else:
+                    entry[key] = widget.get().strip()
+            entry["desarrollo_actividad"] = shared_desarrollo
+            payload.append(entry)
+        return payload
+
+    def _refresh_section_2_derived_fields(self):
+        for fields in getattr(self, "oferente_blocks", []):
+            fecha_widget = (fields or {}).get("fecha_nacimiento")
+            edad_widget = (fields or {}).get("edad")
+            if fecha_widget is not None and edad_widget is not None:
+                try:
+                    self._format_birthdate(None, fecha_widget, edad_widget)
+                except Exception:
+                    pass
+
+    def _restore_draft_ui_snapshot(self, ui_snapshot):
+        if not isinstance(ui_snapshot, list):
+            _clear_pending_draft_ui_snapshot(self)
+            return
+
+        target_section = str(getattr(self, "_draft_restore_target_section", "") or "").strip()
+        if target_section != "section_2":
+            _apply_input_snapshot(self, ui_snapshot)
+            _clear_pending_draft_ui_snapshot(self)
+            return
+
+        applied, total, partial = _apply_dynamic_snapshot_with_block_growth(
+            self,
+            ui_snapshot,
+            add_block_fn=getattr(self, "_section2_add_block", None),
+            block_count_fn=lambda: len(getattr(self, "oferente_blocks", []) or []),
+            max_blocks=50,
+        )
+        _trim_dynamic_section_blocks(
+            self,
+            self._collect_section_2_payload(),
+            remove_block_fn=getattr(self, "_section2_remove_block", None),
+            ignored_keys=("numero", "desarrollo_actividad"),
+            minimum_blocks=1,
+        )
+        self._refresh_section_2_derived_fields()
+        _persist_restored_window_draft(self)
+        _clear_pending_draft_ui_snapshot(self)
+
+        if partial:
+            messagebox.showwarning(
+                "Borradores",
+                "Borrador recuperado parcialmente, revisar antes de continuar.",
+                parent=self,
+            )
+        _log_capture(
+            f"[DRAFT] section2_restore form={getattr(self, '_form_id', self.FORM_META_ID)} "
+            f"applied={applied} total={total} partial={partial}"
         )
 
     def _show_section_2(self):
@@ -15848,6 +16648,8 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             widget.delete("1.0", tk.END)
             if value:
                 widget.insert("1.0", value)
+            _refresh_autoexpand(widget)
+            _refresh_autoexpand(widget)
 
         def _sync_desarrollo_widgets(source_widget=None):
             if isinstance(source_widget, tk.Text):
@@ -15925,6 +16727,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             _bind_shared_desarrollo(widget)
             if shared_value:
                 widget.insert("1.0", shared_value)
+            _refresh_autoexpand(widget)
             section3_frame.pack_forget()
             pack_kwargs = {"fill": "x"}
             if parent is content:
@@ -16083,6 +16886,10 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                     section41_body,
                     "¿Asiste a controles médicos con especialista?",
                     ["controles_nivel_apoyo", "controles_asistencia", "controles_frecuencia", "controles_nota"],
+                    sync_binder=lambda block_fields: _bind_prefixed_dropdown_subset(
+                        block_fields,
+                        ("controles_nivel_apoyo", "controles_asistencia"),
+                    ),
                 )
             )
 
@@ -16291,9 +17098,10 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             _update_remove_button_state()
 
         def _prefill_section_2():
-            cache = self._seleccion_module.get_form_cache().get("section_2", [])
+            cache = _get_runtime_section_cache(self, self._seleccion_module, "section_2", [])
             if not cache:
                 _add_oferente_block()
+                self._refresh_section_2_derived_fields()
                 return
             for _ in range(len(cache)):
                 _add_oferente_block()
@@ -16310,9 +17118,18 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                         widget.delete(0, tk.END)
                         widget.insert(0, value)
             _sync_desarrollo_widgets()
+            self._refresh_section_2_derived_fields()
 
         _prefill_section_2()
         _refresh_section_titles()
+        self._section2_add_block = _add_oferente_block
+        self._section2_remove_block = _remove_oferente_block
+        self._pending_autosave = lambda: _autosave_section(
+            self._seleccion_module,
+            "section_2",
+            self._collect_section_2_payload,
+            window=self,
+        )
 
         ttk.Button(actions, text="Agregar oferente", command=_add_oferente_block).pack(
             side="left"
@@ -16328,25 +17145,9 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         ttk.Button(actions, text="Continuar", command=self._confirm_section_2).pack(
             side="right"
         )
+
     def _confirm_section_2(self):
-        shared_widget = getattr(self, "section2_shared_desarrollo_widget", None)
-        shared_desarrollo = ""
-        if isinstance(shared_widget, tk.Text):
-            shared_desarrollo = shared_widget.get("1.0", tk.END).strip()
-        payload = []
-        for fields in self.oferente_blocks:
-            entry = {}
-            for key, widget in fields.items():
-                if key == "desarrollo_actividad":
-                    continue
-                if isinstance(widget, ttk.Combobox):
-                    entry[key] = widget.get().strip()
-                elif isinstance(widget, tk.Text):
-                    entry[key] = widget.get("1.0", tk.END).strip()
-                else:
-                    entry[key] = widget.get().strip()
-            entry["desarrollo_actividad"] = shared_desarrollo
-            payload.append(entry)
+        payload = self._collect_section_2_payload()
         try:
             self._seleccion_module.confirm_section_2(payload)
         except Exception as exc:
@@ -16400,14 +17201,14 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         nota.pack(anchor="w", padx=4, pady=(0, 16))
         self.section5_fields["nota"] = nota
 
-        cache = self._seleccion_module.get_form_cache().get("section_5", {})
+        cache = _get_runtime_section_cache(self, self._seleccion_module, "section_5", {})
         if cache:
             ajustes.delete("1.0", tk.END)
             ajustes.insert("1.0", cache.get("ajustes_recomendaciones", ""))
             nota.delete(0, tk.END)
             nota.insert(0, cache.get("nota", ""))
 
-        self._pending_autosave = lambda f=self.section5_fields: _autosave_section(self._seleccion_module, "section_5", lambda: _collect_flat_fields(f))
+        self._pending_autosave = lambda f=self.section5_fields: _autosave_section(self._seleccion_module, "section_5", lambda: _collect_flat_fields(f), window=self)
         _build_wizard_actions(
             content,
             back_command=self._show_section_2,
@@ -16503,7 +17304,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         )
         add_btn.grid(row=len(self.section6_rows) + 1, column=0, sticky="w", pady=(8, 0))
 
-        cached_rows = self._seleccion_module.get_form_cache().get("section_6", [])
+        cached_rows = _get_runtime_section_cache(self, self._seleccion_module, "section_6", [])
         while len(self.section6_rows) < len(cached_rows):
             _add_asistente_row()
         for idx, entry in enumerate(cached_rows):
@@ -16516,6 +17317,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             self._seleccion_module,
             "section_6",
             lambda: _collect_asistente_rows(self.section6_rows),
+            window=self,
         )
 
         _build_wizard_actions(
@@ -16546,15 +17348,15 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         loading = LoadingDialog(self, title="Guardando")
         loading.set_status("Preparando acta...")
         loading.set_progress(40)
-        cache_snapshot = self._seleccion_module.get_form_cache()
+        cache_snapshot = _clone_window_draft_cache(self, self._seleccion_module)
         cache = cache_snapshot
         section_1 = cache.get("section_1", {})
         company_name = section_1.get("nombre_empresa")
 
-        def _worker():
+        def _worker(cache_snapshot=None):
             output_path = _raise_finalize_stage(
                 "preparando el acta",
-                lambda: self._seleccion_module.export_to_excel(clear_cache=False),
+                lambda: self._seleccion_module.export_to_excel(clear_cache=False, cache=cache_snapshot),
             )
             _update_loading_async(
                 loading,
@@ -16563,7 +17365,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             )
             _raise_finalize_stage(
                 "guardando en Supabase",
-                self._seleccion_module.sync_usuarios_reca,
+                lambda: self._seleccion_module.sync_usuarios_reca(cache=cache_snapshot),
             )
             return output_path
 
@@ -16574,7 +17376,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             company_name=company_name,
             form_id=getattr(self, "_form_id", self.FORM_META_ID),
             worker_fn=_worker,
-            post_delivery_fn=lambda: _clear_form_cache_safe(self._seleccion_module),
+            post_delivery_fn=lambda: _clear_runtime_form_session(self, self._seleccion_module),
         )
 
     def _format_birthdate(self, _event, fecha_widget, edad_widget):
@@ -16592,7 +17394,7 @@ class SeleccionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         _bind_numeric_entry(entry, max_len=max_len)
 
     def _open_lsc_window(self):
-        cache = self._seleccion_module.get_form_cache()
+        cache = _get_runtime_form_cache(self, self._seleccion_module)
         section_1 = cache.get("section_1", {})
         empresa = section_1 if section_1.get("nombre_empresa") else (
             self.company_data if isinstance(getattr(self, "company_data", None), dict) else None
@@ -16826,8 +17628,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             self._show_section_1,
         ):
             return True
-        if contratacion_incluyente.cache_file_exists():
-            _clear_local_resume_state(contratacion_incluyente)
+        _clear_local_resume_state(contratacion_incluyente)
         return False
 
     def _show_section_1(self):
@@ -16841,6 +17642,83 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         self._build_groups(content)
         self._build_actions(content)
         _restore_section1_cached_state(self, contratacion_incluyente)
+
+    def _collect_section_2_payload(self):
+        shared_desarrollo = ""
+        if isinstance(getattr(self, "section2_shared_desarrollo_widget", None), tk.Text):
+            shared_desarrollo = self.section2_shared_desarrollo_widget.get("1.0", tk.END).strip()
+        payload = []
+        for fields in getattr(self, "oferente_blocks", []):
+            entry = {}
+            for key, widget in (fields or {}).items():
+                if key == "desarrollo_actividad":
+                    continue
+                if isinstance(widget, ttk.Combobox):
+                    entry[key] = widget.get().strip()
+                elif isinstance(widget, tk.Text):
+                    entry[key] = widget.get("1.0", tk.END).strip()
+                else:
+                    entry[key] = widget.get().strip()
+            entry["desarrollo_actividad"] = shared_desarrollo
+            payload.append(entry)
+        return payload
+
+    def _refresh_section_2_derived_fields(self):
+        for fields in getattr(self, "oferente_blocks", []):
+            fecha_widget = (fields or {}).get("fecha_nacimiento")
+            edad_widget = (fields or {}).get("edad")
+            if fecha_widget is not None and edad_widget is not None:
+                try:
+                    self._refresh_age_from_date(fecha_widget, edad_widget)
+                except Exception:
+                    pass
+            grupo_etnico_widget = (fields or {}).get("grupo_etnico")
+            sync_fn = getattr(grupo_etnico_widget, "_no_aplica_dropdown_sync", None)
+            if callable(sync_fn):
+                try:
+                    sync_fn()
+                except Exception:
+                    pass
+
+    def _restore_draft_ui_snapshot(self, ui_snapshot):
+        if not isinstance(ui_snapshot, list):
+            _clear_pending_draft_ui_snapshot(self)
+            return
+
+        target_section = str(getattr(self, "_draft_restore_target_section", "") or "").strip()
+        if target_section != "section_2":
+            _apply_input_snapshot(self, ui_snapshot)
+            _clear_pending_draft_ui_snapshot(self)
+            return
+
+        applied, total, partial = _apply_dynamic_snapshot_with_block_growth(
+            self,
+            ui_snapshot,
+            add_block_fn=getattr(self, "_section2_add_block", None),
+            block_count_fn=lambda: len(getattr(self, "oferente_blocks", []) or []),
+            max_blocks=50,
+        )
+        _trim_dynamic_section_blocks(
+            self,
+            self._collect_section_2_payload(),
+            remove_block_fn=getattr(self, "_section2_remove_block", None),
+            ignored_keys=("numero", "desarrollo_actividad"),
+            minimum_blocks=1,
+        )
+        self._refresh_section_2_derived_fields()
+        _persist_restored_window_draft(self)
+        _clear_pending_draft_ui_snapshot(self)
+
+        if partial:
+            messagebox.showwarning(
+                "Borradores",
+                "Borrador recuperado parcialmente, revisar antes de continuar.",
+                parent=self,
+            )
+        _log_capture(
+            f"[DRAFT] section2_restore form={getattr(self, '_form_id', 'contratacion_incluyente')} "
+            f"applied={applied} total={total} partial={partial}"
+        )
 
     def _show_section_2(self):
         self._clear_section_container()
@@ -17002,6 +17880,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             _attach_autoexpand(text_widget, 5, 20)
             if shared_value:
                 text_widget.insert("1.0", shared_value)
+            _refresh_autoexpand(text_widget)
             pack_kwargs = {"fill": "x"}
             if parent is content:
                 pack_kwargs["pady"] = (0, 8)
@@ -17550,9 +18429,10 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             _refresh_layout()
 
         def _prefill_section_2():
-            cache = contratacion_incluyente.get_form_cache().get("section_2", [])
+            cache = _get_runtime_section_cache(self, contratacion_incluyente, "section_2", [])
             if not cache:
                 _add_oferente_block()
+                self._refresh_section_2_derived_fields()
                 return
             for _ in range(len(cache)):
                 _add_oferente_block()
@@ -17581,9 +18461,18 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
                 self.section2_shared_desarrollo_widget.delete("1.0", tk.END)
                 if shared_desarrollo:
                     self.section2_shared_desarrollo_widget.insert("1.0", shared_desarrollo)
+            self._refresh_section_2_derived_fields()
             _refresh_layout()
 
         _prefill_section_2()
+        self._section2_add_block = _add_oferente_block
+        self._section2_remove_block = _remove_oferente_block
+        self._pending_autosave = lambda: _autosave_section(
+            contratacion_incluyente,
+            "section_2",
+            self._collect_section_2_payload,
+            window=self,
+        )
 
         _pack_actions(actions)
         ttk.Button(actions, text="Agregar vinculado", command=_add_oferente_block).pack(
@@ -17629,11 +18518,21 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         _attach_autoexpand(ajustes, 6, 25)
         self.section6_fields["ajustes_recomendaciones"] = ajustes
 
-        cache = contratacion_incluyente.get_form_cache().get("section_6", {})
+        cache = _get_runtime_section_cache(self, contratacion_incluyente, "section_6", {})
         if cache:
             ajustes.delete("1.0", tk.END)
             ajustes.insert("1.0", cache.get("ajustes_recomendaciones", ""))
 
+        self._pending_autosave = lambda: _autosave_section(
+            contratacion_incluyente,
+            "section_6",
+            lambda: {
+                "ajustes_recomendaciones": self.section6_fields["ajustes_recomendaciones"]
+                .get("1.0", tk.END)
+                .strip(),
+            },
+            window=self,
+        )
         _build_wizard_actions(
             content,
             back_command=self._show_section_2,
@@ -17641,21 +18540,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         )
 
     def _confirm_section_2(self):
-        shared_desarrollo = ""
-        if isinstance(getattr(self, "section2_shared_desarrollo_widget", None), tk.Text):
-            shared_desarrollo = self.section2_shared_desarrollo_widget.get("1.0", tk.END).strip()
-        payload = []
-        for fields in self.oferente_blocks:
-            entry = {}
-            for key, widget in fields.items():
-                if isinstance(widget, ttk.Combobox):
-                    entry[key] = widget.get().strip()
-                elif isinstance(widget, tk.Text):
-                    entry[key] = widget.get("1.0", tk.END).strip()
-                else:
-                    entry[key] = widget.get().strip()
-            entry["desarrollo_actividad"] = shared_desarrollo
-            payload.append(entry)
+        payload = self._collect_section_2_payload()
         try:
             contratacion_incluyente.confirm_section_2(payload)
         except Exception as exc:
@@ -17725,7 +18610,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         for _ in range(4):
             _add_asistente_row()
 
-        cached_rows = contratacion_incluyente.get_form_cache().get("section_7", [])
+        cached_rows = _get_runtime_section_cache(self, contratacion_incluyente, "section_7", [])
         for idx, entry in enumerate(cached_rows):
             if idx >= len(self.section7_rows):
                 _add_asistente_row()
@@ -17738,6 +18623,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             contratacion_incluyente,
             "section_7",
             lambda: _collect_asistente_rows(self.section7_rows),
+            window=self,
         )
 
         _build_wizard_actions(
@@ -17765,14 +18651,14 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         loading = LoadingDialog(self, title="Guardando")
         loading.set_status("Preparando acta...")
         loading.set_progress(40)
-        cache = contratacion_incluyente.get_form_cache()
+        cache = _clone_window_draft_cache(self, contratacion_incluyente)
         section_1 = cache.get("section_1", {})
         company_name = section_1.get("nombre_empresa")
 
-        def _worker():
+        def _worker(cache_snapshot=None):
             output_path = _raise_finalize_stage(
                 "preparando el acta",
-                lambda: contratacion_incluyente.export_to_excel(clear_cache=False),
+                lambda: contratacion_incluyente.export_to_excel(clear_cache=False, cache=cache_snapshot),
             )
             _update_loading_async(
                 loading,
@@ -17781,7 +18667,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             )
             _raise_finalize_stage(
                 "guardando en Supabase",
-                contratacion_incluyente.sync_usuarios_reca,
+                lambda: contratacion_incluyente.sync_usuarios_reca(cache=cache_snapshot),
             )
             return output_path
 
@@ -17792,7 +18678,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
             company_name=company_name,
             form_id="contratacion_incluyente",
             worker_fn=_worker,
-            post_delivery_fn=lambda: _clear_form_cache_safe(contratacion_incluyente),
+            post_delivery_fn=lambda: _clear_runtime_form_session(self, contratacion_incluyente),
         )
 
     def _build_search(self, parent):
@@ -17844,7 +18730,7 @@ class ContratacionIncluyenteWindow(tk.Toplevel, FormMousewheelMixin):
         )
 
     def _open_lsc_window(self):
-        cache = contratacion_incluyente.get_form_cache()
+        cache = _get_runtime_form_cache(self, contratacion_incluyente)
         section_1 = cache.get("section_1", {})
         empresa = section_1 if section_1.get("nombre_empresa") else (
             self.company_data if isinstance(getattr(self, "company_data", None), dict) else None
@@ -17956,8 +18842,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
             self._show_section_1,
         ):
             return True
-        if induccion_organizacional.cache_file_exists():
-            _clear_local_resume_state(induccion_organizacional)
+        _clear_local_resume_state(induccion_organizacional)
         return False
 
     def _show_section_1(self):
@@ -18105,7 +18990,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
             _create_vinculado_block(len(self.vinculado_blocks))
 
         _create_vinculado_block(0)
-        cached_rows = induccion_organizacional.get_form_cache().get("section_2", [])
+        cached_rows = _get_runtime_section_cache(self, induccion_organizacional, "section_2", [])
         for idx, row_data in enumerate(cached_rows):
             if idx >= len(self.vinculado_blocks):
                 _add_vinculado()
@@ -18124,6 +19009,29 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda: _autosave_section(
+            induccion_organizacional,
+            "section_2",
+            lambda: [
+                {
+                    "numero": str(idx + 1),
+                    "nombre_oferente": (block.get("nombre_oferente").get().strip() if block.get("nombre_oferente") else ""),
+                    "cedula": re.sub(r"\D+", "", block.get("cedula").get().strip()) if block.get("cedula") else "",
+                    "telefono_oferente": (block.get("telefono_oferente").get().strip() if block.get("telefono_oferente") else ""),
+                    "cargo_oferente": (block.get("cargo_oferente").get().strip() if block.get("cargo_oferente") else ""),
+                }
+                for idx, block in enumerate(self.vinculado_blocks)
+                if any(
+                    (
+                        block.get("nombre_oferente").get().strip() if block.get("nombre_oferente") else "",
+                        re.sub(r"\D+", "", block.get("cedula").get().strip()) if block.get("cedula") else "",
+                        block.get("telefono_oferente").get().strip() if block.get("telefono_oferente") else "",
+                        block.get("cargo_oferente").get().strip() if block.get("cargo_oferente") else "",
+                    )
+                )
+            ],
+            window=self,
+        )
         ttk.Button(actions, text="Regresar", command=self._show_section_1).pack(side="left")
         ttk.Button(actions, text="Agregar vinculado", command=_add_vinculado).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Eliminar ultimo", command=_remove_last_vinculado).pack(side="left", padx=(8, 0))
@@ -18143,7 +19051,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
         content = _build_scrollable_content(section_frame, self)
 
         self.section3_fields = {}
-        cached = induccion_organizacional.get_form_cache().get("section_3", {})
+        cached = _get_runtime_section_cache(self, induccion_organizacional, "section_3", {})
 
         def _set_section3_visto(value, item_ids):
             allowed_ids = set(item_ids or [])
@@ -18249,7 +19157,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda f=self.section3_fields: _autosave_section(induccion_organizacional, "section_3", lambda: _collect_flat_fields(f))
+        self._pending_autosave = lambda f=self.section3_fields: _autosave_section(induccion_organizacional, "section_3", lambda: _collect_flat_fields(f), window=self)
         ttk.Button(actions, text="Regresar", command=self._show_section_2).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_3).pack(side="right")
 
@@ -18265,7 +19173,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame = _build_scrollable_content(section_frame, self)
 
         self.section4_rows = []
-        cached = induccion_organizacional.get_form_cache().get("section_4", [])
+        cached = _get_runtime_section_cache(self, induccion_organizacional, "section_4", [])
         row_labels = ["Ajuste 1", "Ajuste 2", "Ajuste 3"]
 
         def _on_medio_change(index):
@@ -18322,6 +19230,18 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda: _autosave_section(
+            induccion_organizacional,
+            "section_4",
+            lambda: [
+                {
+                    "medio": medio_widget.get().strip(),
+                    "recomendacion": text_widget.get("1.0", tk.END).strip(),
+                }
+                for medio_widget, text_widget in self.section4_rows
+            ],
+            window=self,
+        )
         ttk.Button(actions, text="Regresar", command=self._show_section_3).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_4).pack(side="right")
 
@@ -18345,13 +19265,13 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
         self.section5_text.pack(fill="x", padx=FORM_PADX, pady=(0, 8))
         _attach_autoexpand(self.section5_text, 10, 30)
 
-        cache = induccion_organizacional.get_form_cache().get("section_5", {})
+        cache = _get_runtime_section_cache(self, induccion_organizacional, "section_5", {})
         if cache.get("observaciones"):
             self.section5_text.insert("1.0", cache.get("observaciones", ""))
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda: _autosave_section(induccion_organizacional, "section_5", lambda: {"observaciones": self.section5_text.get("1.0", tk.END).strip()})
+        self._pending_autosave = lambda: _autosave_section(induccion_organizacional, "section_5", lambda: {"observaciones": self.section5_text.get("1.0", tk.END).strip()}, window=self)
         ttk.Button(actions, text="Regresar", command=self._show_section_4).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_5).pack(side="right")
 
@@ -18399,7 +19319,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
             row, _, _ = self.section6_rows.pop()
             row.destroy()
 
-        cached_rows = induccion_organizacional.get_form_cache().get("section_6", [])
+        cached_rows = _get_runtime_section_cache(self, induccion_organizacional, "section_6", [])
         if cached_rows:
             for item in cached_rows:
                 _add_row(item.get("nombre", ""), item.get("cargo", ""))
@@ -18413,6 +19333,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
             induccion_organizacional,
             "section_6",
             lambda: _collect_asistente_rows(self.section6_rows),
+            window=self,
         )
         ttk.Button(actions, text="Regresar", command=self._show_section_5).pack(side="left")
         ttk.Button(actions, text="📞 Solicitar Intérprete LSC", command=self._open_lsc_window).pack(side="left", padx=(8, 0))
@@ -18560,7 +19481,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
             self._set_readonly_value(key, company.get(key))
 
     def _prefill_section_1(self):
-        cache = induccion_organizacional.get_form_cache().get("section_1", {})
+        cache = _get_runtime_section_cache(self, induccion_organizacional, "section_1", {})
         if not cache:
             return
         self.company_data = cache
@@ -18588,7 +19509,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
             self.continue_btn.config(state="normal")
 
     def _open_lsc_window(self):
-        cache = induccion_organizacional.get_form_cache()
+        cache = _get_runtime_form_cache(self, induccion_organizacional)
         section_1 = cache.get("section_1", {})
         empresa = section_1 if section_1.get("nombre_empresa") else (
             self.company_data if isinstance(getattr(self, "company_data", None), dict) else None
@@ -18716,13 +19637,13 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
         loading.set_status("Preparando acta...")
         loading.set_progress(35)
 
-        cache_snapshot = induccion_organizacional.get_form_cache()
+        cache_snapshot = _clone_window_draft_cache(self, induccion_organizacional)
         section_1 = cache_snapshot.get("section_1", {})
         company_name = section_1.get("nombre_empresa")
-        def _worker():
+        def _worker(cache_snapshot=None):
             output_path = _raise_finalize_stage(
                 "preparando el acta",
-                lambda: induccion_organizacional.export_to_excel(clear_cache=False),
+                lambda: induccion_organizacional.export_to_excel(clear_cache=False, cache=cache_snapshot),
             )
             return output_path
 
@@ -18733,7 +19654,7 @@ class InduccionOrganizacionalWindow(tk.Toplevel, FormMousewheelMixin):
             company_name=company_name,
             form_id="induccion_organizacional",
             worker_fn=_worker,
-            post_delivery_fn=lambda: _clear_form_cache_safe(induccion_organizacional),
+            post_delivery_fn=lambda: _clear_runtime_form_session(self, induccion_organizacional),
         )
 
     def _close_to_hub(self):
@@ -18817,8 +19738,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
             self._show_section_1,
         ):
             return True
-        if induccion_operativa.cache_file_exists():
-            _clear_local_resume_state(induccion_operativa)
+        _clear_local_resume_state(induccion_operativa)
         return False
 
     def _build_search(self, parent):
@@ -18936,7 +19856,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
             self._set_readonly_value(key, company.get(key))
 
     def _prefill_section_1(self):
-        cache = induccion_operativa.get_form_cache().get("section_1", {})
+        cache = _get_runtime_section_cache(self, induccion_operativa, "section_1", {})
         if not cache:
             return
         self.company_data = cache
@@ -19093,7 +20013,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
 
         _create_vinculado_block(0)
 
-        cached_rows = induccion_operativa.get_form_cache().get("section_2", [])
+        cached_rows = _get_runtime_section_cache(self, induccion_operativa, "section_2", [])
         for idx, row_data in enumerate(cached_rows):
             if idx >= len(self.vinculado_blocks):
                 _add_vinculado()
@@ -19111,6 +20031,29 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda: _autosave_section(
+            induccion_operativa,
+            "section_2",
+            lambda: [
+                {
+                    "numero": str(idx + 1),
+                    "nombre_oferente": (block.get("nombre_oferente").get().strip() if block.get("nombre_oferente") else ""),
+                    "cedula": re.sub(r"\D+", "", block.get("cedula").get().strip()) if block.get("cedula") else "",
+                    "telefono_oferente": (block.get("telefono_oferente").get().strip() if block.get("telefono_oferente") else ""),
+                    "cargo_oferente": (block.get("cargo_oferente").get().strip() if block.get("cargo_oferente") else ""),
+                }
+                for idx, block in enumerate(self.vinculado_blocks)
+                if any(
+                    (
+                        block.get("nombre_oferente").get().strip() if block.get("nombre_oferente") else "",
+                        re.sub(r"\D+", "", block.get("cedula").get().strip()) if block.get("cedula") else "",
+                        block.get("telefono_oferente").get().strip() if block.get("telefono_oferente") else "",
+                        block.get("cargo_oferente").get().strip() if block.get("cargo_oferente") else "",
+                    )
+                )
+            ],
+            window=self,
+        )
         ttk.Button(actions, text="Regresar", command=self._show_section_1).pack(side="left")
         ttk.Button(actions, text="Agregar vinculado", command=_add_vinculado).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Eliminar ultimo", command=_remove_last_vinculado).pack(side="left", padx=(8, 0))
@@ -19126,7 +20069,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         content = _build_scrollable_content(section_frame, self)
 
         self.section3_fields = {}
-        cached = induccion_operativa.get_form_cache().get("section_3", {})
+        cached = _get_runtime_section_cache(self, induccion_operativa, "section_3", {})
 
         bulk_actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         bulk_actions.pack(anchor="w", padx=FORM_PADX, pady=(8, 4))
@@ -19188,7 +20131,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda f=self.section3_fields: _autosave_section(induccion_operativa, "section_3", lambda: _collect_flat_fields(f))
+        self._pending_autosave = lambda f=self.section3_fields: _autosave_section(induccion_operativa, "section_3", lambda: _collect_flat_fields(f), window=self)
         ttk.Button(actions, text="Regresar", command=self._show_section_2).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_3).pack(side="right")
 
@@ -19215,7 +20158,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         section_frame.pack(fill="both", expand=True)
         content = _build_scrollable_content(section_frame, self)
 
-        cached = induccion_operativa.get_form_cache().get("section_4", {})
+        cached = _get_runtime_section_cache(self, induccion_operativa, "section_4", {})
         cached_items = cached.get("items", {}) if isinstance(cached, dict) else {}
         cached_notes = cached.get("notes", {}) if isinstance(cached, dict) else {}
 
@@ -19302,6 +20245,24 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(content, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda: _autosave_section(
+            induccion_operativa,
+            "section_4",
+            lambda: {
+                "items": {
+                    item_id: {
+                        "nivel_apoyo": widgets["nivel_apoyo"].get().strip(),
+                        "observaciones": widgets["observaciones"].get().strip(),
+                    }
+                    for item_id, widgets in self.section4_item_widgets.items()
+                },
+                "notes": {
+                    block_id: note_entry.get().strip()
+                    for block_id, note_entry in self.section4_note_widgets.items()
+                },
+            },
+            window=self,
+        )
         ttk.Button(actions, text="Regresar", command=self._show_section_3).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_4).pack(side="right")
 
@@ -19332,7 +20293,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
             row=0, column=2, sticky="w", padx=4, pady=(0, 6)
         )
 
-        cached = induccion_operativa.get_form_cache().get("section_5", {})
+        cached = _get_runtime_section_cache(self, induccion_operativa, "section_5", {})
         self.section5_fields = {}
 
         for idx, row_cfg in enumerate(induccion_operativa.SECTION_5["rows"], start=1):
@@ -19367,7 +20328,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda f=self.section5_fields: _autosave_section(induccion_operativa, "section_5", lambda: _collect_flat_fields(f))
+        self._pending_autosave = lambda f=self.section5_fields: _autosave_section(induccion_operativa, "section_5", lambda: _collect_flat_fields(f), window=self)
         ttk.Button(actions, text="Regresar", command=self._show_section_4).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_5).pack(side="right")
 
@@ -19387,12 +20348,18 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         self.section6_text.pack(fill="x", padx=FORM_PADX, pady=(0, 8))
         _attach_autoexpand(self.section6_text, 8, 30)
 
-        cached = induccion_operativa.get_form_cache().get("section_6", {})
+        cached = _get_runtime_section_cache(self, induccion_operativa, "section_6", {})
         if cached.get("ajustes_requeridos"):
             self.section6_text.insert("1.0", cached.get("ajustes_requeridos", ""))
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda: _autosave_section(
+            induccion_operativa,
+            "section_6",
+            lambda: {"ajustes_requeridos": self.section6_text.get("1.0", tk.END).strip()},
+            window=self,
+        )
         ttk.Button(actions, text="Regresar", command=self._show_section_5).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_6).pack(side="right")
 
@@ -19411,7 +20378,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         self.section7_date = DateEntry(row, width=ENTRY_W_MED, date_pattern="yyyy-mm-dd")
         self.section7_date.pack(side="left")
 
-        cached = induccion_operativa.get_form_cache().get("section_7", {})
+        cached = _get_runtime_section_cache(self, induccion_operativa, "section_7", {})
         fecha = cached.get("fecha_primer_seguimiento", "")
         if fecha:
             try:
@@ -19421,6 +20388,12 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda: _autosave_section(
+            induccion_operativa,
+            "section_7",
+            lambda: {"fecha_primer_seguimiento": self.section7_date.get().strip()},
+            window=self,
+        )
         ttk.Button(actions, text="Regresar", command=self._show_section_6).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_7).pack(side="right")
 
@@ -19443,13 +20416,13 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         self.section8_text.pack(fill="x", padx=FORM_PADX, pady=(0, 8))
         _attach_autoexpand(self.section8_text, 8, 30)
 
-        cached = induccion_operativa.get_form_cache().get("section_8", {})
+        cached = _get_runtime_section_cache(self, induccion_operativa, "section_8", {})
         if cached.get("observaciones_recomendaciones"):
             self.section8_text.insert("1.0", cached.get("observaciones_recomendaciones", ""))
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
-        self._pending_autosave = lambda: _autosave_section(induccion_operativa, "section_8", lambda: {"observaciones_recomendaciones": self.section8_text.get("1.0", tk.END).strip()})
+        self._pending_autosave = lambda: _autosave_section(induccion_operativa, "section_8", lambda: {"observaciones_recomendaciones": self.section8_text.get("1.0", tk.END).strip()}, window=self)
         ttk.Button(actions, text="Regresar", command=self._show_section_7).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_8).pack(side="right")
 
@@ -19496,7 +20469,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
             row, _, _ = self.section9_rows.pop()
             row.destroy()
 
-        cached_rows = induccion_operativa.get_form_cache().get("section_9", [])
+        cached_rows = _get_runtime_section_cache(self, induccion_operativa, "section_9", [])
         if cached_rows:
             for item in cached_rows:
                 _add_row(item.get("nombre", ""), item.get("cargo", ""))
@@ -19510,6 +20483,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
             induccion_operativa,
             "section_9",
             lambda: _collect_asistente_rows(self.section9_rows),
+            window=self,
         )
         ttk.Button(actions, text="Regresar", command=self._show_section_8).pack(side="left")
         ttk.Button(actions, text="📞 Solicitar Intérprete LSC", command=self._open_lsc_window).pack(side="left", padx=(8, 0))
@@ -19518,7 +20492,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         ttk.Button(actions, text="Finalizar", command=self._confirm_section_9).pack(side="right")
 
     def _open_lsc_window(self):
-        cache = induccion_operativa.get_form_cache()
+        cache = _get_runtime_form_cache(self, induccion_operativa)
         section_1 = cache.get("section_1", {})
         empresa = section_1 if section_1.get("nombre_empresa") else (
             self.company_data if isinstance(getattr(self, "company_data", None), dict) else None
@@ -19679,13 +20653,13 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
         loading.set_status("Preparando acta...")
         loading.set_progress(35)
 
-        cache_snapshot = induccion_operativa.get_form_cache()
+        cache_snapshot = _clone_window_draft_cache(self, induccion_operativa)
         section_1 = cache_snapshot.get("section_1", {})
         company_name = section_1.get("nombre_empresa")
-        def _worker():
+        def _worker(cache_snapshot=None):
             output_path = _raise_finalize_stage(
                 "preparando el acta",
-                lambda: induccion_operativa.export_to_excel(clear_cache=False),
+                lambda: induccion_operativa.export_to_excel(clear_cache=False, cache=cache_snapshot),
             )
             return output_path
 
@@ -19696,7 +20670,7 @@ class InduccionOperativaWindow(tk.Toplevel, FormMousewheelMixin):
             company_name=company_name,
             form_id="induccion_operativa",
             worker_fn=_worker,
-            post_delivery_fn=lambda: _clear_form_cache_safe(induccion_operativa),
+            post_delivery_fn=lambda: _clear_runtime_form_session(self, induccion_operativa),
         )
 
     def _close_to_hub(self):
@@ -19775,8 +20749,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
             self._show_section_1,
         ):
             return True
-        if sensibilizacion.cache_file_exists():
-            _clear_local_resume_state(sensibilizacion)
+        _clear_local_resume_state(sensibilizacion)
         return False
 
     def _build_search(self, parent):
@@ -19880,7 +20853,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
             self._set_readonly_value(key, company.get(key))
 
     def _prefill_section_1(self):
-        cache = sensibilizacion.get_form_cache().get("section_1", {})
+        cache = _get_runtime_section_cache(self, sensibilizacion, "section_1", {})
         if not cache:
             return
         self.company_data = cache
@@ -19968,12 +20941,18 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         self.section3_text = tk.Text(section_frame, width=120, height=8, wrap="word")
         self.section3_text.pack(fill="x", padx=FORM_PADX, pady=(0, 8))
         _attach_autoexpand(self.section3_text, 8, 30)
-        cache = sensibilizacion.get_form_cache().get("section_3", {})
+        cache = _get_runtime_section_cache(self, sensibilizacion, "section_3", {})
         if cache.get("observaciones"):
             self.section3_text.insert("1.0", cache.get("observaciones", ""))
 
         actions = tk.Frame(section_frame, bg=COLOR_LIGHT_BG)
         _pack_actions(actions)
+        self._pending_autosave = lambda: _autosave_section(
+            sensibilizacion,
+            "section_3",
+            lambda: {"observaciones": self.section3_text.get("1.0", tk.END).strip()},
+            window=self,
+        )
         ttk.Button(actions, text="Regresar", command=self._show_section_2).pack(side="left")
         ttk.Button(actions, text="Continuar", command=self._confirm_section_3).pack(side="right")
 
@@ -20040,7 +21019,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
             row, _, _ = self.section5_rows.pop()
             row.destroy()
 
-        cached_rows = sensibilizacion.get_form_cache().get("section_5", [])
+        cached_rows = _get_runtime_section_cache(self, sensibilizacion, "section_5", [])
         if cached_rows:
             for item in cached_rows:
                 _add_row(item.get("nombre", ""), item.get("cargo", ""))
@@ -20054,6 +21033,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
             sensibilizacion,
             "section_5",
             lambda: _collect_asistente_rows(self.section5_rows),
+            window=self,
         )
         ttk.Button(actions, text="Regresar", command=self._show_section_4).pack(side="left")
         ttk.Button(actions, text="📞 Solicitar Intérprete LSC", command=self._open_lsc_window).pack(side="left", padx=(8, 0))
@@ -20062,7 +21042,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         ttk.Button(actions, text="Finalizar", command=self._confirm_section_5).pack(side="right")
 
     def _open_lsc_window(self):
-        cache = sensibilizacion.get_form_cache()
+        cache = _get_runtime_form_cache(self, sensibilizacion)
         section_1 = cache.get("section_1", {})
         empresa = section_1 if section_1.get("nombre_empresa") else (
             self.company_data if isinstance(getattr(self, "company_data", None), dict) else None
@@ -20144,13 +21124,13 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
         loading.set_status("Preparando acta...")
         loading.set_progress(35)
 
-        cache_snapshot = sensibilizacion.get_form_cache()
+        cache_snapshot = _clone_window_draft_cache(self, sensibilizacion)
         section_1 = cache_snapshot.get("section_1", {})
         company_name = section_1.get("nombre_empresa")
-        def _worker():
+        def _worker(cache_snapshot=None):
             output_path = _raise_finalize_stage(
                 "preparando el acta",
-                lambda: sensibilizacion.export_to_excel(clear_cache=False),
+                lambda: sensibilizacion.export_to_excel(clear_cache=False, cache=cache_snapshot),
             )
             return output_path
 
@@ -20161,7 +21141,7 @@ class SensibilizacionWindow(tk.Toplevel, FormMousewheelMixin):
             company_name=company_name,
             form_id="sensibilizacion",
             worker_fn=_worker,
-            post_delivery_fn=lambda: _clear_form_cache_safe(sensibilizacion),
+            post_delivery_fn=lambda: _clear_runtime_form_session(self, sensibilizacion),
         )
 
     def _close_to_hub(self):

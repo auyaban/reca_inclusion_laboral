@@ -552,23 +552,22 @@ def validate_before_finalize(cache=None):
     return issues
 
 
-def export_to_excel(progress_callback=None):
-    if not FORM_CACHE.get("section_1") and cache_file_exists():
-        load_cache_from_file()
-    raise_validation_error(validate_before_finalize())
+def export_to_excel(progress_callback=None, cache=None):
+    cache_data = FORM_CACHE if cache is None else (cache or {})
+    raise_validation_error(validate_before_finalize(cache_data))
 
     from google_sheets_client import get_master_template_id
     from drive_upload import publish_evaluacion_accesibilidad_sheet
 
     _log_excel("START export_to_sheets")
 
-    export_payload = build_google_sheet_export_payload()
+    export_payload = build_google_sheet_export_payload(cache_data)
     writes = export_payload.get("writes", [])
     clear_ranges = export_payload.get("clear_ranges", [])
     format_ranges = export_payload.get("format_ranges", [])
     row_insertions = export_payload.get("row_insertions", [])
 
-    empresa_nombre = (FORM_CACHE.get("section_1") or {}).get("nombre_empresa") or "Empresa"
+    empresa_nombre = (cache_data.get("section_1") or {}).get("nombre_empresa") or "Empresa"
     base_name = _sanitize_filename(empresa_nombre)
 
     result = publish_evaluacion_accesibilidad_sheet(
@@ -583,8 +582,9 @@ def export_to_excel(progress_callback=None):
     )
 
     _log_excel(f"SUCCESS export_to_sheets link={result.get('webViewLink', '')}")
-    clear_cache_file()
-    clear_form_cache()
+    if cache is None:
+        clear_cache_file()
+        clear_form_cache()
 
     return {
         "output_path": result.get("webViewLink", ""),
@@ -1812,7 +1812,6 @@ def confirm_section_1(company_data, user_inputs):
     SECTION_1_CACHE.update(payload)
     set_section_cache("section_1", payload)
     FORM_CACHE["_last_section"] = "section_1"
-    save_cache_to_file()
     return payload
 
 
@@ -1821,7 +1820,6 @@ def confirm_section_2_1(payload):
         raise ValueError("section_2_1 requerida")
     set_section_cache("section_2_1", payload)
     FORM_CACHE["_last_section"] = "section_2_1"
-    save_cache_to_file()
     return payload
 
 
@@ -1830,7 +1828,6 @@ def confirm_section_2_2(payload):
         raise ValueError("section_2_2 requerida")
     set_section_cache("section_2_2", payload)
     FORM_CACHE["_last_section"] = "section_2_2"
-    save_cache_to_file()
     return payload
 
 
@@ -1839,7 +1836,6 @@ def confirm_section_2_3(payload):
         raise ValueError("section_2_3 requerida")
     set_section_cache("section_2_3", payload)
     FORM_CACHE["_last_section"] = "section_2_3"
-    save_cache_to_file()
     return payload
 
 
@@ -1848,7 +1844,6 @@ def confirm_section_2_4(payload):
         raise ValueError("section_2_4 requerida")
     set_section_cache("section_2_4", payload)
     FORM_CACHE["_last_section"] = "section_2_4"
-    save_cache_to_file()
     return payload
 
 
@@ -1857,7 +1852,6 @@ def confirm_section_2_5(payload):
         raise ValueError("section_2_5 requerida")
     set_section_cache("section_2_5", payload)
     FORM_CACHE["_last_section"] = "section_2_5"
-    save_cache_to_file()
     return payload
 
 
@@ -1866,7 +1860,6 @@ def confirm_section_2_6(payload):
         raise ValueError("section_2_6 requerida")
     set_section_cache("section_2_6", payload)
     FORM_CACHE["_last_section"] = "section_2_6"
-    save_cache_to_file()
     return payload
 
 
@@ -1875,7 +1868,6 @@ def confirm_section_3(payload):
         raise ValueError("section_3 requerida")
     set_section_cache("section_3", payload)
     FORM_CACHE["_last_section"] = "section_3"
-    save_cache_to_file()
     return payload
 
 
@@ -1884,7 +1876,6 @@ def confirm_section_4(payload):
         raise ValueError("section_4 requerida")
     set_section_cache("section_4", payload)
     FORM_CACHE["_last_section"] = "section_4"
-    save_cache_to_file()
     return payload
 
 
@@ -1902,7 +1893,6 @@ def confirm_section_5(payload):
             payload[f"{field_id}_ajustes"] = "No aplica"
     set_section_cache("section_5", payload)
     FORM_CACHE["_last_section"] = "section_5"
-    save_cache_to_file()
     return payload
 
 
@@ -1911,7 +1901,6 @@ def confirm_section_6(payload):
         raise ValueError("section_6 requerida")
     set_section_cache("section_6", payload)
     FORM_CACHE["_last_section"] = "section_6"
-    save_cache_to_file()
     return payload
 
 
@@ -1920,7 +1909,6 @@ def confirm_section_7(payload):
         raise ValueError("section_7 requerida")
     set_section_cache("section_7", payload)
     FORM_CACHE["_last_section"] = "section_7"
-    save_cache_to_file()
     return payload
 
 
@@ -1929,7 +1917,6 @@ def confirm_section_8(payload):
         raise ValueError("section_8 requerida")
     set_section_cache("section_8", payload)
     FORM_CACHE["_last_section"] = "section_8"
-    save_cache_to_file()
     return payload
 
 

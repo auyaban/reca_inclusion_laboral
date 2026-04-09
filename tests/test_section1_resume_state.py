@@ -32,9 +32,11 @@ class Section1ResumeStateTests(_TkTestCase):
             self.addCleanup(module.clear_form_cache)
 
     def test_seleccion_section_1_restores_cached_company_and_enables_continue(self) -> None:
-        app.seleccion_incluyente.set_section_cache(
-            "section_1",
-            {
+        with patch.object(app.seleccion_incluyente, "get_usuarios_reca_cedulas", return_value=[]):
+            window = app.SeleccionIncluyenteWindow(self.root)
+        self.addCleanup(destroy_widget, window)
+        window._draft_cache = {
+            "section_1": {
                 "fecha_visita": "2026-04-06",
                 "modalidad": "Virtual",
                 "nit_empresa": "900123456",
@@ -49,12 +51,9 @@ class Section1ResumeStateTests(_TkTestCase):
                 "caja_compensacion": "Compensar",
                 "asesor": "Carlos",
                 "profesional_asignado": "Laura",
-            },
-        )
-        with patch.object(app.seleccion_incluyente, "cache_file_exists", return_value=False):
-            with patch.object(app.seleccion_incluyente, "get_usuarios_reca_cedulas", return_value=[]):
-                window = app.SeleccionIncluyenteWindow(self.root)
-        self.addCleanup(destroy_widget, window)
+            }
+        }
+        app._restore_section1_cached_state(window, app.seleccion_incluyente)
         window.update_idletasks()
 
         self.assertEqual(window.fields["nit_empresa"].get(), "900123456")
@@ -63,9 +62,10 @@ class Section1ResumeStateTests(_TkTestCase):
         self.assertEqual(str(window.continue_btn.cget("state")), "normal")
 
     def test_condiciones_section_1_restores_cached_company_without_custom_prefill(self) -> None:
-        app.condiciones_vacante.set_section_cache(
-            "section_1",
-            {
+        window = app.CondicionesVacanteWindow(self.root)
+        self.addCleanup(destroy_widget, window)
+        window._draft_cache = {
+            "section_1": {
                 "fecha_visita": "2026-04-06",
                 "modalidad": "Presencial",
                 "nit_empresa": "800999111",
@@ -80,11 +80,9 @@ class Section1ResumeStateTests(_TkTestCase):
                 "caja_compensacion": "Compensar",
                 "asesor": "Marta",
                 "profesional_asignado": "Diego",
-            },
-        )
-        with patch.object(app.condiciones_vacante, "cache_file_exists", return_value=False):
-            window = app.CondicionesVacanteWindow(self.root)
-        self.addCleanup(destroy_widget, window)
+            }
+        }
+        app._restore_section1_cached_state(window, app.condiciones_vacante)
         window.update_idletasks()
 
         self.assertEqual(window.fields["nit_empresa"].get(), "800999111")

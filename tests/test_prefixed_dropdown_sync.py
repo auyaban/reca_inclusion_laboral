@@ -59,6 +59,34 @@ class PrefixedDropdownSyncTests(_TkTestCase):
         getattr(aseo_nivel, "_nivel_apoyo_observacion_sync")()
         self.assertTrue(aseo_obs.get().startswith("3."))
 
+    def test_seleccion_section_4_1_keeps_controles_frecuencia_independent(self) -> None:
+        with patch.object(app.seleccion_incluyente, "cache_file_exists", return_value=False):
+            with patch.object(app.seleccion_incluyente, "get_usuarios_reca_cedulas", return_value=[]):
+                window = app.SeleccionIncluyenteWindow(self.root)
+        self.addCleanup(destroy_widget, window)
+
+        window._show_section_2()
+        fields = window.oferente_blocks[0]
+
+        controles_nivel = fields["controles_nivel_apoyo"]
+        controles_asistencia = fields["controles_asistencia"]
+        controles_frecuencia = fields["controles_frecuencia"]
+
+        controles_nivel.set("1. Nivel de apoyo Bajo.")
+        getattr(controles_nivel, "_nivel_apoyo_observacion_sync")()
+        self.assertTrue(controles_asistencia.get().startswith("1."))
+        self.assertEqual(controles_frecuencia.get(), "")
+        self.assertIsNone(getattr(controles_frecuencia, "_prefixed_dropdown_sync", None))
+
+        frecuencia_options = tuple(controles_frecuencia.cget("values"))
+        frecuencia_value = next((value for value in frecuencia_options if str(value).strip()), "")
+        controles_frecuencia.set(frecuencia_value)
+
+        controles_asistencia.set("2. Requiere apoyo para asistir a controles médicos con especialista.")
+        getattr(controles_asistencia, "_prefixed_dropdown_sync")()
+        self.assertTrue(controles_nivel.get().startswith("2."))
+        self.assertEqual(controles_frecuencia.get(), frecuencia_value)
+
     def test_seleccion_section_4_2a_keeps_third_dropdown_independent_in_first_two_questions(self) -> None:
         with patch.object(app.seleccion_incluyente, "cache_file_exists", return_value=False):
             with patch.object(app.seleccion_incluyente, "get_usuarios_reca_cedulas", return_value=[]):

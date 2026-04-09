@@ -58,12 +58,17 @@ def _make_window(**overrides):
 
 class DraftAutosaveTests(unittest.TestCase):
     def _draft_patches(self, store=None):
-        store_data = {"users": {"tester@example.com": []}} if store is None else store
+        store_data = {"version": app.FORM_DRAFTS_INDEX_VERSION, "users": {"tester@example.com": []}} if store is None else store
         saved_payloads = []
         patchers = [
             patch.object(app, "_resolve_form_meta", return_value={"supports_drafts": True}),
             patch.dict(app.FORM_MODULE_MAP, {"evaluacion_accesibilidad": _ModuleStub()}),
             patch.object(app, "_load_drafts_store", return_value=store_data),
+            patch.object(
+                app,
+                "_save_process_draft_document",
+                side_effect=lambda doc, draft_path="": draft_path or f"C:\\drafts\\{doc['draft_id']}.json",
+            ),
             patch.object(
                 app,
                 "_save_drafts_store",
@@ -173,8 +178,10 @@ class DraftAutosaveTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(len(saved_payloads), 1)
         saved_entry = saved_payloads[0]["users"]["tester@example.com"][0]
-        self.assertEqual(saved_entry["ui_section"], "section_1")
         self.assertEqual(saved_entry["last_section"], "section_1")
+        self.assertEqual(saved_entry["draft_format_version"], 3)
+        self.assertEqual(saved_entry["draft_type"], app.FORM_PROCESS_DRAFT_TYPE)
+        self.assertTrue(saved_entry["draft_path"].endswith(".json"))
         self.assertTrue(window._draft_id)
         self.assertEqual(hub.badge_refreshes, 1)
 
@@ -202,9 +209,35 @@ class DraftAutosaveTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(len(saved_payloads), 1)
         saved_entry = saved_payloads[0]["users"]["tester@example.com"][0]
-        self.assertEqual(saved_entry["ui_section"], "section_2")
         self.assertEqual(saved_entry["last_section"], "section_2")
+        self.assertEqual(saved_entry["draft_format_version"], 3)
+        self.assertEqual(saved_entry["draft_type"], app.FORM_PROCESS_DRAFT_TYPE)
         self.assertTrue(window._draft_last_fingerprint)
+
+    def test_persist_form_draft_flushes_pending_section_autosave_before_capture(self):
+        hub = _HubStub(
+            cache_snapshot={"section_2": {"observaciones": "Texto de prueba"}},
+            ui_snapshot=[{"path": "section_2.observaciones", "value": "Texto de prueba"}],
+            ui_section="section_2",
+        )
+        window = _make_window()
+        patchers, _saved_payloads = self._draft_patches()
+
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        with patch.object(app, "_run_pending_section_autosave", return_value=None) as flush_mock:
+            result = app.HubWindow._persist_form_draft(
+                hub,
+                window,
+                allow_empty=True,
+                silent=True,
+                source="manual",
+            )
+
+        self.assertTrue(result)
+        flush_mock.assert_called_once_with(window)
 
 
 if __name__ == "__main__":

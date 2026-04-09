@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import app
@@ -138,11 +139,46 @@ class ModuleFinalizeValidationTests(unittest.TestCase):
         self.assertEqual(issues, [])
 
     def test_condiciones_vacante_export_stops_before_publish_when_validation_fails(self) -> None:
-        with patch.object(vacante, "cache_file_exists", return_value=False):
-            with patch("drive_upload.publish_sheet_from_template") as publish_sheet:
-                with self.assertRaises(RuntimeError):
-                    vacante.export_to_excel()
+        with patch("drive_upload.publish_sheet_from_template") as publish_sheet:
+            with self.assertRaises(RuntimeError):
+                vacante.export_to_excel()
         publish_sheet.assert_not_called()
+
+    def test_condiciones_vacante_export_prefers_explicit_cache_over_form_cache(self) -> None:
+        vacante.FORM_CACHE["section_1"] = {"nombre_empresa": "Empresa Incorrecta"}
+        explicit_cache = {
+            "section_1": {
+                "nombre_empresa": "Empresa Correcta",
+                "nit_empresa": "900123456",
+                "fecha_visita": "2026-04-09",
+            },
+            "section_2": {"nombre_vacante": "Analista"},
+        }
+        captured_payloads = {}
+
+        def _fake_build_section_writes(section_id, payload):
+            captured_payloads[section_id] = payload
+            return []
+
+        with patch.object(vacante, "validate_before_finalize", return_value=[]):
+            with patch.object(vacante, "_build_section_writes", side_effect=_fake_build_section_writes):
+                with patch.object(vacante, "_build_row_insertions", return_value=[]):
+                    with patch("google_sheets_client.get_master_template_id", return_value="template-123"):
+                        with patch(
+                            "drive_upload.publish_sheet_from_template",
+                            return_value={"webViewLink": "https://drive.test/file", "file_id": "file-123"},
+                        ) as publish_sheet:
+                            result = vacante.export_to_excel(cache=explicit_cache)
+
+        self.assertEqual(captured_payloads["section_1"]["nombre_empresa"], "Empresa Correcta")
+        self.assertEqual(captured_payloads["section_2"]["nombre_vacante"], "Analista")
+        self.assertEqual(result["output_path"], "https://drive.test/file")
+        self.assertEqual(result["drive_file_id"], "file-123")
+        self.assertEqual(result["acta_metadata"]["nombre_empresa"], "Empresa Correcta")
+        self.assertEqual(
+            publish_sheet.call_args.kwargs["folder_name"],
+            vacante._sanitize_filename("Empresa Correcta"),
+        )
 
 
 class FinalizePreflightGuardTests(unittest.TestCase):
@@ -193,6 +229,87 @@ class FinalizePreflightGuardTests(unittest.TestCase):
         self.assertFalse(worker_fn_called["value"])
         original_start.assert_not_called()
         self.assertIn("Seccion 5: Postura de trabajo", showerror.call_args.args[1])
+
+
+class FinalizeDraftSessionTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        vacante.clear_form_cache()
+
+    def test_original_finalization_uses_window_draft_snapshot_without_mutating_session(self) -> None:
+        vacante.FORM_CACHE["section_1"] = {"nombre_empresa": "Empresa Incorrecta"}
+        window = SimpleNamespace(
+            _form_id="condiciones_vacante",
+            _draft_cache={"section_1": {"nombre_empresa": "Empresa Correcta", "fecha_visita": "2026-04-09"}},
+            _finalize_in_progress=False,
+            destroy=lambda: None,
+        )
+        loading = SimpleNamespace()
+        worker_inputs = []
+        completion_calls = {}
+
+        def _worker(cache_snapshot=None):
+            worker_inputs.append(cache_snapshot)
+            cache_snapshot["section_1"]["nombre_empresa"] = "Mutado en worker"
+            return {
+                "output_path": "https://drive.test/file",
+                "already_in_drive": True,
+                "drive_file_id": "file-123",
+                "tipo_acta": "sin_pdf",
+                "fecha_servicio": "2026-04-09",
+                "acta_metadata": {},
+            }
+
+        hub = SimpleNamespace(
+            current_session_id="session-123",
+            finalize_form_delivery=lambda *args, **kwargs: {"status": "synced", "remote_url": "https://drive.test/file"},
+        )
+
+        def _fake_completion_payload(form_id, form_name, cache_snapshot, **kwargs):
+            completion_calls["form_id"] = form_id
+            completion_calls["cache_snapshot"] = cache_snapshot
+            completion_calls["extra_context"] = kwargs.get("extra_context") or {}
+            return {"ok": True}
+
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None):
+                self._target = target
+
+            def start(self):
+                if self._target is not None:
+                    self._target()
+
+        review_result = SimpleNamespace(status="skipped", reviewed_count=0, elapsed_ms=0, reason="test")
+
+        with patch.object(app, "_resolve_hub_window", return_value=hub):
+            with patch.object(app.text_review, "review_export_cache", return_value=review_result):
+                with patch.object(app, "_safe_widget_after", side_effect=lambda _window, fn: fn()):
+                    with patch.object(app, "_close_loading_async", return_value=None):
+                        with patch.object(app, "_update_loading_async", return_value=None):
+                            with patch.object(app, "_finalize_export_flow", return_value=None):
+                                with patch.object(app, "_return_to_hub", return_value=None):
+                                    with patch.object(app.completion_payloads, "build_completion_payload", side_effect=_fake_completion_payload):
+                                        with patch.object(app.threading, "Thread", _ImmediateThread):
+                                            result = app._original_start_background_finalization(
+                                                window,
+                                                loading,
+                                                form_name="Revision Condicion",
+                                                company_name="Empresa Correcta",
+                                                form_id="condiciones_vacante",
+                                                worker_fn=_worker,
+                                                show_completion_ui=False,
+                                                return_to_hub_on_success=False,
+                                                close_window_on_success=False,
+                                            )
+
+        self.assertTrue(result)
+        self.assertEqual(worker_inputs[0]["section_1"]["nombre_empresa"], "Mutado en worker")
+        self.assertEqual(window._draft_cache["section_1"]["nombre_empresa"], "Empresa Correcta")
+        self.assertEqual(completion_calls["form_id"], "condiciones_vacante")
+        self.assertEqual(
+            completion_calls["cache_snapshot"]["section_1"]["nombre_empresa"],
+            "Empresa Correcta",
+        )
+        self.assertEqual(completion_calls["extra_context"].get("payload_source"), "draft_session")
 
 
 if __name__ == "__main__":

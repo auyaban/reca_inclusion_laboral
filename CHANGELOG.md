@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.1.4 - 2026-04-09
+
+Esta version reorganiza el guardado local de los formularios principales para que cada proceso tenga su propio borrador, endurece la restauracion de `Seleccion Incluyente` y `Contratacion Incluyente`, y desacopla la finalizacion del `FORM_CACHE` global del modulo.
+
+### Cambios principales
+
+- Los formularios del runtime central ahora crean borradores locales por proceso con `draft_id` propio y un JSON canonico independiente, en lugar de reutilizar un unico borrador por `formulario + empresa`.
+- La sesion activa del formulario usa `window._draft_cache` como fuente de verdad para autosave, restore, guardado manual y finalizacion; los archivos legacy `<form>.json` dejan de participar en la reapertura normal.
+- `Seleccion Incluyente` y `Contratacion Incluyente` persisten y restauran `section_2` desde payload estructurado, migran borradores legados, recalculan la edad al reabrir y conservan mejor los bloques dinamicos de oferentes/vinculados.
+- En `Seleccion Incluyente`, la frecuencia de controles medicos en la seccion 4.1 vuelve a quedar libre y deja de sincronizarse con los otros dropdowns.
+- En `Contratacion Incluyente`, el cuadro compartido de `desarrollo de la actividad` vuelve a autoexpandirse como en `Seleccion Incluyente`, incluso cuando el texto se carga programaticamente desde un borrador.
+- La exportacion y sincronizacion final de los formularios principales ahora trabajan contra snapshots explicitos del draft activo, evitando contaminar otros procesos abiertos o depender del cache global del modulo.
+- Se agregan pruebas de regresion para borradores por proceso, migracion de drafts viejos, restore de `section_2`, `sync_usuarios_reca`, finalizacion desacoplada y autoexpand de textos largos.
+
+### Como afecta a los usuarios
+
+- Un profesional ya puede conservar varios procesos del mismo formulario para la misma empresa sin que uno pise al otro.
+- Retomar un borrador desde `Borradores` vuelve a abrir el proceso correcto con mucha menos perdida de informacion en secciones dinamicas.
+- Abrir un formulario nuevo desde el HUB deja de traer residuos de caches viejos guardados por formulario.
+- Finalizar un proceso usa el estado real de esa sesion y reduce el riesgo de exportar datos mezclados de otro borrador.
+- En contratacion, escribir descripciones largas vuelve a sentirse mas natural porque el cuadro crece con el contenido.
+
 ## 2.1.3 - 2026-04-08
 
 Esta version endurece el manejo de releases y colas de Supabase, mejora los mensajes de login y corrige la sincronizacion de dropdowns en `Contratacion Incluyente`.

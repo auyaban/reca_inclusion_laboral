@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from version_info import appdata_logs_dir
@@ -18,11 +18,16 @@ DEFAULT_REPO_OWNER = "auyaban"
 DEFAULT_REPO_NAME = "reca_inclusion_laboral"
 DEFAULT_INSTALLER_ASSET = "RECA_INCLUSION_LABORAL_Setup.exe"
 DEFAULT_HASH_ASSET = f"{DEFAULT_INSTALLER_ASSET}.sha256"
+RELEASE_CACHE_FILE_NAME = "latest_release_cache.json"
 _LOG_CURRENT_DAY = None
 
 
 def _update_log_path() -> Path:
     return appdata_logs_dir() / "updater.log"
+
+
+def _release_cache_path() -> Path:
+    return appdata_logs_dir().parent / RELEASE_CACHE_FILE_NAME
 
 
 def _ensure_daily_log(path: Path) -> None:
@@ -47,6 +52,76 @@ def _log_update(message: str) -> None:
             handle.write(f"[{ts}] {message.rstrip()}\n")
     except Exception:
         pass
+
+
+def _build_release_snapshot(
+    version: str | None,
+    assets: dict | None = None,
+    *,
+    source: str = "",
+    checked_at: str | None = None,
+) -> dict | None:
+    normalized_version = str(version or "").strip().lstrip("v")
+    if not normalized_version:
+        return None
+    return {
+        "version": normalized_version,
+        "assets": dict(assets or {}),
+        "source": str(source or "").strip() or None,
+        "checked_at": checked_at
+        or datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def _load_release_cache() -> dict | None:
+    path = _release_cache_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return _build_release_snapshot(
+        payload.get("version") or payload.get("remote_version"),
+        payload.get("assets"),
+        source=payload.get("source") or "cache",
+        checked_at=payload.get("checked_at"),
+    )
+
+
+def _store_release_cache(snapshot: dict | None) -> None:
+    normalized = _build_release_snapshot(
+        (snapshot or {}).get("version"),
+        (snapshot or {}).get("assets"),
+        source=(snapshot or {}).get("source") or "cache",
+        checked_at=(snapshot or {}).get("checked_at"),
+    )
+    if not normalized:
+        return
+    path = _release_cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:
+        _log_update(f"ERROR release cache write: {exc}")
+
+
+def _pick_newer_release_snapshot(current: dict | None, candidate: dict | None) -> dict | None:
+    if not candidate:
+        return current
+    if not current:
+        return candidate
+    current_version = _parse_version(current.get("version"))
+    candidate_version = _parse_version(candidate.get("version"))
+    if candidate_version > current_version:
+        return candidate
+    if candidate_version < current_version:
+        return current
+    current_assets = dict(current.get("assets") or {})
+    candidate_assets = dict(candidate.get("assets") or {})
+    if candidate_assets and not current_assets:
+        return candidate
+    return current
 
 
 def _resolve_env_candidates(env_name: str = ".env") -> list[Path]:
@@ -130,30 +205,6 @@ def _latest_release_via_redirect(owner: str, repo: str, timeout: int = 20) -> st
     return str(match.group(1)).lstrip("v")
 
 
-def _latest_version_via_github_raw(owner: str, repo: str, timeout: int = 20) -> str | None:
-    url = f"https://github.com/{owner}/{repo}/raw/main/VERSION"
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "reca-inclusion-laboral-updater"},
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        content = response.read().decode("utf-8", errors="replace").strip()
-    version = content.lstrip("v").strip()
-    return version if version else None
-
-
-def _latest_version_via_raw(owner: str, repo: str, timeout: int = 20) -> str | None:
-    url = f"https://raw.githubusercontent.com/{owner}/{repo}/main/VERSION"
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "reca-inclusion-laboral-updater"},
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        content = response.read().decode("utf-8", errors="replace").strip()
-    version = content.lstrip("v").strip()
-    return version if version else None
-
-
 def _assets_for_version(version: str) -> dict:
     owner, repo, _token, installer_asset, hash_asset = _repo_config()
     tag = f"v{version}"
@@ -165,8 +216,10 @@ def _assets_for_version(version: str) -> dict:
 
 
 def _get_latest_release() -> tuple[str | None, dict]:
-    owner, repo, token, installer_asset, hash_asset = _repo_config()
+    owner, repo, token, _installer_asset, _hash_asset = _repo_config()
     api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
+    cached_snapshot = _load_release_cache()
+    live_snapshot = None
     try:
         data = _http_get_json(api_url, timeout=20, token=token)
         remote_version = str(data.get("tag_name", "")).lstrip("v")
@@ -178,7 +231,10 @@ def _get_latest_release() -> tuple[str | None, dict]:
                 assets[str(name)] = str(url)
         if remote_version:
             _log_update(f"release/latest API OK: v{remote_version}")
-            return remote_version, assets
+            live_snapshot = _pick_newer_release_snapshot(
+                live_snapshot,
+                _build_release_snapshot(remote_version, assets, source="release/latest api"),
+            )
     except urllib.error.HTTPError as exc:
         _log_update(f"ERROR release/latest HTTP {getattr(exc, 'code', '?')}: {exc}")
     except Exception as exc:
@@ -189,27 +245,34 @@ def _get_latest_release() -> tuple[str | None, dict]:
         version = _latest_release_via_redirect(owner, repo, timeout=20)
         if version:
             _log_update(f"FALLBACK releases/latest redirect OK: v{version}")
-            return version, _assets_for_version(version)
+            live_snapshot = _pick_newer_release_snapshot(
+                live_snapshot,
+                _build_release_snapshot(
+                    version,
+                    _assets_for_version(version),
+                    source="releases/latest redirect",
+                ),
+            )
     except Exception as exc:
         _log_update(f"ERROR fallback release/latest redirect: {exc}")
 
-    # Fallback 2: VERSION desde github.com/raw
-    try:
-        version = _latest_version_via_github_raw(owner, repo, timeout=20)
-        if version:
-            _log_update(f"FALLBACK github.com raw VERSION OK: v{version}")
-            return version, _assets_for_version(version)
-    except Exception as exc:
-        _log_update(f"ERROR fallback github.com raw VERSION: {exc}")
+    selected_snapshot = _pick_newer_release_snapshot(cached_snapshot, live_snapshot)
+    if selected_snapshot and cached_snapshot and live_snapshot:
+        cached_version = str(cached_snapshot.get("version") or "").strip()
+        live_version = str(live_snapshot.get("version") or "").strip()
+        if cached_version and live_version and _parse_version(cached_version) > _parse_version(live_version):
+            _log_update(
+                "IGNORED release downgrade from live lookup: "
+                f"live=v{live_version}, cached=v{cached_version}"
+            )
 
-    # Fallback 3: VERSION desde raw.githubusercontent.com
-    try:
-        version = _latest_version_via_raw(owner, repo, timeout=20)
-        if version:
-            _log_update(f"FALLBACK raw.githubusercontent VERSION OK: v{version}")
-            return version, _assets_for_version(version)
-    except Exception as exc:
-        _log_update(f"ERROR fallback raw VERSION: {exc}")
+    if selected_snapshot and selected_snapshot is cached_snapshot and not live_snapshot:
+        _log_update(f"FALLBACK release cache OK: v{selected_snapshot['version']}")
+
+    if selected_snapshot:
+        if selected_snapshot is not cached_snapshot:
+            _store_release_cache(selected_snapshot)
+        return selected_snapshot["version"], dict(selected_snapshot.get("assets") or {})
 
     return None, {}
 

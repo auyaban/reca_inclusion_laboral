@@ -117,6 +117,39 @@ class SyncUsuariosRecaShapeTests(unittest.TestCase):
         self.assertEqual(captured["rows"][0]["nombre_usuario"], "Ana final")
         self.assertEqual(captured["rows"][0]["telefono_oferente"], "3001112233")
 
+    def test_seleccion_incluyente_upsert_deduplicates_duplicate_cedulas_keeping_last(self) -> None:
+        seleccion.FORM_CACHE["section_2"] = [
+            {
+                "cedula": "1000061994",
+                "nombre_oferente": "Ana inicial",
+                "telefono_oferente": "",
+            },
+            {
+                "cedula": "1000061994",
+                "nombre_oferente": "Ana final",
+                "telefono_oferente": "3001112233",
+            },
+        ]
+
+        captured = {}
+
+        def _fake_upsert(table, rows, env_path=".env", on_conflict=None):
+            captured["table"] = table
+            captured["rows"] = rows
+            captured["on_conflict"] = on_conflict
+            return {"status": "synced"}
+
+        with patch.object(seleccion, "_supabase_upsert_with_queue", side_effect=_fake_upsert):
+            count = seleccion.sync_usuarios_reca()
+
+        self.assertEqual(count, 1)
+        self.assertEqual(captured["table"], "usuarios_reca")
+        self.assertEqual(captured["on_conflict"], "cedula_usuario")
+        self.assertEqual(len(captured["rows"]), 1)
+        self.assertEqual(captured["rows"][0]["cedula_usuario"], "1000061994")
+        self.assertEqual(captured["rows"][0]["nombre_usuario"], "Ana final")
+        self.assertEqual(captured["rows"][0]["telefono_oferente"], "3001112233")
+
 
 if __name__ == "__main__":
     unittest.main()

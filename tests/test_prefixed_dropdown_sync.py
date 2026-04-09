@@ -142,7 +142,7 @@ class PrefixedDropdownSyncTests(_TkTestCase):
         contrato_lee_obs = fields["contrato_lee_observacion"]
         contrato_lee_nivel.set("0. No requiere apoyo.")
         getattr(contrato_lee_nivel, "_nivel_apoyo_observacion_sync")()
-        self.assertEqual(contrato_lee_obs.get(), "No aplica.")
+        self.assertTrue(contrato_lee_obs.get().startswith("0."))
 
     def test_induccion_operativa_section_4_syncs_both_directions(self) -> None:
         with patch.object(app.induccion_operativa, "cache_file_exists", return_value=False):

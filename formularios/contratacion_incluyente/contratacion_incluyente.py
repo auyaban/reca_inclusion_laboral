@@ -174,6 +174,7 @@ OBS_LECTURA_CONTRATO_OPTIONS_GROUP = [
     "2. Se apoya en la lectura del contrato.",
     "3. Cuando requiere un apoyo adicional al del gestor (lector de pantalla, intérprete LSC u otro).",
     "No aplica.",
+    "0. No requiere apoyo.",
 ]
 OBS_LECTURA_CONTRATO_OPTIONS_INDIVIDUAL = [
     "1. Se acompaña en la lectura del contrato.",

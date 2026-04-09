@@ -304,16 +304,16 @@ def _resolve_env_candidates(env_path=".env"):
     if os.path.isabs(env_path):
         return [env_path]
     candidates = []
-    # 1) executable/script directory (installed app priority)
+    # 1) roaming appdata priority for installed app credentials managed by installer
+    appdata_dir = _get_roaming_app_dir(create=False)
+    if appdata_dir:
+        candidates.append(os.path.join(appdata_dir, env_path))
+    # 2) executable/script directory fallback (portable/manual installs)
     try:
         exe_dir = os.path.dirname(os.path.abspath(sys.executable))
         candidates.append(os.path.join(exe_dir, env_path))
     except Exception:
         pass
-    # 2) roaming appdata fallback
-    appdata_dir = _get_roaming_app_dir(create=False)
-    if appdata_dir:
-        candidates.append(os.path.join(appdata_dir, env_path))
     # 3) project root (when running from source)
     candidates.append(os.path.join(_get_project_root(), env_path))
     # 4) current working directory (last resort)
@@ -600,6 +600,13 @@ def _supabase_auth_password_login(email, password, env_path=".env"):
     except urllib.error.HTTPError as exc:
         code = int(getattr(exc, "code", 0) or 0)
         if code in {400, 401}:
+            detail = _extract_public_error_detail(exc).lower()
+            if "email not confirmed" in detail or "email_not_confirmed" in detail:
+                _log_supabase(
+                    f"AUTH password_login email_not_confirmed email={_redact_email(email_value)!r}",
+                    level="ERROR",
+                )
+                raise RuntimeError("Debes confirmar tu correo antes de iniciar sesion.") from exc
             _log_supabase(
                 f"AUTH password_login invalid_credentials email={_redact_email(email_value)!r}",
                 level="ERROR",
@@ -813,6 +820,7 @@ _WRITE_QUEUE_LOCK = threading.Lock()
 _WRITE_QUEUE = []
 _WRITE_WORKER_STARTED = False
 _FAILED_WRITE_QUEUE = []
+_OBSOLETE_SUPABASE_QUEUE_TABLES = frozenset({"utilizacion_il"})
 _SENSITIVE_CACHE_KEYS = {
     "usuario_pass",
     "usuario_pass_hash",
@@ -983,6 +991,107 @@ def _build_failed_queue_summary(job, exc):
     else:
         summary["error_code"] = None
     return summary
+
+
+def _normalize_on_conflict_fields(on_conflict):
+    return [field.strip() for field in str(on_conflict or "").split(",") if field.strip()]
+
+
+def _build_upsert_conflict_key(row, on_conflict=None):
+    if not isinstance(row, dict):
+        return None
+    conflict_fields = _normalize_on_conflict_fields(on_conflict)
+    if not conflict_fields:
+        return None
+    key_parts = []
+    for field in conflict_fields:
+        value = row.get(field)
+        if value in (None, ""):
+            return None
+        if isinstance(value, (dict, list, tuple)):
+            value = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        key_parts.append(value)
+    return tuple(key_parts)
+
+
+def _dedupe_upsert_rows(rows, on_conflict=None):
+    if not isinstance(rows, list):
+        return [], 0
+    conflict_fields = _normalize_on_conflict_fields(on_conflict)
+    if not conflict_fields:
+        return list(rows), 0
+
+    seen = set()
+    deduped_reversed = []
+    removed = 0
+    for row in reversed(rows):
+        key = _build_upsert_conflict_key(row, on_conflict=on_conflict)
+        if key is None:
+            deduped_reversed.append(row)
+            continue
+        if key in seen:
+            removed += 1
+            continue
+        seen.add(key)
+        deduped_reversed.append(row)
+    return list(reversed(deduped_reversed)), removed
+
+
+def _is_obsolete_supabase_queue_table(table):
+    return str(table or "").strip().lower() in _OBSOLETE_SUPABASE_QUEUE_TABLES
+
+
+def _sanitize_write_queue_item(item):
+    if not isinstance(item, dict) or not item.get("id"):
+        return None, True
+    if _is_obsolete_supabase_queue_table(item.get("table")):
+        return None, True
+    sanitized = dict(item)
+    changed = False
+    if sanitized.get("op") == "upsert":
+        deduped_rows, removed = _dedupe_upsert_rows(
+            sanitized.get("rows") or [],
+            on_conflict=sanitized.get("on_conflict"),
+        )
+        if removed:
+            sanitized["rows"] = deduped_rows
+            sanitized["next_try_at"] = time.time()
+            changed = True
+        elif sanitized.get("rows") != deduped_rows:
+            sanitized["rows"] = deduped_rows
+            changed = True
+        if not sanitized.get("rows"):
+            return None, True
+    return sanitized, changed
+
+
+def _sanitize_failed_write_item(item):
+    if not isinstance(item, dict):
+        return None, True
+    if _is_obsolete_supabase_queue_table(item.get("table")):
+        return None, True
+    return item, False
+
+
+def _load_sanitized_queue_items(path, item_sanitizer):
+    if not os.path.exists(path):
+        return [], False
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        return [], False
+    if not isinstance(data, list):
+        return [], False
+
+    changed = False
+    rows = []
+    for item in data:
+        sanitized, item_changed = item_sanitizer(item)
+        changed = changed or bool(item_changed)
+        if sanitized is not None:
+            rows.append(sanitized)
+    return rows, changed
 
 
 def _get_supabase_queue_path():
@@ -1290,46 +1399,41 @@ def _persist_failed_write_queue_locked():
 
 def _load_write_queue_once():
     path = _get_supabase_queue_path()
-    if not os.path.exists(path):
+    rows, changed = _load_sanitized_queue_items(path, _sanitize_write_queue_item)
+    if not rows and not os.path.exists(path):
         return
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        if isinstance(data, list):
-            with _WRITE_QUEUE_LOCK:
-                for item in data:
-                    if isinstance(item, dict) and item.get("id"):
-                        _WRITE_QUEUE.append(item)
+        with _WRITE_QUEUE_LOCK:
+            for item in rows:
+                _WRITE_QUEUE.append(item)
+            if changed:
+                _persist_write_queue_locked()
     except Exception:
         return
 
 
 def _load_failed_write_queue_once():
     path = _get_supabase_failed_queue_path()
-    if not os.path.exists(path):
+    rows, changed = _load_sanitized_queue_items(path, _sanitize_failed_write_item)
+    if not rows and not os.path.exists(path):
         return
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        if isinstance(data, list):
-            with _WRITE_QUEUE_LOCK:
-                _FAILED_WRITE_QUEUE[:] = [item for item in data if isinstance(item, dict)]
+        with _WRITE_QUEUE_LOCK:
+            _FAILED_WRITE_QUEUE[:] = rows
+            if changed:
+                _persist_failed_write_queue_locked()
     except Exception:
         return
 
 
 def _get_supabase_write_queue_snapshot(limit=200):
     path = _get_supabase_queue_path()
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    except Exception:
-        return []
-    if not isinstance(data, list):
-        return []
-    rows = [item for item in data if isinstance(item, dict)]
+    rows, changed = _load_sanitized_queue_items(path, _sanitize_write_queue_item)
+    if changed:
+        try:
+            _atomic_write_json(path, rows)
+        except Exception:
+            pass
     rows.sort(key=lambda r: float(r.get("next_try_at") or 0))
     if limit and limit > 0:
         rows = rows[: int(limit)]
@@ -1338,16 +1442,12 @@ def _get_supabase_write_queue_snapshot(limit=200):
 
 def _get_supabase_failed_writes_snapshot(limit=200):
     path = _get_supabase_failed_queue_path()
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    except Exception:
-        return []
-    if not isinstance(data, list):
-        return []
-    rows = [item for item in data if isinstance(item, dict)]
+    rows, changed = _load_sanitized_queue_items(path, _sanitize_failed_write_item)
+    if changed:
+        try:
+            _atomic_write_json(path, rows)
+        except Exception:
+            pass
     rows.sort(key=lambda r: float(r.get("failed_at") or 0), reverse=True)
     if limit and limit > 0:
         rows = rows[: int(limit)]
@@ -1436,7 +1536,8 @@ def _supabase_write_worker_loop():
                 raise RuntimeError(f"Operacion de cola no soportada: {job.get('op')}")
         except Exception as exc:
             with _WRITE_QUEUE_LOCK:
-                if not _is_transient_supabase_exception(exc):
+                retryable = _is_transient_supabase_exception(exc) or _is_queue_auth_retryable_exception(exc, job)
+                if not retryable:
                     _log_supabase(
                         f"QUEUE failed_non_retryable op={job.get('op')} table={job.get('table')} "
                         f"error={_summarize_failed_queue_error(exc)}",
@@ -1547,6 +1648,12 @@ def _is_transient_supabase_exception(exc):
     if isinstance(root, RuntimeError) and getattr(root, "__cause__", None) is not None:
         root = root.__cause__
 
+    detail = str(_extract_public_error_detail(exc) or exc).lower()
+    if "on conflict do update command cannot affect row a second time" in detail:
+        return False
+    if "could not find the table" in detail and "schema cache" in detail:
+        return False
+
     if isinstance(root, urllib.error.HTTPError):
         code = int(getattr(root, "code", 0) or 0)
         # 5xx + 429 are typically transient.
@@ -1558,6 +1665,14 @@ def _is_transient_supabase_exception(exc):
     if isinstance(root, OSError):
         return True
     return False
+
+
+def _is_queue_auth_retryable_exception(exc, job):
+    detail = str(_extract_public_error_detail(exc) or exc).lower()
+    if not any(token in detail for token in ("permission denied", "http 401", "http 403", "unauthorized")):
+        return False
+    env_path = str((job or {}).get("env_path") or ".env").strip() or ".env"
+    return not bool(_supabase_get_access_token(env_path=env_path))
 
 
 def _supabase_ping(env_path=".env", timeout=4):
@@ -1597,9 +1712,10 @@ def probe_supabase_service(env_path=".env", timeout=4, log_enabled=False):
     except Exception as exc:
         return _result(False, "Configuración inválida", "config", exc)
 
-    url = f"{supabase_url.rstrip('/')}/rest/v1/"
+    url = f"{supabase_url.rstrip('/')}/auth/v1/health"
     request = urllib.request.Request(
         url,
+        # Match the real client/login headers to avoid false negatives in some gateways.
         headers=_supabase_headers(supabase_key),
         method="GET",
     )
@@ -1689,6 +1805,12 @@ def _supabase_patch_with_queue(table, filters, values, env_path=".env"):
 
 
 def _supabase_upsert(table, rows, env_path=".env", on_conflict=None):
+    deduped_rows, removed = _dedupe_upsert_rows(rows or [], on_conflict=on_conflict)
+    if removed:
+        _log_supabase(
+            f"UPSERT deduped table={table} removed={removed} on_conflict={on_conflict!r}"
+        )
+    rows = deduped_rows
     _log_supabase(f"UPSERT start table={table} rows={len(rows or [])} on_conflict={on_conflict!r}")
     supabase_url, supabase_key = _load_supabase_credentials(env_path)
     if not rows:

@@ -40,6 +40,14 @@ def map_exception_to_user_message(context: str, exc) -> str:
         return raw
     if "invalid login credentials" in text or "invalid_grant" in text:
         return "Usuario o contraseña incorrectos."
+    if "usuario y contraseña incorrectos" in text or "usuario o contraseña incorrectos" in text:
+        return "Usuario o contraseña incorrectos."
+    if ctx == "login" and (
+        "email not confirmed" in text
+        or "email_not_confirmed" in text
+        or "confirmar tu correo" in text
+    ):
+        return "Debes confirmar tu correo antes de iniciar sesión."
     if "drive" in text and ctx in {"sync", "case_open", "followup_case", "database_refresh", "save_sheet"}:
         return "No fue posible comunicarse con Drive en este momento. Inténtalo de nuevo."
     if "supabase" in text and ctx in {

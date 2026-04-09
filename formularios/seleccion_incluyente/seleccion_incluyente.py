@@ -1483,6 +1483,25 @@ def sync_usuarios_reca(env_path=".env"):
             for key, value in row.items()
         }
         rows.append(normalized_row)
+    deduped_rows = {}
+    duplicate_cedulas = []
+    for row in rows:
+        cedula = row.get("cedula_usuario")
+        if not cedula:
+            continue
+        if cedula in deduped_rows:
+            duplicate_cedulas.append(cedula)
+            deduped_rows.pop(cedula, None)
+        deduped_rows[cedula] = row
+    rows = list(deduped_rows.values())
+
+    if duplicate_cedulas:
+        preview_duplicates = ", ".join(duplicate_cedulas[:10])
+        extra_duplicates = "" if len(duplicate_cedulas) <= 10 else f" (+{len(duplicate_cedulas) - 10} mas)"
+        _log_excel(
+            f"WARN supabase_usuarios_reca_duplicate_cedulas count={len(duplicate_cedulas)} "
+            f"cedulas={preview_duplicates}{extra_duplicates}"
+        )
     if rows:
         sync_result = _supabase_upsert_with_queue(
             "usuarios_reca",

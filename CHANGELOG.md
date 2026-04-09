@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.1.3 - 2026-04-08
+
+Esta version endurece el manejo de releases y colas de Supabase, mejora los mensajes de login y corrige la sincronizacion de dropdowns en `Contratacion Incluyente`.
+
+### Cambios principales
+
+- El updater ahora cachea la ultima release valida, evita degradarse a una version remota mas vieja y resuelve mejor los assets cuando falla la API principal de GitHub.
+- La capa comun de Supabase ahora prioriza `.env` en `%APPDATA%`, detecta correos no confirmados durante login, usa `auth/v1/health` para el probe y sanea colas/escrituras duplicadas u obsoletas antes de reintentar.
+- `Seleccion Incluyente` y `Contratacion Incluyente` deduplican filas repetidas por cédula antes del upsert a `usuarios_reca`, preservando el ultimo registro.
+- En `Contratacion Incluyente`, el dropdown de "lee el contrato de forma independiente" vuelve a incluir `0. No requiere apoyo.` y la sincronizacion entre dropdowns respeta `0`, `1`, `2`, `3` y `No aplica` sin convertir `0` a `No aplica`.
+- Se agregan pruebas de regresion para login/diagnostico Supabase, resolucion de releases del updater, deduplicacion de upserts y sincronizacion de dropdowns.
+
+### Como afecta a los usuarios
+
+- La app mantiene una referencia mas estable de la ultima version disponible, incluso si GitHub responde de forma parcial o temporalmente inconsistente.
+- Los errores de login comunican mejor cuando el problema es credenciales invalidas o correo sin confirmar.
+- Se reduce el riesgo de reintentos ruidosos o fallidos por colas viejas de Supabase y por payloads duplicados.
+- El diligenciamiento de `Contratacion Incluyente` vuelve a comportarse como espera el formato maestro en la pregunta de lectura del contrato.
+
 ## 2.1.2 - 2026-04-08
 
 Esta version hace mas seguro el guardado de `Seguimientos`, evita escrituras innecesarias en Google Sheets y deja mas flexible el cierre en PDF.

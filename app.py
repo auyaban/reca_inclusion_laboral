@@ -2892,10 +2892,6 @@ def _resolve_prefixed_dropdown_value(source_value, target_values):
     for option in values:
         if _normalize_ascii_text(option).lower().startswith(prefix_key):
             return option
-    if prefix_key == "0.":
-        for option in values:
-            if "no aplica" in _normalize_ascii_text(option).lower():
-                return option
     return ""
 
 

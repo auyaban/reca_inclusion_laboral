@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -71,6 +72,32 @@ class SupabaseUsageOptimizationsTests(unittest.TestCase):
         self.assertEqual(result, [])
         self.assertEqual(seen_headers.get("prefer"), "resolution=merge-duplicates,return=minimal")
 
+    def test_supabase_upsert_dedupes_rows_by_on_conflict_keeping_last(self) -> None:
+        seen_body = {}
+
+        def _fake_urlopen(request, timeout=0):
+            del timeout
+            seen_body["payload"] = json.loads(request.data.decode("utf-8"))
+            return _FakeResponse()
+
+        with patch.object(common, "_load_supabase_credentials", return_value=("https://example.supabase.co", "key")):
+            with patch.object(common, "_supabase_get_access_token", return_value="jwt"):
+                with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+                    result = common._supabase_upsert(
+                        "usuarios_reca",
+                        [
+                            {"cedula_usuario": "123", "nombre_usuario": "Inicial"},
+                            {"cedula_usuario": "123", "nombre_usuario": "Final"},
+                        ],
+                        on_conflict="cedula_usuario",
+                    )
+
+        self.assertEqual(result, [])
+        self.assertEqual(
+            seen_body["payload"],
+            [{"cedula_usuario": "123", "nombre_usuario": "Final"}],
+        )
+
     def test_supabase_patch_uses_return_minimal(self) -> None:
         seen_headers = {}
 
@@ -133,6 +160,48 @@ class SupabaseUsageOptimizationsTests(unittest.TestCase):
             self.assertEqual(app._get_company_name_cache(), [])
             self.assertEqual(app._get_company_name_suggestions_from_index("em"), [])
             self.assertEqual(app._get_company_nit_suggestions_from_index("90"), [])
+
+    def test_failed_write_snapshot_prunes_obsolete_legacy_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            failed_path = Path(tmpdir) / "supabase_write_failed.json"
+            failed_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "id": "legacy",
+                            "table": "utilizacion_il",
+                            "error": "Could not find the table 'public.utilizacion_il' in the schema cache",
+                            "failed_at": 1,
+                        },
+                        {
+                            "id": "current",
+                            "table": "usuarios_reca",
+                            "error": "HTTP 400",
+                            "failed_at": 2,
+                        },
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(common, "_get_cache_dir", return_value=tmpdir):
+                rows = common._get_supabase_failed_writes_snapshot(limit=0)
+
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["id"], "current")
+            persisted = json.loads(failed_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(persisted), 1)
+            self.assertEqual(persisted[0]["id"], "current")
+
+    def test_queue_auth_retryable_when_permission_denied_without_session(self) -> None:
+        with patch.object(common, "_supabase_get_access_token", return_value=""):
+            retryable = common._is_queue_auth_retryable_exception(
+                RuntimeError("No se pudo guardar en usuarios_reca (HTTP 401): permission denied for table usuarios_reca"),
+                {"env_path": ".env"},
+            )
+
+        self.assertTrue(retryable)
 
 
 if __name__ == "__main__":

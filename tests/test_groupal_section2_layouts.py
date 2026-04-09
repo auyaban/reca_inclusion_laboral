@@ -104,7 +104,7 @@ class GroupalSection2LayoutTests(_TkTestCase):
             "4. DATOS ADICIONALES",
         )
         contrato_lee_values = tuple(window.oferente_blocks[0]["contrato_lee_observacion"].cget("values"))
-        self.assertNotIn("0. No requiere apoyo.", contrato_lee_values)
+        self.assertIn("0. No requiere apoyo.", contrato_lee_values)
 
         contrato_lee_nivel = window.oferente_blocks[0]["contrato_lee_nivel_apoyo"]
         contrato_lee_nivel.set("2. Nivel de apoyo medio.")
